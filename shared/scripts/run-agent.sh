@@ -86,6 +86,17 @@ log="$out.log"
 [ "$prompt" != "$out" ] && [ "$prompt" != "$log" ] || die 2 "prompt and output paths must differ"
 [ ! -L "$out" ] && [ ! -L "$log" ] && [ ! -L "$out.tmp" ] && [ ! -L "$out.exit" ] ||
     die 2 "output paths must not be symlinks"
+root=$(git rev-parse --show-toplevel 2>/dev/null) || die 2 "not inside a git repository"
+cd "$root"
+# Reject output paths before anything is written to them.
+for output_path in "$out" "$log" "$out.tmp" "$out.exit"; do
+    git ls-files --error-unmatch -- "$output_path" >/dev/null 2>&1 &&
+        die 2 "output path is tracked: $output_path"
+    # check-ignore: 0 ignored, 1 inside the repository and not ignored, 128 outside the repository
+    ignore_rc=0
+    git check-ignore -q -- "$output_path" 2>/dev/null || ignore_rc=$?
+    [ "$ignore_rc" -ne 1 ] || die 2 "output paths inside the repository must be gitignored: $output_path"
+done
 rm -f "$out.exit"
 trap 'echo $? >"$out.exit"' EXIT
 
@@ -95,17 +106,6 @@ case $mode in
     *) usage ;;
 esac
 [ -r "$prompt" ] || die 2 "prompt file not readable: $prompt"
-
-root=$(git rev-parse --show-toplevel 2>/dev/null) || die 2 "not inside a git repository"
-cd "$root"
-for output_path in "$out" "$log" "$out.tmp" "$out.exit"; do
-    git ls-files --error-unmatch -- "$output_path" >/dev/null 2>&1 &&
-        die 2 "output path is tracked: $output_path"
-    # check-ignore: 0 ignored, 1 inside the repository and not ignored, 128 outside the repository
-    ignore_rc=0
-    git check-ignore -q -- "$output_path" 2>/dev/null || ignore_rc=$?
-    [ "$ignore_rc" -ne 1 ] || die 2 "output paths inside the repository must be gitignored: $output_path"
-done
 
 model=${WF_AGENT_MODEL:-}
 effort=${WF_AGENT_EFFORT:-}

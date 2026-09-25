@@ -479,6 +479,16 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(tracked.read_text(), 'v1\n')
 
+    def test_rejected_output_path_is_left_unchanged(self):
+        (self.repo / '.git/info/exclude').write_text('/review.md\n/review.md.log\n/review.md.tmp\n')
+        exit_file = self.repo / 'review.md.exit'
+        exit_file.write_text('ORIGINAL\n')
+        subprocess.run(['git', '-C', str(self.repo), 'add', 'review.md.exit'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.repo / 'review.md'))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('tracked', r.stderr)
+        self.assertEqual(exit_file.read_text(), 'ORIGINAL\n')
+
     def test_gitignored_output_path_inside_repo_is_allowed(self):
         development = self.repo / 'development'
         development.mkdir()
