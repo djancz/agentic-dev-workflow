@@ -14,6 +14,10 @@
 - Reviewed: commit <sha> (scope: <diff range or paths>)
 - Reviewer: <agent / model / effort> (context: <subagent | headless | new session | audit requester>)
 
+### Method
+
+<What was read (diff size, files read in context) and what was run.>
+
 ### Threat model
 
 <Round 1 only, 5–10 lines. Assets; entry points; trust boundaries; who the attacker is; worst misuse.>

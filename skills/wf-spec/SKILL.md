@@ -29,5 +29,6 @@ words and date; feedback returns it to Draft. Next: `wf roadmap`. Do not scaffol
 Work only from the PRD, the spec, and the repository, following `references/review-rubric.md` with
 `D<round>-<n>` finding IDs. Round 1 checks PRD coverage, feasibility, security boundaries, contracts
 precise enough for independent tasks, and avoidable complexity (`references/engineering.md`). Later
-rounds are delta reviews of the latest revision. Do not edit the spec. In delegated output mode, write
-nothing and return only the round.
+rounds are delta reviews of the latest revision. Do not edit the spec. The round has the review header
+fields, a `### Method` section with what was read and run, and the findings. In delegated output mode,
+write nothing and return only the round.

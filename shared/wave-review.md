@@ -14,8 +14,8 @@ severity, exact evidence, and a verdict. It writes no code. Save the prompt as
 `scripts/run-agent.sh --expect-clean <agent> rw <prompt> <out>` in the wave skill's directory, so it
 can rerun relevant checks while leaving the source tree unchanged. The response starts `## Round <n>`
 and includes `- Reviewed: commit <sha>`,
-`- Verdict: Approved | Changes requested`, and `- Must-fix open: <count>`; each must-fix finding starts
-`- Major:` or `- Blocker:`. Validate with
+`- Verdict: Approved | Changes requested`, `- Must-fix open: <count>`, and a `### Method` section with
+what was read and run; each must-fix finding starts `- Major:` or `- Blocker:`. Validate with
 `python3 scripts/validate-wave-review.py --reviewed <HEAD> --round <n> <out>` before appending it.
 If invalid, retry once for a transient error, then stop.
 

@@ -6,8 +6,17 @@ import re
 from pathlib import Path
 
 
+def method_is_described(text: str) -> bool:
+    """The round has one *Method* section with real content, not only template placeholders."""
+    sections = re.findall(r'^### Method[ \t]*\n(.*?)(?=^#{1,3} |\Z)', text, re.M | re.S)
+    if len(sections) != 1:
+        return False
+    body = re.sub(r'<!--.*?-->', '', sections[0], flags=re.S)
+    return any(line.strip() and not re.fullmatch(r'<[^>]*>', line.strip()) for line in body.splitlines())
+
+
 def validate(text: str, revision: str, round_number: int) -> None:
-    if not text.strip().startswith(f'## Round {round_number}'):
+    if not re.match(rf'## Round {round_number}(?:[ \t]|$)', text.strip(), re.M):
         raise ValueError('review round heading is missing or mismatched')
     reviewed = re.search(r'^- Reviewed: commit ([0-9a-f]{7,40})$', text, re.M)
     if not reviewed or not revision.startswith(reviewed.group(1)):
@@ -20,6 +29,8 @@ def validate(text: str, revision: str, round_number: int) -> None:
         raise ValueError('approved review has unresolved must-fix findings')
     if verdict.group(1) == 'Changes requested' and not int(count.group(1)):
         raise ValueError('changes requested without a must-fix finding')
+    if not method_is_described(text):
+        raise ValueError('the round needs one ### Method section that says what was read and run')
     findings = re.findall(r'^- (?:Blocker|Major): .+', text, re.M)
     if len(findings) != int(count.group(1)):
         raise ValueError('must-fix count does not match severity-ranked findings')

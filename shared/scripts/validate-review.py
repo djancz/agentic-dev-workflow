@@ -21,6 +21,16 @@ def one(pattern: str, text: str, label: str) -> str:
     return values[0].strip()
 
 
+def method_is_described(text: str) -> bool:
+    """The round has one *Method* section with real content, not only template placeholders."""
+    sections = re.findall(r'^### Method[ \t]*\n(.*?)(?=^#{1,3} |\Z)', text,
+                          flags=re.MULTILINE | re.DOTALL)
+    if len(sections) != 1:
+        return False
+    body = re.sub(r'<!--.*?-->', '', sections[0], flags=re.DOTALL)
+    return any(line.strip() and not re.fullmatch(r'<[^>]*>', line.strip()) for line in body.splitlines())
+
+
 def same_target(actual: str, expected: str) -> bool:
     """Equal, or the same commit written as a full and an abbreviated SHA."""
     a, e = SHA.fullmatch(actual), SHA.fullmatch(expected)
@@ -50,6 +60,9 @@ def validate(text: str, kind: str, round_no: int, reviewed: str) -> tuple[str, i
     actual_target = actual_reviewed.split(' (', 1)[0]
     if not same_target(actual_target, reviewed):
         raise ValueError(f'Reviewed must be "{reviewed}", got "{actual_target}"')
+
+    if not method_is_described(text):
+        raise ValueError('the round needs one ### Method section that says what was read and run')
 
     prefix = PREFIX[kind]
     headings = re.findall(r'^### \[([PISHD])(\d+)-(\d+)\] .+$', text, flags=re.MULTILINE)

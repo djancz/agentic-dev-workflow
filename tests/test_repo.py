@@ -31,6 +31,7 @@ LOOP = SHARED / 'loop.md'
 LOOP_SKILLS = ('wf-plan-loop', 'wf-impl-loop')
 CORE_DOCS = ('workflow.md', 'conventions.md', 'review-rubric.md', 'security.md')
 DEV_SERVER = SKILLS / 'wf-init' / 'scripts' / 'dev-server.py'
+METHOD = '\n### Method\n\nRead the diff; ran `make test`: exit 0.\n'
 
 SKILL_MD_MAX_LINES = 130
 SHARED_MAX_LINES = 200
@@ -130,9 +131,19 @@ class WaveReviewValidator(unittest.TestCase):
 
     def test_accepts_review_of_current_wave_commit(self):
         result = self.validate('## Round 2\n- Reviewed: commit ' + self.sha +
-                               '\n- Verdict: Changes requested\n- Must-fix open: 1\n'
+                               '\n- Verdict: Changes requested\n- Must-fix open: 1\n' + METHOD +
                                '- Major: incompatible API change\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_a_round_without_method_or_with_another_number(self):
+        approved = '- Reviewed: commit ' + self.sha + '\n- Verdict: Approved\n- Must-fix open: 0\n'
+        self.assertEqual(self.validate('## Round 2\n' + approved + METHOD).returncode, 0)
+        no_method = self.validate('## Round 2\n' + approved)
+        self.assertEqual(no_method.returncode, 2)
+        self.assertIn('Method', no_method.stderr)
+        placeholder = self.validate('## Round 2\n' + approved + '\n### Method\n\n<What was read.>\n')
+        self.assertEqual(placeholder.returncode, 2)
+        self.assertEqual(self.validate('## Round 20\n' + approved + METHOD).returncode, 2)
 
     def test_rejects_stale_or_contradictory_approval(self):
         stale = self.validate('## Round 2\n- Reviewed: commit ' + 'b' * 40 +
@@ -568,7 +579,7 @@ class ReviewOutputValidator(unittest.TestCase):
 - Must-fix open: 0
 - Reviewed: commit abc123 (diff: `old..abc123`)
 - Reviewer: codex (fresh context: headless)
-
+''' + METHOD + '''
 ### Findings
 
 None.
@@ -581,7 +592,7 @@ None.
 - Verdict: Changes requested
 - Must-fix open: 1
 - Reviewed: roadmap revision 2
-
+''' + METHOD + '''
 ### [D1-1] Dependent tasks share a wave
 - Severity: Major
 - Evidence: TASK-4 depends on TASK-3 in WAVE-2
@@ -598,7 +609,7 @@ None.
 - Verdict: Changes requested
 - Must-fix open: 2
 - Reviewed: plan revision 3
-
+''' + METHOD + '''
 ### Previous findings
 | ID | Status | Note |
 |---|---|---|
@@ -620,9 +631,14 @@ None.
             ('## Round 2 — now\n- Verdict: Approved\n- Must-fix open: 0\n'
              '- Reviewed: commit abc\n', 'output must start'),
             ('## Round 1 — now\n- Verdict: Changes requested\n- Must-fix open: 0\n'
-             '- Reviewed: commit abc\n', 'Changes requested'),
+             '- Reviewed: commit abc\n' + METHOD, 'Changes requested'),
             ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 1\n'
-             '- Reviewed: commit abc\n', 'round describes'),
+             '- Reviewed: commit abc\n' + METHOD, 'round describes'),
+            ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n'
+             '- Reviewed: commit abc\n', 'Method'),
+            ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n'
+             '- Reviewed: commit abc\n\n### Method\n\n<!-- what was read -->\n<Files read.>\n',
+             'Method'),
         ]
         for text, message in cases:
             with self.subTest(message=message):
@@ -636,7 +652,7 @@ None.
 - Verdict: Changes requested
 - Must-fix open: 1
 - Reviewed: commit abc1234
-
+''' + METHOD + '''
 ### Findings
 ### [I1-1] Shell injection
 - Severity: Blocker
@@ -656,7 +672,7 @@ subprocess.run(cmd, shell=True)
     def test_full_and_abbreviated_sha_match(self):
         full = 'ba25a5685ef418951551d36ef2806e002cab853e'
         text = ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n'
-                f'- Reviewed: {{}} (diff: `main...{full}`)\n')
+                f'- Reviewed: {{}} (diff: `main...{full}`)\n' + METHOD.replace('{', '{{'))
         for written, expected, code in [(f'commit {full}', 'commit ba25a56', 0),
                                         ('commit ba25a56', f'commit {full}', 0),
                                         (f'commit {full}', 'commit ba25a57', 2)]:
@@ -670,7 +686,7 @@ subprocess.run(cmd, shell=True)
 - Verdict: Changes requested
 - Must-fix open: 1
 - Reviewed: plan revision 2
-
+''' + METHOD + '''
 ### Previous findings
 | ID | Status | Note |
 |---|---|---|

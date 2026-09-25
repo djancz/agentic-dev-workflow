@@ -33,5 +33,6 @@ Work only from the PRD, spec, roadmap, and repository, following `references/rev
 `D<round>-<n>` finding IDs. Round 1 checks that no task in a wave needs another task of the same wave or
 shares its mutable files, that dependencies point only to earlier waves, that every milestone leaves a
 working state with checkable exit criteria, and that each task is one concern. Later rounds are delta
-reviews of the latest revision. Do not edit the roadmap. In delegated output mode, write nothing and
-return only the round.
+reviews of the latest revision. Do not edit the roadmap. The round has the review
+header fields, a `### Method` section with what was read and run, and the findings. In delegated output
+mode, write nothing and return only the round.
