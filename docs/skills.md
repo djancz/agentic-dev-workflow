@@ -28,6 +28,7 @@ where a project or task stands. Give an ID when more than one task or wave could
 | `wf maintenance` | Scan dependencies and apply approved updates | Maintenance gate |
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
 | `wf status [ID]` | Read status and next action | None; read-only |
+| `wf next [ID]` | Run the next stages until a human gate, question, or failure | The gate it stops at |
 
 ## Agent and model options
 

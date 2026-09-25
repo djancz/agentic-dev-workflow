@@ -1,14 +1,18 @@
 ---
 name: wf-status
 description: >-
-  Show read-only status and next commands for the current project, wave, and tasks. Triggers: "wf status", "task status", "what next".
+  Show read-only status and next commands for the current project, wave, and tasks. To run the next
+  stages, use wf next. Triggers: "wf status", "task status", "where are we".
 ---
 
 # wf-status
 
-Read `references/project.md` and `references/workflow.md`. This skill is strictly read-only: do not
-fetch, switch branches, or write files. Read artifact headers first; read a body only to clarify an
-ambiguous next step.
+Read `references/project.md` and `references/workflow.md`. Read artifact headers first; read a body only
+to clarify an ambiguous next step.
+
+## Status (`wf status [ID]`)
+
+This skill is strictly read-only: do not fetch, switch branches, or write files.
 
 Show PRD, spec, and roadmap revision/status when they exist. Show the current milestone and each wave's
 status, branch, task counts, latest integration review verdict, and next command. For each active task,

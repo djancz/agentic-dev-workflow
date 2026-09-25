@@ -76,7 +76,8 @@ init` in an existing project or `wf prd` in a new one.
    check table, combined diff, and findings at Gate 2. Once approved, `wf finalize WAVE-1` prepares the
    PR and asks separately before pushing. Merge the PR on your forge.
 
-You can stop after any stage and resume with `wf status`. The status output names the next command.
+You can stop after any stage and resume with `wf status`. The status output names the next command;
+`wf next` runs it and the stages after it, stopping at the next gate, question, or failure.
 If a stage stops with findings or unavailable tooling, its record explains what remains.
 
 ## Work in an existing project

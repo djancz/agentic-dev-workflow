@@ -79,6 +79,13 @@ class SkillStructure(unittest.TestCase):
             with self.subTest(skill=skill.name):
                 self.assertIn(command, guide)
 
+    def test_documented_slash_commands_are_installed_skills(self):
+        names = {skill.name for skill in skill_dirs()}
+        for doc in (REPO / 'README.md', *sorted((REPO / 'docs').glob('*.md'))):
+            for name in re.findall(r'`/(wf-[a-z0-9-]+)', doc.read_text()):
+                with self.subTest(doc=doc.name, command=name):
+                    self.assertIn(name, names)
+
     def test_review_and_test_contexts_are_separate(self):
         self.assertIn('fresh context', (SKILLS / 'wf-test' / 'SKILL.md').read_text())
         for name in ('wf-plan-review', 'wf-impl-review', 'wf-security-review'):
@@ -88,9 +95,11 @@ class SkillStructure(unittest.TestCase):
 
     def test_key_stages_and_user_guide_match(self):
         readme = (REPO / 'README.md').read_text()
+        guide = (REPO / 'docs' / 'skills.md').read_text()
         for command in ('wf prd', 'wf spec', 'wf roadmap', 'wf new-worktree',
-                        'wf test', 'wf wave integrate', 'wf finalize'):
+                        'wf test', 'wf wave integrate', 'wf finalize', 'wf next'):
             self.assertIn(command, readme)
+            self.assertIn(command, guide)
         self.assertIn('reviewer=', readme)
         self.assertIn('effort=', readme)
         self.assertIn('rounds=', readme)
