@@ -35,7 +35,8 @@ report and may run unattended.
 
 ## 1. Scan (read-only)
 
-Run from the repository root, keeping only the summary (`2>&1 | tail -n 40`):
+Run from the repository root, keeping only the summary and the exit status
+(`{ <cmd> 2>&1; echo "exit $?"; } | tail -n 40`):
 - **Dependencies.** For each ecosystem (`references/ecosystems.md` → Detection): current version, latest
   in range, latest.
 - **Scanners.** The trusted `secrets`, `deps-audit` and `sast` rows (`references/conventions.md` →

@@ -28,7 +28,8 @@ Paths are relative to this skill's directory. Read `references/stacks.md`, `refe
 4. **Commands.** For each check row, prefer what the project already uses: `Makefile` or `justfile`
    targets, `package.json` scripts, tool config in `pyproject.toml`, `.golangci.yml`, `deny.toml`, and so
    on. Fall back to the defaults in `references/stacks.md`.
-5. **Verify each command** by running it from the repository root (`2>&1 | tail -n 15`):
+5. **Verify each command** by running it from the repository root, keeping its exit status
+   (`{ <cmd> 2>&1; echo "exit $?"; } | tail -n 15`):
    - It runs (pass or fail): keep it. Record pre-existing failures for the report; they are not yours to
      fix now.
    - The tool is missing: keep the command and put `(not installed — <install hint>)` in the Command

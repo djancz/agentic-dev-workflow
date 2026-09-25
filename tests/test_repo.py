@@ -87,6 +87,13 @@ class SkillStructure(unittest.TestCase):
                 with self.subTest(doc=doc.name, command=name):
                     self.assertIn(name, names)
 
+    def test_check_output_is_trimmed_without_losing_the_exit_status(self):
+        for doc in (*SHARED.glob('*.md'), *SKILLS.glob('*/SKILL.md')):
+            for line in doc.read_text().splitlines():
+                if '2>&1' in line and '| tail' in line:
+                    with self.subTest(doc=str(doc.relative_to(REPO)), line=line.strip()):
+                        self.assertIn('echo "exit $?"; } | tail', line)
+
     def test_review_and_test_contexts_are_separate(self):
         self.assertIn('fresh context', (SKILLS / 'wf-test' / 'SKILL.md').read_text())
         for name in ('wf-plan-review', 'wf-impl-review', 'wf-security-review'):

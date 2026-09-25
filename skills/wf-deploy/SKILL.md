@@ -90,9 +90,9 @@ delete old backups; report how many there are and their total size.
 
 ### 4. Deploy
 
-Run the Deploy rows in order, exactly as approved, each with the runbook's `Timeout`, and log
-`tail -n 40` of each output. Any failure, or a command that would differ from the approved one: stop and
-go to *Failure*. Never retry a step that changes data.
+Run the Deploy rows in order, exactly as approved, each with the runbook's `Timeout`, and log the last
+40 lines of each output with its exit status (`{ <cmd> 2>&1; echo "exit $?"; } | tail -n 40`). Any
+failure, or a command that would differ from the approved one: stop and go to *Failure*. Never retry a step that changes data.
 
 ### 5. Verify
 

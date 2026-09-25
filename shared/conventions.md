@@ -68,8 +68,9 @@ secret access or network installer and ask the human.
 
 ## Output discipline (token budget)
 
-- Run commands quietly and keep only the summary: `<cmd> 2>&1 | tail -n 40`. While iterating, re-run only
-  the failing tests.
+- Run commands quietly and keep only the summary with the command's own exit status:
+  `{ <cmd> 2>&1; echo "exit $?"; } | tail -n 40`. A plain pipe to `tail` reports tail's status, so judge
+  PASS or FAIL only by the `exit` line. While iterating, re-run only the failing tests.
 - Refer to code as `path:line`. Never paste whole files into artifacts or chat.
 - Read what the task needs: the files the plan names, their callers, and their tests. Do not survey the
   whole repository.
