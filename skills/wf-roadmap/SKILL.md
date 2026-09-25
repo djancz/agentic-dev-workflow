@@ -14,8 +14,9 @@ Inspect the approved requirements, contracts, existing code where relevant, and 
 learnings. Write `development/project/roadmap.md`. Make each milestone a working state with checkable
 exit criteria. The first milestone establishes project layout and quality checks; the next delivers a
 thin usable path. Keep distant milestones coarse. Split a milestone into tasks, each one concern with
-acceptance criteria, dependencies, and a size estimate. Group tasks into waves only when their
-dependencies and mutable files permit safe parallel execution. If uncertain, schedule sequentially.
+acceptance criteria, dependencies, and a size estimate. Tasks in one wave all start from its base
+commit: group them only when none needs another's code and they share no mutable files. A dependent
+task goes to a later wave. If uncertain, use consecutive waves.
 
 Keep one wave PR small enough to review. Name contracts that must be frozen before parallel tasks start.
 Do not introduce stack choices that contradict the approved spec. On revision, increment `Revision`,

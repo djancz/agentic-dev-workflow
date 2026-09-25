@@ -11,7 +11,7 @@ PR: none
 
 ## Goal and acceptance
 
-## Task order and dependencies
+## Integration order and dependencies on earlier waves
 
 ## Frozen contracts and parallel boundaries
 

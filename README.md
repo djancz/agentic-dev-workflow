@@ -28,8 +28,10 @@ Existing project, small change → task → plan → independent review → appr
                        optional gated deployment
 ```
 
-A wave is a group of related tasks delivered in one PR. Independent tasks can run in parallel worktrees
-when they have no unresolved dependencies or shared mutable files. A small change uses a wave of one.
+A wave is a group of related tasks delivered in one PR. Its tasks all start from the wave's base
+commit, so they must not need each other's code or share mutable files; they can then run in parallel
+worktrees. A task that builds on another task's code goes into a later wave. A small change uses a
+wave of one.
 Related code and tests are committed together; a wave may have several commits.
 
 ## Install once per project

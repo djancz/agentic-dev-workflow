@@ -16,8 +16,10 @@ This file governs project planning and wave execution. The task review rules rem
   and fixes the task, but approval means **ready to integrate**, not permission to push.
 - `wf wave integrate` combines reviewed tasks, runs the full trusted checks, and obtains an independent
   integration review. Gate 2 approves that combined diff. `wf finalize` then makes the wave PR.
-- A one-task change is a wave of one. A task can run while another independent task runs in its own
-  worktree; do not start a task whose dependency is unresolved.
+- A one-task change is a wave of one. Every task in a wave starts from the wave's base commit, so tasks
+  in one wave never depend on each other's code; they may share only contracts frozen in the approved
+  spec. A task that needs another task's code belongs to a later wave, started after the earlier wave is
+  merged into the base branch.
 
 ## Private state
 
@@ -33,10 +35,11 @@ Records use a `Status`, `Revision`, and explicit `Approved` line; a revised docu
 
 ## Waves
 
-The roadmap assigns every task to a wave. A wave lists task IDs, dependencies, branch, base commit,
-acceptance criteria, and `Status: Planned | In progress | Review requested | Approved | PR opened`.
-Parallel tasks must not share mutable files, database tables, configuration, migrations, or unstated API
-contracts. If the boundary is uncertain, schedule them sequentially.
+The roadmap assigns every task to a wave. A wave lists task IDs, the earlier waves it depends on,
+branch, base commit, acceptance criteria, and
+`Status: Planned | In progress | Review requested | Approved | PR opened`.
+Tasks in one wave must not share mutable files, database tables, configuration, migrations, or unstated
+API contracts. If the boundary is uncertain, put the tasks in consecutive waves.
 
 `wf wave start WAVE-N` creates `wave/WAVE-N-<slug>` from the configured base branch, records its base
 commit, and leaves the branch checked out. `wf new-worktree TASK-N` starts a task branch from that wave
@@ -44,7 +47,7 @@ commit and creates a sibling worktree; it installs the skills and private state 
 existing branch or worktree has the same task ID, report it and stop.
 
 `wf wave integrate WAVE-N` requires every task plan approved, task review approved for its current
-checkpoint, and all task branches clean. Integrate one task at a time in dependency order using
+checkpoint, and all task branches clean. Integrate one task at a time in the wave's recorded order using
 `git merge --squash <task-branch>`. Commit related code and tests together, usually as one Conventional
 Commit per task; use separate commits only for independently reversible concerns named in the approved
 plan. Save `git write-tree` immediately after the squash merge and compare it with `HEAD^{tree}` after
