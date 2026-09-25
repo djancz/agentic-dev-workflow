@@ -75,7 +75,8 @@ timestamp per deploy (`date -u +%Y%m%d-%H%M%S`), `{backup_dir}` the runbook's Ba
 Write `development/deploy/runs/<YYYY-MM-DD-HHMM>-<env>-<sha7>.md` from `templates/deploy-log.md` with
 `Status: Planned`. Present the Gate 3 digest from `references/workflow.md` → Human gates and stop.
 
-Only an explicit `nasaď` or `deploy approved` given after this digest counts; record it in `Approved`.
+Only an explicit approval of this deployment given after this digest counts, in the human's language
+(for example `deploy approved`); record their words in `Approved`.
 Before going on, check that `origin/<base>` and `Current version` still match the digest; if they do not,
 present a new digest. Then set `Status: In progress` and `Started`.
 

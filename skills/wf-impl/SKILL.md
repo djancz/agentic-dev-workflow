@@ -22,14 +22,14 @@ Role: **author**. Paths are relative to this skill's directory. Read:
 
 The plan must have `Status: Approved`. There are two exceptions for a `Draft` plan whose latest review
 covers the current revision: its verdict is `Approved*` and the human's message explicitly approves it
-("plan approved, wf impl" or "schvaluji, implementuj"); or its verdict is `Changes requested` and the
+in any language (for example "plan approved, wf impl"); or its verdict is `Changes requested` and the
 human accepts the open findings as *Accepting open findings* in `references/workflow.md` → Human gates
 describes. In either case, record the approval as that section says, and continue.
 
 Otherwise stop: Gate 1 has not been passed. Say what is missing: if the latest review approved the current
-revision, only the human's approval is missing (they can reply `schvaluji, implementuj`); otherwise the
-plan needs `wf plan loop`, or `wf plan rev` / `wf plan fix`, or the human's acceptance of its open
-findings.
+revision, only the human's approval is missing (for example `plan approved, wf impl`, in their
+language); otherwise the plan needs `wf plan loop`, or `wf plan rev` / `wf plan fix`, or the human's
+acceptance of its open findings.
 
 ## Do
 

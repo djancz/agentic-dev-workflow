@@ -81,9 +81,9 @@ Present one screen:
 - what is not updated, and why
 - the proposed tasks, numbered
 - the scans that did not run
-- how to answer: `schvaluji, aktualizuj` or `approved, update`, optionally with the proposed tasks to
-  create (`schvaluji, aktualizuj, tasky 1 3`); or notes, which change the plan (`Revision + 1`) before
-  the gate is shown again
+- how to answer: an explicit approval in the human's language (for example `approved, update`),
+  optionally with the proposed tasks to create (`approved, update, tasks 1 3`); or notes, which
+  change the plan (`Revision + 1`) before the gate is shown again
 
 Wait. **Never record an approval the human did not give** (`references/workflow.md` → Human gates). On
 approval, record `Approved: <date> — "<their words>"` in the plan and set `Status: Approved`. This gate
