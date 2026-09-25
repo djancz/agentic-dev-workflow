@@ -26,6 +26,7 @@ SKILLS = REPO / 'skills'
 SHARED = REPO / 'shared'
 RUN_AGENT = SHARED / 'scripts' / 'run-agent.sh'
 VALIDATE_REVIEW = SHARED / 'scripts' / 'validate-review.py'
+NEW_ID = SHARED / 'scripts' / 'new-id.py'
 LOOP = SHARED / 'loop.md'
 LOOP_SKILLS = ('wf-plan-loop', 'wf-impl-loop')
 CORE_DOCS = ('workflow.md', 'conventions.md', 'review-rubric.md', 'security.md')
@@ -683,6 +684,60 @@ def process_gone(pid: int, wait: float = 5.0) -> bool:
             return True
         time.sleep(0.1)
     return False
+
+
+class NewId(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.development = self.tmp / 'development'
+        self.development.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def new_id(self, *args: str):
+        return subprocess.run([sys.executable, str(NEW_ID), *args, str(self.development)],
+                              capture_output=True, text=True)
+
+    def test_task_follows_the_highest_existing_id(self):
+        (self.development / 'tasks/TASK-7-old').mkdir(parents=True)
+        (self.development / 'tasks/TASK-2-older').mkdir()
+        r = self.new_id('--kind', 'task', '--slug', 'csv-export')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(r.stdout.strip()), self.development / 'tasks/TASK-8-csv-export')
+        self.assertTrue((self.development / 'tasks/TASK-8-csv-export').is_dir())
+
+    def test_wave_counts_review_files_and_reserves_an_empty_record(self):
+        (self.development / 'waves').mkdir()
+        (self.development / 'waves/WAVE-4-review.md').write_text('')
+        r = self.new_id('--kind', 'wave')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(r.stdout.strip()), self.development / 'waves/WAVE-5.md')
+        self.assertEqual((self.development / 'waves/WAVE-5.md').read_text(), '')
+
+    def test_wave_skips_ids_planned_in_the_roadmap(self):
+        (self.development / 'project').mkdir()
+        (self.development / 'project/roadmap.md').write_text('| WAVE-1 | M0 |\n| WAVE-6 | M1 |\n')
+        r = self.new_id('--kind', 'wave')
+        self.assertEqual(Path(r.stdout.strip()), self.development / 'waves/WAVE-7.md')
+
+    def test_parallel_reservations_get_distinct_ids(self):
+        runs = [subprocess.Popen([sys.executable, str(NEW_ID), '--kind', kind, *extra, str(self.development)],
+                                 stdout=subprocess.PIPE, text=True)
+                for kind, extra in [('task', ['--slug', f'part-{i}']) for i in range(10)] + [('wave', [])] * 4]
+        paths = [run.communicate()[0].strip() for run in runs]
+        self.assertTrue(all(run.returncode == 0 for run in runs))
+        tasks = [re.search(r'TASK-(\d+)', p).group(1) for p in paths if 'TASK-' in p]
+        waves = [re.search(r'WAVE-(\d+)', p).group(1) for p in paths if 'WAVE-' in p]
+        self.assertEqual(sorted(tasks, key=int), [str(n) for n in range(1, 11)])
+        self.assertEqual(sorted(waves), ['1', '2', '3', '4'])
+
+    def test_invalid_arguments_create_nothing(self):
+        for args in (('--kind', 'task'), ('--kind', 'task', '--slug', 'Bad Slug'),
+                     ('--kind', 'task', '--slug', '../x'), ('--kind', 'wave', '--slug', 'x')):
+            with self.subTest(args=args):
+                self.assertEqual(self.new_id(*args).returncode, 2)
+        self.assertEqual(list(self.development.iterdir()), [])
 
 
 class DevServer(unittest.TestCase):

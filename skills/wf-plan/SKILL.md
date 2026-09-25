@@ -55,7 +55,7 @@ Role: **author**. Paths are relative to this skill's directory. Read:
      For a feature or behavioral bug fix, mark `Tests: required`; `wf test` authors them from the approved contract in a
      fresh context before implementation. For a non-feature change, mark `Tests: N/A` with a reason
      only if there is no new behavior; existing checks still run.
-   - **Wave.** Use the roadmap's wave ID or assign a one-task `WAVE-<N>` for a standalone change.
+   - **Wave.** Use the wave recorded in the ticket (`wf task` reserves one for a standalone change).
      Record dependencies and shared-file risks before recommending parallel work.
    - **Planned checks.** If the `wf` block marks checks `planned` and this task creates the toolchain
      they need (typically the first task of a new project), plan setting them up: the tool configuration,

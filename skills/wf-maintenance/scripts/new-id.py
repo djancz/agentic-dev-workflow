@@ -1,0 +1,1 @@
+../../../shared/scripts/new-id.py

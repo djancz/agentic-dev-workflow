@@ -19,8 +19,9 @@ Require an approved roadmap or an approved standalone task plan. Read the wave's
 dependencies, contracts, and parallel safety. If a task depends on another task of this wave, stop
 and ask for a roadmap revision. Every earlier wave it depends on must be merged into the base branch;
 otherwise stop and name it. Create the wave branch from the configured base branch;
-record the base commit. Create `development/waves/WAVE-<N>.md` from the template. If a branch or record
-already exists, inspect and resume it rather than creating a duplicate. Do not pull or overwrite
+record the base commit. Fill `development/waves/WAVE-<N>.md` from the template; an empty file is a
+reservation from `wf task`. If a branch or a filled record already exists, inspect and resume it rather
+than creating a duplicate. Do not pull or overwrite
 existing branches. Next: `wf new-worktree TASK-<N>` for each ready task.
 
 ## Integrate

@@ -9,8 +9,8 @@ review point, never an excuse to discard an explicit decision already given in t
 All working records are under gitignored `development/`, linked to the common Git directory by
 `install.py`. A task has `development/tasks/TASK-<N>-<slug>/` with `TASK-<N>.md`, a plan, plan review,
 test report for a feature, implementation summary, implementation review, and security review when
-needed. Headless run prompts and output live under its `runs/`. Next task ID is the largest existing
-number plus one. The agent records branch, wave, and checkpoint commits in the task header.
+needed. Headless run prompts and output live under its `runs/`. Task and wave IDs are reserved
+with `scripts/new-id.py`, never chosen by hand. The agent records branch, wave, and checkpoint commits in the task header.
 
 ## Resolving the task
 

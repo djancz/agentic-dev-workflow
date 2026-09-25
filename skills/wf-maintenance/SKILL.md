@@ -66,13 +66,15 @@ exists). For `wf maintenance scan`, or when nothing is routine, stop here: repor
 
 ## 4. Ticket and plan
 
-Number and name the task as `wf task` does: `development/tasks/TASK-<N>-maintenance-<YYYY-MM>/`.
+Reserve the task with `python3 scripts/new-id.py --kind task --slug maintenance-<yyyy>-<mm> development`,
+which prints `development/tasks/TASK-<N>-maintenance-<yyyy>-<mm>/`.
 - `TASK-<N>.md` from `<skills-dir>/wf-task/templates/task.md`, where `<skills-dir>` is
   `dirname "$(realpath <this skill dir>)"`: `Type: chore`, the report path under *Problem*, one
   acceptance criterion per advisory closed, and "every check has the same result as on the base".
 - `TASK-<N>-plan.md` from `templates/plan.md`: the exact updates (from → to), what is not updated and
   why, the update commands, commits by concern. `Status: Draft`, `Revision: 1`. Set the ticket to
-  `In progress`, assign the next one-task `WAVE-<N>`, and name the task in the report's header.
+  `In progress`, reserve a one-task wave with `python3 scripts/new-id.py --kind wave development`,
+  record it in the ticket, and name the task in the report's header.
 
 ## 5. Maintenance gate (stop here)
 
