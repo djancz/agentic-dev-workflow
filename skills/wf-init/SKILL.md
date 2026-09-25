@@ -42,7 +42,9 @@ Paths are relative to this skill's directory. Read `references/stacks.md`, `refe
 6. **AGENTS.md.** Create the file if it is missing. Replace or insert the block between the markers
    exactly as shown below, and leave everything outside the markers untouched. Use project-relative
    skill paths in this tracked file; never write the installer's local absolute path into it.
-7. **Private state.** Run the workflow installer for this worktree if needed. It links
+7. **Private state.** Run the workflow installer for this worktree if needed:
+   `python3 <workflow-repo>/install.py --project <worktree> --agents <agents>`, where `<workflow-repo>` is
+   `dirname "$(dirname "$(realpath <this skill dir>)")"`. It links
    `development/` to the common Git directory; never overwrite an existing directory. Add
    `/development` to `.gitignore` if absent; without a trailing slash it also matches the link.
 8. **Import files.** If `CLAUDE.md` or `GEMINI.md` is missing, create it with the single line

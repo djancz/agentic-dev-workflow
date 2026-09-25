@@ -16,6 +16,7 @@ directory named `<repo>-worktrees/TASK-<N>-<slug>`, never inside the repository.
 `task/TASK-<N>-<slug>`. Create the sibling parent directory first. Derive `<installed agents>` from
 the skill directories already installed in this checkout, not from which CLIs happen to be on PATH.
 Run `python3 <workflow-repo>/install.py --project <worktree> --agents <installed agents>` to link skills
-and the shared `development/` state. If installation fails, report the branch
-and worktree so the user can recover; do not delete work. Record branch, path, and base commit in the
+and the shared `development/` state, where `<workflow-repo>` is
+`dirname "$(dirname "$(realpath <this skill dir>)")"`, the clone that holds `install.py`.
+If installation fails, report the branch and worktree so the user can recover; do not delete work. Record branch, path, and base commit in the
 task ticket. Report the next `wf test TASK-<N>` command.
