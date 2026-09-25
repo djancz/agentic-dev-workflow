@@ -3,6 +3,7 @@
 Status: Planned
 Base branch: main
 Base commit: pending
+Base synced: none
 Branch: pending
 Reviewed commit: pending
 Tasks: TASK-N

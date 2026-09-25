@@ -20,8 +20,20 @@ and includes `- Reviewed: commit <sha>`,
 If invalid, retry once for a transient error, then stop.
 
 Round one reviews the full combined change and cross-task interactions. Later rounds review previous
-findings and the new diff. Fixes run in another fresh context on the wave branch, commit by concern,
-and rerun affected checks. A fix moves `HEAD`; review of the previous commit no longer counts. Stop on
+findings and the new diff.
+
+**Fix.** A fix runs in another fresh context on the wave branch: save the prompt as
+`runs/wave-fix-r<n>.prompt.md` ("Run wf wave fix WAVE-N", as in `loop.md`) and use
+`scripts/run-agent.sh <fix-agent> rw <prompt> <out>`. The fixer follows the rubric's Fix stage, appends
+its resolution table under `### Fix round <n>` in `WAVE-<N>-review.md`, commits by concern as final
+Conventional Commits (no `wip`), and reruns the affected checks. A fix moves `HEAD`; review of the
+previous commit no longer counts.
+
+**Base sync.** Before the first review and again before a push, run `git fetch origin <base>`. If
+`git merge-base --is-ancestor origin/<base> HEAD` fails, merge it: `git merge origin/<base>` (never rebase,
+never force-push). Resolve conflicts as in integration, rerun the full checks, record `Base synced:
+<sha>` in the wave record, and review the merge in the next round. An earlier Gate 2 approval is void
+because `HEAD` moved. Stop on
 approval, the round cap, a repeated unresolved finding, nondecreasing must-fix count, disagreement, or
 timeout. Show unresolved findings to the human; never infer approval. After all required verdicts are
 approved for the current HEAD, present the wave Gate 2 digest from `project.md`.

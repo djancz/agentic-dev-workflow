@@ -27,7 +27,8 @@ Follow `references/project.md` → Waves. Ensure every task has tests authored i
 implementation checks, and an independent approved task review. Squash-merge task branches one at a
 time into the wave branch, grouping each task's related code and tests. Record task commit IDs and any
 conflict resolution. Run the full trusted check table; report PASS, FAIL, NOT RUN, or N/A accurately.
-If checks fail, fix the cause and repeat the affected checks before review.
+If checks fail, fix the cause and repeat the affected checks before review. Sync with the base
+(`references/wave-review.md` → Base sync) before the first review.
 
 Obtain a fresh independent review of the combined wave diff against the PRD/spec/task criteria. Include
 cross-task interactions and security. Follow `references/wave-review.md` for prompting, validation,
@@ -36,3 +37,10 @@ default 3 rounds, configurable via `reviewer=`, `model=`, `effort=`, `fix-agent=
 `fix-effort=`, `rounds=`, and `models=`. Write `WAVE-<N>-review.md`; never self-approve a failed or
 missing review. When approved, show Gate 2: combined behavior, commits, checks, gaps, and open findings.
 Record only explicit human approval. Next: `wf finalize WAVE-<N>`.
+
+## Fix (`wf wave fix WAVE-N`, run by the review loop)
+
+Work in a fresh context on the wave branch. Read the header and latest round of `WAVE-<N>-review.md` and
+`references/review-rubric.md` → Fix stage. Answer every open must-fix ID, change only what the findings
+need, and follow `references/wave-review.md` → Fix for commits, checks and the resolution table. Never
+push. Report the counts of fixed, disputed, deferred and needs-human findings.
