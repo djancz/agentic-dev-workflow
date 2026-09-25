@@ -9,21 +9,28 @@ whether to go on. Keep your context small: read only artifact **headers** and th
 
 ## Arguments
 
-`wf <plan|impl> loop [TASK-N] [reviewer=self|claude|codex|gemini|opencode] [rounds=<n>]
-[models=default|auto] [model=…] [effort=…] [fix-agent=…] [fix-model=…] [fix-effort=…]
-[security-reviewer=…] [security-model=…] [security-effort=…]`
+`wf <plan|impl> loop [TASK-N] [rev=…] [fix=…] [sec=…] [models=default|auto] [rounds=<n>]`
 
-- `reviewer` defaults to `Reviewer` in the `wf` block of `AGENTS.md`, or `self` if it is not set.
-- `rounds` defaults to `Max review rounds`, or 3. The cap counts review rounds in this loop run.
-- `rounds` must be a positive integer no larger than 10; an additional run requires a new human request.
-- `fix-agent` defaults to `Fix agent` in the block, or `self`. It also uses a fresh context.
-- For the `sec` stage, resolve `security-reviewer`, `security-model`, and `security-effort` from the
-  arguments, then the project security defaults, then `self`/`default`. Other reviewer options do not
-  silently replace a separately configured security reviewer.
-- `model` and `effort` set the reviews; `fix-model` and `fix-effort` set the fixes. Each takes a name or
-  level, `auto`, or `default` (the agent's own setting). `models` sets all four and defaults to `Models`
-  in the `wf` block, or `default`; an explicit argument wins over it. If any setting is not `default`,
-  apply `models.md` at every stage.
+Each role has an agent, a model and an effort: `test` writes tests (`wf test`), `rev` reviews (spec,
+roadmap, plan, implementation, wave), `sec` runs the security review, and `fix` answers review findings.
+Set a role with the shorthand `<role>=agent[,model[,effort]]` (an omitted or empty part is `default`),
+or with `<role>-agent=`, `<role>-model=`, `<role>-effort=`; never both for one role. For example
+`rev=codex,,high`, `fix=claude,sonnet`, `sec-agent=gemini`. An agent is `self`, `claude`, `codex`,
+`gemini` or `opencode`; a model or effort is a name, `auto`, or `default` (the agent's own setting).
+Unset fields come from the `wf` block (`Rev agent`, `Rev model`, …), then from `models` (argument, then
+`Models`, then `default`); an agent falls back to `self`. `rounds` defaults to `Max review rounds`, or 3,
+must be 1–10, and counts review rounds in this run; another run requires a new human request.
+
+Resolve the settings before the first stage with the trusted block (`conventions.md` → Checks):
+```bash
+git show "$(git merge-base <base> HEAD):AGENTS.md" |
+  python3 scripts/resolve-roles.py --agents-md - --roles rev,fix <the stage's arguments>
+```
+`wf impl loop` adds `sec` (`--roles rev,sec,fix`); spec and roadmap reviews, which are project-level,
+use `--agents-md AGENTS.md --roles rev --before-init`, because a new project reaches them before
+`wf init` writes the block. Show the output lines to the human, use them for every stage, and put the
+actual values in the round's `Reviewer` line. A non-zero exit stops the loop with its message. If any
+model or effort is not `default`, apply `models.md` at every stage.
 
 ## How a stage runs in a fresh context
 

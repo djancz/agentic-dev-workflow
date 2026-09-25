@@ -5,8 +5,8 @@ the current wave `HEAD` and the diff from the recorded wave base commit. Store r
 `development/waves/WAVE-<N>-review.md`; the header records `Round`, `Reviewed: commit <sha>`, `Verdict`,
 and `Must-fix open`. Store agent prompts and outputs under `development/waves/runs/`.
 
-Resolve `reviewer`, `model`, `effort`, `fix-agent`, `fix-model`, `fix-effort`, `models`, and `rounds` by
-the precedence in `project.md`. The default is three rounds, maximum ten per requested run. The
+Resolve the `rev` and `fix` roles and `rounds` as `loop.md` → Arguments says, with
+`scripts/resolve-roles.py --roles rev,fix`. The default is three rounds, maximum ten per requested run. The
 reviewer must be a fresh context. A headless reviewer gets a read-only prompt to inspect the PRD/spec,
 wave/task criteria, combined diff, check evidence, and security boundaries. It must report finding IDs,
 severity, exact evidence, and a verdict. It writes no code. Save the prompt as
@@ -24,7 +24,7 @@ findings and the new diff.
 
 **Fix.** A fix runs in another fresh context on the wave branch: save the prompt as
 `runs/wave-fix-r<n>.prompt.md` ("Run wf wave fix WAVE-N", as in `loop.md`) and use
-`scripts/run-agent.sh <fix-agent> rw <prompt> <out>`. The fixer follows the rubric's Fix stage, appends
+`scripts/run-agent.sh <fix agent> rw <prompt> <out>`. The fixer follows the rubric's Fix stage, appends
 its resolution table under `### Fix round <n>` in `WAVE-<N>-review.md`, commits by concern as final
 Conventional Commits (no `wip`), and reruns the affected checks. A fix moves `HEAD`; review of the
 previous commit no longer counts.

@@ -1,9 +1,8 @@
 # Model and effort per stage
 
-Read this when a loop setting is not `default`. `default` passes nothing, so the selected agent uses its
-own configuration. Explicit `model` and `effort` apply to the ordinary reviewer;
-`security-model` and `security-effort` apply to the dedicated security reviewer; `fix-model` and
-`fix-effort` apply to fixes. An explicit argument overrides project defaults and `models=auto`.
+Read this when a resolved model or effort is not `default` (`loop.md` → Arguments). `default` passes
+nothing, so the selected agent uses its own configuration. Each role (`test`, `rev`, `sec`, `fix`) has its
+own model and effort. An explicit argument overrides project defaults and `models=auto`.
 
 ## Applying a setting
 

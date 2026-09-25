@@ -18,11 +18,13 @@ directory. Read:
 - `templates/security-review.md`
 - `references/workflow.md`: the section Human gates (for the report, task mode)
 
-For a standalone call, accept `agent=`, `model=`, and `effort=` with the project security defaults;
-start a fresh native subagent or headless run when the requesting context authored the change. Record
-the actual agent/model/effort. For headless mode, use `scripts/run-agent.sh --expect-clean <agent> rw
-<prompt> <out>` and validate its round with `scripts/validate-review.py --kind security` before
-appending it. Stop if a requested setting cannot be applied or validation fails.
+For a standalone call, accept the `sec` role (`sec=agent[,model[,effort]]` or `sec-agent=`,
+`sec-model=`, `sec-effort=`) and `models=`, resolved with `scripts/resolve-roles.py --roles sec` as
+`references/loop.md` → Arguments says (`references/models.md` for non-default choices); start a fresh
+native subagent or headless run when the requesting context authored the change. Record the actual
+agent/model/effort. For headless mode, use `scripts/run-agent.sh --expect-clean <agent> rw <prompt>
+<out>` and validate its round with `scripts/validate-review.py --kind security` before appending it.
+Stop if a requested setting cannot be applied or validation fails.
 
 For task mode, this must be a fresh context. If this context implemented or fixed the checkpoint, do not review
 or write a verdict: delegate to a fresh subagent/headless session, or ask the human to run `wf sec` in a new

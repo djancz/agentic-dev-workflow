@@ -42,16 +42,19 @@ Set project defaults in the managed `AGENTS.md` block. Per-run arguments overrid
 are `self`, `claude`, `codex`, `gemini`, and `opencode`. `self` means a fresh subagent of the current
 host or a fresh run of its CLI. Agent CLI authentication is the user's responsibility.
 
-| Option | Applies to | Default |
-|---|---|---|
-| `agent=` | `wf test` test author | Test agent, then `self` |
-| `reviewer=` | Spec, roadmap, plan, implementation, security, wave reviews | Reviewer, then `self` |
-| `fix-agent=` | Review-loop fixes | Fix agent, then `self` |
-| `security-reviewer=`, `security-model=`, `security-effort=` | Dedicated security stage in `wf impl loop` | Security role defaults |
-| `model=`, `effort=` | Reviewer, or `wf test` author | Role's configured model/effort, then `default` |
-| `fix-model=`, `fix-effort=` | Fix agent | Fix defaults, then `default` |
-| `models=default|auto` | All unspecified model/effort choices in a loop | Project Models, then `default` |
-| `rounds=` | Review rounds in this run | Project Max review rounds, then 3 |
+| Role | Shorthand | Long form | Block keys | Applies to |
+|---|---|---|---|---|
+| test | `test=a,m,e` | `test-agent=`, `test-model=`, `test-effort=` | `Test agent`, `Test model`, `Test effort` | `wf test` |
+| rev | `rev=a,m,e` | `rev-agent=`, `rev-model=`, `rev-effort=` | `Rev agent`, `Rev model`, `Rev effort` | Spec, roadmap, plan, implementation, wave reviews |
+| sec | `sec=a,m,e` | `sec-agent=`, `sec-model=`, `sec-effort=` | `Sec agent`, `Sec model`, `Sec effort` | `wf sec`, in `wf impl loop` or standalone |
+| fix | `fix=a,m,e` | `fix-agent=`, `fix-model=`, `fix-effort=` | `Fix agent`, `Fix model`, `Fix effort` | Plan, implementation, wave fixes |
+
+In the shorthand `<role>=agent[,model[,effort]]`, an omitted or empty part is `default`: `rev=codex`,
+`rev=codex,gpt-5`, `rev=codex,,high`. Model names may contain `:` or `/`
+(`rev=opencode,ollama/llama3:8b,high`). Use one form per role; `rev=codex rev-effort=high` is an
+error. An unset field comes from the block, then from `models=default|auto` (argument, then `Models`,
+then `default`); an agent falls back to `self`. `rounds=` sets the review rounds in this run (project
+`Max review rounds`, then 3). The stage prints the resolved settings before it starts.
 
 `default` passes no model or effort flag. `auto` chooses only a supported setting and records the
 actual value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your
@@ -61,11 +64,11 @@ execution failure, and stagnation or an unresolved reviewer dispute stops the lo
 Examples:
 
 ```text
-wf test TASK-8 agent=claude model=sonnet
-wf plan loop TASK-8 reviewer=codex effort=xhigh rounds=2
-wf impl loop TASK-8 reviewer=gemini fix-agent=claude fix-model=sonnet
-wf impl loop TASK-8 reviewer=codex security-reviewer=claude security-model=opus
-wf wave integrate WAVE-3 reviewer=opencode model=<provider/model> rounds=1
+wf test TASK-8 test=claude,sonnet
+wf plan loop TASK-8 rev=codex,,xhigh rounds=2
+wf impl loop TASK-8 rev=gemini fix=claude,sonnet
+wf impl loop TASK-8 rev=codex sec=claude,opus
+wf wave integrate WAVE-3 rev-agent=opencode rev-model=<provider/model> rounds=1
 ```
 
 ## Answering a gate

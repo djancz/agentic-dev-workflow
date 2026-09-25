@@ -36,11 +36,10 @@ If checks fail, fix the cause and repeat the affected checks before review. Sync
 
 Obtain a fresh independent review of the combined wave diff against the PRD/spec/task criteria. Include
 cross-task interactions and security. Follow `references/wave-review.md` for prompting, validation,
-timeouts, and stop conditions. The bounded review settings are:
-default 3 rounds, configurable via `reviewer=`, `model=`, `effort=`, `fix-agent=`, `fix-model=`,
-`fix-effort=`, `rounds=`, and `models=`. Write `WAVE-<N>-review.md`; never self-approve a failed or
-missing review. When approved, show Gate 2: combined behavior, commits, checks, gaps, and open findings.
-Record only explicit human approval. Next: `wf finalize WAVE-<N>`.
+timeouts, and stop conditions. The bounded review takes `rev=`, `fix=` (or their long forms), `models=`,
+and `rounds=` (default 3), as `references/loop.md` → Arguments says. Write `WAVE-<N>-review.md`; never
+self-approve a failed or missing review. When approved, show Gate 2: combined behavior, commits, checks,
+gaps, and open findings. Record only explicit human approval. Next: `wf finalize WAVE-<N>`.
 
 ## Fix (`wf wave fix WAVE-N`, run by the review loop)
 

@@ -28,9 +28,8 @@ and `git status --porcelain` is empty.
 | FIX | `wf impl fix` | `wf-impl-fix` | `impl-fix` | `rw` |
 
 - **Security review.** In round 1 with `Sensitivity: high`, run `wf sec` after `wf impl rev`. In later
-  rounds, run it again only while its verdict is `Changes requested`. Select its agent, model, and
-  effort from `security-reviewer=`, `security-model=`, `security-effort=` or the security defaults in
-  `AGENTS.md`. Step 3 of the loop needs every
+  rounds, run it again only while its verdict is `Changes requested`. It uses the `sec` role
+  (`references/loop.md` → Arguments). Step 3 of the loop needs every
   verdict that exists to be `Approved*`.
 - Validate a delegated review with `--kind impl` or `--kind security`, and
   `--reviewed "commit <Checkpoint sha>"`.

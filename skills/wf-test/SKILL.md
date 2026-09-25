@@ -6,9 +6,10 @@ description: >-
 
 # wf-test
 
-Read `references/project.md`, `references/engineering.md`, and the approved task plan. Accept
-`agent=self|claude|codex|gemini|opencode`, `model=`, and `effort=`; resolve them from project defaults
-when omitted. Start a fresh native subagent or headless CLI run. Record the actual selection. If a
+Read `references/project.md`, `references/engineering.md`, and the approved task plan. Accept the
+`test` role (`test=agent[,model[,effort]]` or `test-agent=`, `test-model=`, `test-effort=`) and
+`models=`, resolved with `scripts/resolve-roles.py --roles test` as `references/loop.md` → Arguments
+says. Start a fresh native subagent or headless CLI run. Record the actual selection. If a
 requested setting cannot be applied, stop and report it.
 Read `references/models.md` for non-default model or effort choices.
 For a headless run, write a short prompt under the task's `runs/` directory and call

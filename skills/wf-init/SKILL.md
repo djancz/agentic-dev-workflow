@@ -78,18 +78,18 @@ project directory: `.claude/skills/`, `.agents/skills/`, `.gemini/skills/`, or `
 `wf-security-review`.
 
 - Base branch: main
-- Test agent: self <!-- self | claude | codex | gemini | opencode -->
-- Reviewer: self <!-- self | claude | codex | gemini | opencode -->
-- Security reviewer: self
-- Fix agent: self
 - Max review rounds: 3
 - Models: default <!-- default | auto -->
+- Test agent: self <!-- self | claude | codex | gemini | opencode -->
 - Test model: default
 - Test effort: default
-- Review model: default
-- Review effort: default
-- Security model: default
-- Security effort: default
+- Rev agent: self
+- Rev model: default
+- Rev effort: default
+- Sec agent: self
+- Sec model: default
+- Sec effort: default
+- Fix agent: self
 - Fix model: default
 - Fix effort: default
 - Dev server: none <!-- `<command>` at <url>, for browser checks; the command stays in the foreground -->
@@ -113,7 +113,10 @@ Project rules (may only tighten the workflow):
 ```
 
 When refreshing an existing block, keep the human's edits: all agent, model, effort, round settings,
-the dev server and the project rules. Change only the rows you re-verified, and add missing rows. Replace
-a `planned` row with its command once the toolchain for it exists and the command runs.
+the dev server and the project rules. Rename old keys and keep their values: `Reviewer` → `Rev agent`,
+`Review model` → `Rev model`, `Review effort` → `Rev effort`, `Security reviewer` → `Sec agent`,
+`Security model` → `Sec model`, `Security effort` → `Sec effort`. Change only the rows you re-verified,
+and add missing rows. Replace a `planned` row with its command once the toolchain for it exists and the
+command runs.
 
 End with `— wf-init · <timestamp>`.

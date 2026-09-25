@@ -96,6 +96,18 @@ class SkillStructure(unittest.TestCase):
                     with self.subTest(doc=str(doc.relative_to(REPO)), line=line.strip()):
                         self.assertIn('echo "exit $?"; } | tail', line)
 
+    def test_docs_use_only_role_options(self):
+        removed = re.compile(r'(?<![\w-])(reviewer|security-reviewer|security-model|security-effort'
+                             r'|agent|model|effort)=')
+        for doc in (REPO / 'README.md', REPO / 'AGENTS.md', *SHARED.glob('*.md'), *(REPO / 'docs').glob('*.md'),
+                    *SKILLS.glob('*/SKILL.md'), *SKILLS.glob('*/templates/*.md')):
+            with self.subTest(doc=str(doc.relative_to(REPO))):
+                self.assertIsNone(removed.search(doc.read_text()))
+        block = (SKILLS / 'wf-init' / 'SKILL.md').read_text().split('<!-- wf:begin', 1)[1]
+        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix) (?:agent|model|effort)):', block, flags=re.MULTILINE)
+        self.assertEqual(sorted(keys), sorted(f'{role} {field}' for role in ('Test', 'Rev', 'Sec', 'Fix')
+                                              for field in ('agent', 'model', 'effort')))
+
     def test_review_and_test_contexts_are_separate(self):
         self.assertIn('fresh context', (SKILLS / 'wf-test' / 'SKILL.md').read_text())
         for name in ('wf-plan-review', 'wf-impl-review', 'wf-security-review'):
@@ -110,8 +122,9 @@ class SkillStructure(unittest.TestCase):
                         'wf test', 'wf wave integrate', 'wf finalize', 'wf next', 'wf wave done'):
             self.assertIn(command, readme)
             self.assertIn(command, guide)
-        self.assertIn('reviewer=', readme)
-        self.assertIn('effort=', readme)
+        for option in ('rev=', 'fix=', 'sec=', 'test=', 'rev-agent=', 'rev-effort='):
+            self.assertIn(option, readme)
+            self.assertIn(option, guide)
         self.assertIn('rounds=', readme)
 
 
@@ -883,6 +896,13 @@ class ResolveRoles(unittest.TestCase):
         # An existing block is still validated.
         r = self.resolve('--before-init', block=self.BLOCK.replace('- Rev agent:', '- Reviewer:'))
         self.assertEqual(r.returncode, 2)
+
+    def test_reads_the_block_that_wf_init_writes(self):
+        template = (SKILLS / 'wf-init' / 'SKILL.md').read_text()
+        block = re.search(r'<!-- wf:begin.*?<!-- wf:end -->', template, flags=re.DOTALL)[0]
+        self.assertEqual(self.lines(block=block, roles='test,rev,sec,fix'),
+                         [f'{role}: agent=self model=default effort=default'
+                          for role in ('test', 'rev', 'sec', 'fix')] + ['rounds: 3'])
 
     def test_skills_that_resolve_roles_link_the_script(self):
         for name in ('wf-plan-loop', 'wf-impl-loop', 'wf-wave', 'wf-spec', 'wf-roadmap', 'wf-test',

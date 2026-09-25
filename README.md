@@ -113,21 +113,24 @@ runbook when your project deploys to a server. If the PR gets comments or CI fai
 
 ## Choices you control
 
-Project defaults live in the managed workflow block of `AGENTS.md`: test agent, reviewer, security
-reviewer, fix agent, model and effort for each role, and maximum review rounds. They start as `self`,
-`default` model/effort, and **3 rounds**. Override them for one run:
+Four roles each have an agent, a model and an effort: `test` writes tests, `rev` reviews, `sec` runs
+the security review, and `fix` fixes review findings. Project defaults live in the managed workflow block
+of `AGENTS.md` (`Rev agent`, `Rev model`, `Rev effort`, …) with the maximum review rounds. They start as
+`self`, `default` model/effort, and **3 rounds**. Override a role for one run with
+`<role>=agent,model,effort` (leave a part out or empty for `default`) or with `<role>-agent=`,
+`<role>-model=`, `<role>-effort=`:
 
 ```text
-wf test TASK-7 agent=gemini model=<model>
-wf plan loop TASK-7 reviewer=codex model=<model> effort=high rounds=2
-wf impl loop TASK-7 reviewer=opencode model=<provider/model> rounds=3
-wf wave integrate WAVE-2 reviewer=claude model=<model> effort=high fix-agent=codex
+wf test TASK-7 test=gemini,<model>
+wf plan loop TASK-7 rev=codex,<model>,high rounds=2
+wf impl loop TASK-7 rev=opencode,<provider/model> sec=claude,,xhigh rounds=3
+wf wave integrate WAVE-2 rev-agent=claude rev-effort=high fix=codex
 ```
 
 Use `models=auto` to let the agent choose supported settings for a stage. The report records what
 actually ran. If a selected CLI cannot apply your model or effort, the stage stops and explains why;
 it does not silently substitute another setting. Gemini CLI has no effort flag; OpenCode uses its
-provider-specific `--variant` option for `effort=`.
+provider-specific `--variant` option for the effort.
 A review round cap is a positive number up to 10. To run more after escalation, you must request another
 finite run. See [commands and gates](docs/skills.md).
 

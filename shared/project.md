@@ -66,7 +66,7 @@ can approve it.
 ## Spec and roadmap review
 
 `wf spec` and `wf roadmap` get a bounded independent review before their human gate; the PRD is judged
-by the human alone. Resolve `reviewer`, `model`, `effort` and `rounds` as `loop.md` → Arguments says.
+by the human alone. Resolve the `rev` role and `rounds` as `loop.md` → Arguments says.
 Each round runs in a fresh context as `loop.md` → How a stage runs describes, in mode `ro`, with the
 prompt `Run the wf stage "wf <spec|roadmap> rev"` and its delegated output block, saved under
 `development/project/runs/<spec|roadmap>-rev-r<n>.prompt.md`. Validate the output with
@@ -78,17 +78,14 @@ the gate shows the verdict and any open finding.
 
 ## Agent selection
 
-The managed `AGENTS.md` block holds defaults: `Test agent`, `Reviewer`, `Security reviewer`, `Fix agent`,
-`Max review rounds`, and model and effort defaults for each role. Per-run arguments override defaults.
-Agent values: `self` (a fresh native subagent or headless run of the current CLI), `claude`, `codex`,
-`gemini`, `opencode`. `model=default` and `effort=default` pass no setting. `models=auto` may select a
-supported model and effort from available CLIs, but must record what actually ran. A requested setting
-that the selected CLI cannot apply stops the stage with an explanation; it is never claimed as applied.
-
-Review loops accept `reviewer=`, `model=`, `effort=`, `fix-agent=`, `fix-model=`, `fix-effort=`, and
-`rounds=`. The implementation loop also accepts `security-reviewer=`, `security-model=`, and
-`security-effort=`; otherwise it uses the project's security role defaults. `wf test` and standalone
-`wf sec` accept `agent=`, `model=`, and `effort=` for their own roles. The default round cap is 3.
+The roles `test`, `rev`, `sec` and `fix` each have an agent, a model and an effort. The managed
+`AGENTS.md` block holds their defaults (`Test agent`, `Rev model`, `Sec effort`, `Fix agent`, …), plus
+`Models` and `Max review rounds`; per-run arguments override them. `loop.md` → Arguments defines the
+syntax and precedence, and `scripts/resolve-roles.py` applies it. Agent values: `self` (a fresh native
+subagent or headless run of the current CLI), `claude`, `codex`, `gemini`, `opencode`. `default` passes
+no setting. `models=auto` may select a supported model and effort from available CLIs, but must record
+what actually ran. A requested setting that the selected CLI cannot apply stops the stage with an
+explanation; it is never claimed as applied. The default round cap is 3.
 Every run has a finite, positive cap and a timeout; a human may
 explicitly request another bounded run after escalation. No stage extends its own cap.
 

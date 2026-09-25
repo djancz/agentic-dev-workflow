@@ -25,7 +25,7 @@ The review runner is `shared/scripts/run-agent.sh`. It uses the selected CLI, a 
 validation. For a review it checks that neither the working tree nor the private `development/` records
 (outside `runs/`) changed. An unsupported model or
 effort setting stops the run rather than silently changing settings. Gemini CLI has no effort option;
-OpenCode passes `effort=` as its provider-specific `--variant` value.
+OpenCode passes a role's effort as its provider-specific `--variant` value.
 For a headless Gemini write stage, set `WF_GEMINI_SANDBOX=1`; otherwise use an interactive fresh
 session. The runner requires the sandbox before using Gemini's automatic write mode.
 
