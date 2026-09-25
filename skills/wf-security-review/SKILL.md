@@ -66,7 +66,8 @@ scanners if dependencies or security-relevant code changed.
 - Do not modify code, and do not print secret values. Redact them in evidence.
 - Confirm the tree is unchanged.
 
-**Delegated output mode.** If your prompt contains `OUTPUT MODE (delegated, read-only)`, write no files.
+**Delegated output mode.** If your prompt contains `OUTPUT MODE (delegated, read-only)`, write no files
+and leave every file as it started.
 Your final message must be exactly the new round section, starting at `## Round <n>`.
 
 ## Report

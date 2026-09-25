@@ -57,10 +57,11 @@ the path you wrote. You run as <agent> / <model> / <effort>, <subagent|headless>
 
 ```
 --- OUTPUT MODE (delegated, read-only) ---
-Do not create or modify any file. Your final message must be exactly the new round section for the review
-file, starting with "## Round <n>" and following the template. Nothing before or after it, no code fence.
-The working tree must end exactly as it started: send check outputs such as build artifacts outside the
-repository. A check your sandbox cannot run (no network, for example) is NOT RUN with the reason, not FAIL.
+Do not write the review file or any other artifact. Your final message must be exactly the new round
+section for the review file, starting with "## Round <n>" and following the template. Nothing before or
+after it, no code fence. Every file must end exactly as it started: restore a temporary change made to
+test a check, and send check outputs such as build artifacts outside the repository.
+A check your sandbox cannot run (no network, for example) is NOT RUN with the reason, not FAIL.
 ```
 
 Validate the output before trusting it:

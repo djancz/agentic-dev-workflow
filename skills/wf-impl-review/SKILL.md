@@ -83,7 +83,8 @@ Blockers, or when the delta introduced them.
 - Do not modify any code.
 - Confirm that `git status --porcelain` matches the preflight exactly.
 
-**Delegated output mode.** If your prompt contains `OUTPUT MODE (delegated, read-only)`, write no files.
+**Delegated output mode.** If your prompt contains `OUTPUT MODE (delegated, read-only)`, write no files
+and leave every file as it started.
 Your final message must be exactly the new round section, starting at `## Round <n>`.
 
 ## Report
