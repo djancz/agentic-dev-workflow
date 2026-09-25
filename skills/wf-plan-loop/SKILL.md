@@ -4,7 +4,7 @@ description: >-
   Drive a wf task's plan review ⇄ plan fix loop automatically, running every review and every fix as a
   separate agent in a fresh context, until the review approves the plan, the round cap is reached or the
   loop stagnates; then present Human Gate 1 and stop. Supports a cross-model reviewer (claude, codex,
-  gemini). Use after wf plan, while the plan is a Draft. Triggers: "wf plan loop", "plan loop",
+  gemini, opencode). Use after wf plan, while the plan is a Draft. Triggers: "wf plan loop", "plan loop",
   "smyčka review plánu", "dotoč review plánu", "spusť review smyčku" (for the plan).
 ---
 
