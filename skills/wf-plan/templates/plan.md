@@ -17,6 +17,11 @@
 
 <2–5 facts from the code that shape the approach, each with `path:line`. Existing code to reuse.>
 
+## Reproduction and cause
+
+<Only for Type: fix. The command or steps, observed vs expected result, and the cause at `path:line`.
+Delete this section for other types.>
+
 ## Approach
 
 <The design in a few sentences. Where there was a real choice, name the rejected alternative in one line

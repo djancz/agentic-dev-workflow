@@ -15,6 +15,8 @@ feature boundaries, entry points, data ownership, public interfaces and contract
 tasks, security boundaries, quality checks, deployment assumptions if relevant, and test strategy.
 Choose a stack only where the human has not already chosen one; explain material tradeoffs. Use diagrams
 only when they clarify a boundary. Keep later details flexible until the related milestone is planned.
+Name the tracked document (for example `docs/architecture.md`) that will carry the decisions others need
+(`references/project.md` → Private state).
 
 Before the gate, run the review loop in `references/project.md` → Spec and roadmap review (read
 `references/loop.md` for running a fresh stage, and `references/models.md` for non-default model or

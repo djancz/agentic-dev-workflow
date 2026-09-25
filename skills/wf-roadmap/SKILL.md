@@ -12,7 +12,8 @@ existing-project task, use `wf task` instead.
 
 Inspect the approved requirements, contracts, existing code where relevant, and previous milestone
 learnings. Write `development/project/roadmap.md`. Make each milestone a working state with checkable
-exit criteria. The first milestone establishes project layout and quality checks; the next delivers a
+exit criteria. The first milestone establishes project layout, quality checks, and the tracked architecture document
+the spec names; the next delivers a
 thin usable path. Keep distant milestones coarse. Split a milestone into tasks, each one concern with
 acceptance criteria, dependencies, and a size estimate. Tasks in one wave all start from its base
 commit: group them only when none needs another's code and they share no mutable files. A dependent

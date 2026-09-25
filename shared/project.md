@@ -27,7 +27,9 @@ This file governs project planning and wave execution. The task review rules rem
 `install.py` links `development/` in each worktree to `wf-state/` in `git rev-parse --git-common-dir`.
 The link is ignored locally. Never add the state directory or its contents to a commit. The state is
 shared across worktrees of this clone, but not across other clones. PR text must include enough context
-for a teammate to understand the delivered behavior, tests, and accepted findings.
+for a teammate to understand the delivered behavior, tests, and accepted findings. Decisions others need
+later (architecture, public contracts, significant trade-offs) go into a tracked English document that
+the spec names, through each task's *Docs to update*; never copy the PRD, private input, or logs there.
 
 Project records: `development/project/prd.md`, `spec.md`, and `roadmap.md`.
 Wave records: `development/waves/WAVE-<N>.md` and `WAVE-<N>-review.md`.

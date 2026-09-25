@@ -39,6 +39,8 @@ names the plan's current `Revision`, stop: that revision has already been review
 - **Grounded?** Open the files the plan names. Do the functions and signatures exist as the plan assumes?
   Is there existing code the plan should reuse? Check with a targeted search. Verify claims cheaply, with
   a file read or a one-line command. Do not prototype the implementation.
+- **Cause, not symptom.** For a bug fix, is the reproduction real and does the approach remove the
+  cause it names?
 - **Sound?** Check the error paths, empty input, concurrency, retries and partial failure. Is anything
   irreversible (migrations, deletions)? Does every step leave the repository working?
 - **Tests.** Every behaviour has a test at the right level, and the acceptance criteria are checkable.

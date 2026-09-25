@@ -43,6 +43,8 @@ Role: **author**. Paths are relative to this skill's directory. Read:
      and, under *Open decisions*, a proposed split. Then stop and ask the human; `wf task split` performs
      it. Size alone never leads to a split.
 3. **Write** `TASK-<N>-plan.md` from the template:
+   - **Bug fix: reproduce first.** For `Type: fix`, reproduce the bug and find its cause before the
+     approach; fill *Reproduction and cause*. If it does not reproduce, say so and ask.
    - **Decide; do not list options.** Where there is a real choice, pick one, name the rejected
      alternative in one line, and say why.
    - **Be concrete.** Name files, functions and data structures. "Add validation" is not a step.
