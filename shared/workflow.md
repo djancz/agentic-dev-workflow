@@ -23,7 +23,8 @@ the plan is approved.
 
 - Ticket: `Status: Open | In progress | Ready to integrate | Done | Dropped`, `Wave`, `Branch`, `Commit`.
 - Plan: `Status: Draft | Approved`, `Revision`, `Approved`, `Size`, `Sensitivity`.
-- Review: `Round`, `Reviewed`, `Verdict: Approved | Changes requested`, `Must-fix open`.
+- Review: `Latest verdict: Approved | Approved with comments | Changes requested`, `Round`, `Must-fix
+  open`, `Reviewed`. A wave review uses only `Approved | Changes requested`.
 - Summary: `Status: In progress | Review requested | Ready to integrate`, `Branch`, `Base`, `Checkpoint`.
 - Every review names the exact plan revision or commit it covers. A changed target invalidates its
   approval. A test report names the spec/plan revision and the agent that authored tests.
