@@ -128,5 +128,5 @@ or timeouts. It lists unresolved findings for your decision. It never approves i
 - [Troubleshooting](docs/troubleshooting.md)
 - [Engineering principles](shared/engineering.md)
 
-The workflow is MIT licensed. Its design draws on the local personal workflow and concepts from
+The workflow is MIT licensed. Its design draws on concepts from
 [Agentic Development Workflow](https://github.com/wilsonkichoi/agentic_development_workflow).
