@@ -303,6 +303,7 @@ case ${FAKE_MODE:-ok} in
   fail) echo boom >&2; exit 1 ;;
   empty) exit 0 ;;
   modify) echo changed >> tracked.txt ;;
+  record) echo 'Status: Approved' >> development/tasks/TASK-1/TASK-1.md ;;
   fence) body=$(printf '```markdown\n%s\n```' "$body") ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
@@ -486,6 +487,18 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(output))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('- Verdict: Approved', output.read_text())
+
+    def test_review_that_edits_private_records_fails(self):
+        state = self.repo / '.git/wf-state'
+        (state / 'tasks/TASK-1/runs').mkdir(parents=True)
+        (state / 'tasks/TASK-1/TASK-1.md').write_text('Status: Draft\n')
+        (self.repo / 'development').symlink_to(state, target_is_directory=True)
+        (self.repo / '.git/info/exclude').write_text('/development\n')
+        output = self.repo / 'development/tasks/TASK-1/runs/impl-rev-r1.out.md'
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output))
+        self.assertEqual(r.returncode, 0, 'writing the run output is allowed: ' + r.stderr)
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output), mode='record')
+        self.assertEqual(r.returncode, 3, r.stderr)
 
     def test_unignored_output_through_a_symlinked_path_is_rejected(self):
         alias = self.tmp / 'repo-alias'

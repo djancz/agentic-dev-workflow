@@ -22,7 +22,8 @@ It never replaces a file or link it does not own. It links `development/` to pri
 state, and stops if an existing directory would be overwritten.
 
 The review runner is `shared/scripts/run-agent.sh`. It uses the selected CLI, a timeout, and output
-validation. For read-only review it checks that the working tree did not change. An unsupported model or
+validation. For a review it checks that neither the working tree nor the private `development/` records
+(outside `runs/`) changed. An unsupported model or
 effort setting stops the run rather than silently changing settings. Gemini CLI has no effort option;
 OpenCode passes `effort=` as its provider-specific `--variant` value.
 For a headless Gemini write stage, set `WF_GEMINI_SANDBOX=1`; otherwise use an interactive fresh

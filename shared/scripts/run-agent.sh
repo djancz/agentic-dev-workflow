@@ -5,9 +5,10 @@
 #        run-agent.sh --wait <out-file> [seconds]
 #
 #   ro   read-only: the agent may read files and inspect git; it must not modify anything.
-#        The working tree is always checked afterwards.
+#        The working tree and the private records in development/ (except runs/) are always
+#        checked afterwards.
 #   rw   the agent may edit files and run commands in the repository.
-#   --expect-clean  with rw: fail with exit 3 if the working tree changed — for reviews that must
+#   --expect-clean  with rw: fail with exit 3 if the tree or the records changed — for reviews that must
 #        run the project's checks but must not touch the code.
 #
 # The agent's final message is written to <out-file>; its progress and errors go to <out-file>.log;
@@ -25,12 +26,12 @@
 #   WF_GEMINI_SANDBOX=1        run gemini with --sandbox; required for headless rw yolo mode
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #
-# Exit codes: 0 ok, 2 usage, 3 working tree changed, 4 required executable not found,
+# Exit codes: 0 ok, 2 usage, 3 tree or records changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output
 set -eu
 
 usage() {
-    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -165,11 +166,24 @@ fi
 
 command -v "$agent" >/dev/null 2>&1 || die 4 "$agent CLI not found on PATH"
 
+# The private records in development/ are gitignored, so git status does not see them. Hash them too,
+# except runs/, which holds the prompts and outputs, and this run's own output files.
+records() {
+    [ -d development ] || return 0
+    paths=$(find -L development -path '*/runs' -prune -o -type f -print | LC_ALL=C sort |
+        grep -vxF -e "${out#"$root"/}" -e "${log#"$root"/}" -e "${out#"$root"/}.tmp" \
+            -e "${out#"$root"/}.exit" || true)
+    [ -n "$paths" ] || return 0
+    printf '%s\n' "$paths"
+    printf '%s\n' "$paths" | git hash-object --stdin-paths
+}
+
 fingerprint() {
     {
         git rev-parse HEAD 2>/dev/null || true
         git status --porcelain=v1 --untracked-files=all
         git diff HEAD --binary 2>/dev/null || true
+        records
     } | git hash-object --stdin
 }
 
