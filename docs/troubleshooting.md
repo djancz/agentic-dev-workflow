@@ -25,6 +25,17 @@ The round cap or lack-of-progress rule stopped it. Read the finding IDs and seve
 Request a revised approach, explicitly ask for another finite run, or explicitly accept named findings.
 Accepted findings appear in the wave PR. A missing check stays `NOT RUN` with its reason.
 
+## The PR got comments or CI failed
+
+Type `wf finalize WAVE-N`. The agent records the actionable comments and failing checks as findings,
+fixes them through the wave review, shows Gate 2 again, and asks before pushing. It does not reply to
+reviewers unless you ask.
+
+## A merged wave must be undone
+
+Create a normal task: `wf task revert WAVE-N <reason>`. A revert is a change like any other and goes
+through plan, review, and a wave PR. Never force-push the base branch.
+
 ## Parallel tasks conflict
 
 Stop integration at the conflict. Compare both task plans and frozen contracts, resolve the code on the

@@ -1,7 +1,9 @@
 # Commands and approval gates
 
-Type these as messages to an agent that has the skills installed. `wf status` is read-only and shows
-where a project or task stands. Give an ID when more than one task or wave could match.
+Type these as messages to an agent that has the skills installed. Day to day you need only `wf task` or
+`wf prd`, `wf next`, your gate answers, and `wf wave done` (see the README). The table lists every stage
+for manual control. `wf status` is read-only and shows where a project or task stands. Give an ID when
+more than one task or wave could match.
 
 | Command | Purpose | Next review point |
 |---|---|---|
@@ -30,6 +32,9 @@ where a project or task stands. Give an ID when more than one task or wave could
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
 | `wf status [ID]` | Read status and next action | None; read-only |
 | `wf next [ID]` | Run the next stages until a human gate, question, or failure | The gate it stops at |
+
+Review loops also run internal stages you do not type: `wf wave fix` (fixes after a wave review),
+`wf spec rev` and `wf roadmap rev` (fresh reviews of the spec and roadmap).
 
 ## Agent and model options
 
