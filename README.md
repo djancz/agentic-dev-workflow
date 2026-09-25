@@ -39,10 +39,11 @@ Related code and tests are committed together; a wave may have several commits.
 ## Install once per project
 
 Prerequisites: Git, Python 3, and at least one supported agent CLI. Clone this repository outside the
-project and run:
+project and run its installer:
 
 ```bash
-python3 /path/to/agentic-dev-wf/install.py --project /path/to/project --agents claude,codex,gemini,opencode
+git clone https://github.com/djancz/agentic-dev-workflow.git
+python3 agentic-dev-workflow/install.py --project /path/to/project --agents claude,codex,gemini,opencode
 ```
 
 Choose only the agents you use. The installer links each `wf-*` skill into that agent's project skill

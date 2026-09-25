@@ -5,7 +5,7 @@ instructions live in `AGENTS.md`, with `CLAUDE.md` and `GEMINI.md` importing it 
 used. Install from a separate clone of this repository:
 
 ```bash
-python3 /path/to/agentic-dev-wf/install.py --project /path/to/project --agents claude,codex,gemini,opencode
+python3 /path/to/agentic-dev-workflow/install.py --project /path/to/project --agents claude,codex,gemini,opencode
 ```
 
 | Agent | Project skill links | Headless review support |
