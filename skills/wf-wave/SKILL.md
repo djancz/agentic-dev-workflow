@@ -26,8 +26,9 @@ existing branches. Next: `wf new-worktree TASK-<N>` for each ready task.
 
 ## Integrate
 
-Follow `references/project.md` → Waves. Ensure every task has tests authored in a fresh context,
-implementation checks, and an independent approved task review. Squash-merge task branches one at a
+Follow `references/project.md` → Waves. Ensure every task has implementation checks, an independent
+approved task review, and tests authored in a fresh context unless its approved plan says
+`Tests: N/A`. Squash-merge task branches one at a
 time into the wave branch, grouping each task's related code and tests. Record task commit IDs and any
 conflict resolution. Run the full trusted check table; report PASS, FAIL, NOT RUN, or N/A accurately.
 If checks fail, fix the cause and repeat the affected checks before review. Sync with the base
