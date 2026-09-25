@@ -6,8 +6,8 @@ where a project or task stands. Give an ID when more than one task or wave could
 | Command | Purpose | Next review point |
 |---|---|---|
 | `wf prd` | Define product users, behavior, and success | Human approves PRD |
-| `wf spec` | Design boundaries and public contracts | Human approves spec |
-| `wf roadmap` | Plan milestones, tasks, and waves | Human approves roadmap |
+| `wf spec` | Design boundaries and public contracts; bounded fresh review | Human approves spec |
+| `wf roadmap` | Plan milestones, tasks, and waves; bounded fresh review | Human approves roadmap |
 | `wf init` | Detect and configure project checks | Review managed project instructions |
 | `wf milestone M1` | Create milestone tasks; `done` verifies exit criteria | Task plans |
 | `wf task <goal>` | Create a standalone task or revise task scope | Task plan |
@@ -40,7 +40,7 @@ host or a fresh run of its CLI. Agent CLI authentication is the user's responsib
 | Option | Applies to | Default |
 |---|---|---|
 | `agent=` | `wf test` test author | Test agent, then `self` |
-| `reviewer=` | Plan, implementation, security, wave reviews | Reviewer, then `self` |
+| `reviewer=` | Spec, roadmap, plan, implementation, security, wave reviews | Reviewer, then `self` |
 | `fix-agent=` | Review-loop fixes | Fix agent, then `self` |
 | `security-reviewer=`, `security-model=`, `security-effort=` | Dedicated security stage in `wf impl loop` | Security role defaults |
 | `model=`, `effort=` | Reviewer, or `wf test` author | Role's configured model/effort, then `default` |

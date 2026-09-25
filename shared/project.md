@@ -61,6 +61,19 @@ branch moved, merge it into the wave before review and before push (`wave-review
 Then show Gate 2 with the combined diff, checks, open findings, and proposed commits. Only the human
 can approve it.
 
+## Spec and roadmap review
+
+`wf spec` and `wf roadmap` get a bounded independent review before their human gate; the PRD is judged
+by the human alone. Resolve `reviewer`, `model`, `effort` and `rounds` as `loop.md` → Arguments says.
+Each round runs in a fresh context as `loop.md` → How a stage runs describes, in mode `ro`, with the
+prompt `Run the wf stage "wf <spec|roadmap> rev"` and its delegated output block, saved under
+`development/project/runs/<spec|roadmap>-rev-r<n>.prompt.md`. Validate the output with
+`scripts/validate-review.py --kind doc --round <n> --reviewed "<spec|roadmap> revision <r>"`, then append
+it to `development/project/<spec|roadmap>-review.md` (header as `review-rubric.md` → Review file
+structure). The author fixes the must-fix findings in its own context: a new `Revision`, and the
+rubric's resolution table under the document's decision history. Stop on the rubric's stop conditions;
+the gate shows the verdict and any open finding.
+
 ## Agent selection
 
 The managed `AGENTS.md` block holds defaults: `Test agent`, `Reviewer`, `Security reviewer`, `Fix agent`,

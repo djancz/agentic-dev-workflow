@@ -28,7 +28,8 @@ Calibration:
 
 ## Finding format
 
-IDs are `<P|I|S|H><round>-<n>`: P for plan, I for implementation, S for security, H for human. For
+IDs are `<P|I|S|D|H><round>-<n>`: P for plan, I for implementation, S for security, D for the spec or
+roadmap, H for human. For
 example, `P1-2` is plan review round 1, finding 2. An ID never changes.
 
 ```markdown

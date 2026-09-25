@@ -558,6 +558,23 @@ None.
         r = self.run_validator(text, '--kind', 'impl', '--round', '2', '--reviewed', 'commit abc123')
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_doc_review_uses_d_findings(self):
+        text = '''## Round 1 — now
+- Verdict: Changes requested
+- Must-fix open: 1
+- Reviewed: roadmap revision 2
+
+### [D1-1] Dependent tasks share a wave
+- Severity: Major
+- Evidence: TASK-4 depends on TASK-3 in WAVE-2
+'''
+        args = ('--kind', 'doc', '--round', '1', '--reviewed', 'roadmap revision 2')
+        r = self.run_validator(text, *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_validator(text.replace('[D1-1]', '[P1-1]'), *args)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('D1-<n>', r.stderr)
+
     def test_accepts_finding_and_carried_must_fix(self):
         text = '''## Round 3 — now
 - Verdict: Changes requested

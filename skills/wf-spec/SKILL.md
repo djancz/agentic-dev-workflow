@@ -16,11 +16,16 @@ tasks, security boundaries, quality checks, deployment assumptions if relevant, 
 Choose a stack only where the human has not already chosen one; explain material tradeoffs. Use diagrams
 only when they clarify a boundary. Keep later details flexible until the related milestone is planned.
 
-Review the spec in a fresh context for feasibility, PRD coverage, security, and avoidable complexity.
-Accept `reviewer=`, `model=`, and `effort=` overrides from the project defaults. Use a native subagent
-when it supports the selected settings, otherwise a headless run with `scripts/run-agent.sh`. If a
-setting is unsupported or the review fails, stop without an approval verdict.
-Read `references/models.md` for non-default model or effort choices.
-Record findings and revisions in the spec. Show the human the decisions, contracts, risks, and review
-result. Explicit approval records their words and date; feedback returns it to Draft. Next: `wf roadmap`.
-Do not scaffold code.
+Before the gate, run the review loop in `references/project.md` → Spec and roadmap review (read
+`references/loop.md` for running a fresh stage, and `references/models.md` for non-default model or
+effort choices). If a setting is unsupported or a review fails, stop without an approval verdict.
+Show the human the decisions, contracts, risks, and review result. Explicit approval records their
+words and date; feedback returns it to Draft. Next: `wf roadmap`. Do not scaffold code.
+
+## Review (`wf spec rev`, run by the review loop)
+
+Work only from the PRD, the spec, and the repository, following `references/review-rubric.md` with
+`D<round>-<n>` finding IDs. Round 1 checks PRD coverage, feasibility, security boundaries, contracts
+precise enough for independent tasks, and avoidable complexity (`references/engineering.md`). Later
+rounds are delta reviews of the latest revision. Do not edit the spec. In delegated output mode, write
+nothing and return only the round.

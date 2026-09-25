@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 VERDICTS = {'Approved', 'Approved with comments', 'Changes requested'}
-PREFIX = {'plan': 'P', 'impl': 'I', 'security': 'S'}
+PREFIX = {'plan': 'P', 'impl': 'I', 'security': 'S', 'doc': 'D'}
 FENCE = re.compile(r'^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$', flags=re.MULTILINE | re.DOTALL)
 SHA = re.compile(r'commit ([0-9a-f]{7,40})')
 
@@ -52,7 +52,7 @@ def validate(text: str, kind: str, round_no: int, reviewed: str) -> tuple[str, i
         raise ValueError(f'Reviewed must be "{reviewed}", got "{actual_target}"')
 
     prefix = PREFIX[kind]
-    headings = re.findall(r'^### \[([PISH])(\d+)-(\d+)\] .+$', text, flags=re.MULTILINE)
+    headings = re.findall(r'^### \[([PISHD])(\d+)-(\d+)\] .+$', text, flags=re.MULTILINE)
     if len(headings) != len(set(headings)):
         raise ValueError('finding IDs must be unique')
     for actual_prefix, actual_round, _ in headings:
@@ -60,12 +60,12 @@ def validate(text: str, kind: str, round_no: int, reviewed: str) -> tuple[str, i
             raise ValueError(f'finding IDs must use {prefix}{round_no}-<n>')
 
     finding_severities = re.findall(
-        r'^### \[[PISH]\d+-\d+\].*?^- Severity: (Blocker|Major|Minor|Nit)(?:\s|$)',
+        r'^### \[[PISHD]\d+-\d+\].*?^- Severity: (Blocker|Major|Minor|Nit)(?:\s|$)',
         text, flags=re.MULTILINE | re.DOTALL,
     )
     if len(finding_severities) != len(headings):
         raise ValueError('every finding heading must have one valid Severity')
-    carried = len(re.findall(r'^\|\s*[PISH]\d+-\d+\s*\|\s*not resolved\b[^|]*\|', text,
+    carried = len(re.findall(r'^\|\s*[PISHD]\d+-\d+\s*\|\s*not resolved\b[^|]*\|', text,
                              flags=re.MULTILINE | re.IGNORECASE))
     calculated = carried + sum(s in {'Blocker', 'Major'} for s in finding_severities)
     if calculated != must_fix:
