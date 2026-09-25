@@ -56,6 +56,8 @@ working tree clean: build outputs go to a temporary or gitignored directory. A c
 stops it, also when it fails, and never tests against a server it did not start: one left running from
 earlier serves old code. Report PASS only for a check you ran in this session and saw pass. A check that
 did not run is never a pass. If every check shows NOT RUN, nothing has been proven, so say that.
+A command that is itself a pipeline (`a | b`) reports only the status of its last program; run it as
+`bash -o pipefail -c '<cmd>'`, or run and judge each part.
 
 For a task branch, read the trusted check configuration with
 `git show "$(git merge-base <base> HEAD):AGENTS.md"`, using the base chosen at branch creation (and later
