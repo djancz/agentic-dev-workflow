@@ -18,6 +18,7 @@ and report where things stand and the exact next action, when:
 - a human gate or approval is next: PRD, spec, roadmap, Gate 1, Gate 2, push and PR, maintenance,
   deployment, or worktree cleanup;
 - a stage asks the human a question, fails, escalates, or reports `NOT RUN` for a required stage;
+- a stage ends without changing the recorded state, so the same command would run again;
 - more than one task or wave could continue and no ID was given: list them and ask;
 - the next stage runs in another worktree and you cannot work there: name the directory and the command.
 
