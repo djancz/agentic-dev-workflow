@@ -25,7 +25,7 @@ report and may run unattended.
 
 ## Preconditions
 
-- `AGENTS.md` has the `wf` block, and `git check-ignore -q development/` succeeds. Otherwise suggest
+- `AGENTS.md` has the `wf` block, and `git check-ignore -q development` succeeds. Otherwise suggest
   `wf init`.
 - You are on the base branch, and `git status --porcelain` is empty. If `origin/<base>` is ahead
   (`git fetch origin <base>`), tell the human; do not pull on your own.

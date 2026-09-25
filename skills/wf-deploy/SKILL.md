@@ -28,7 +28,7 @@ timestamp per deploy (`date -u +%Y%m%d-%H%M%S`), `{backup_dir}` the runbook's Ba
 
 ## Setup (`wf deploy setup [env]`)
 
-1. **Ignored.** `git check-ignore -q development/` must succeed; otherwise stop and suggest `wf init`. The
+1. **Ignored.** `git check-ignore -q development` must succeed; otherwise stop and suggest `wf init`. The
    runbook names hosts and paths and is never committed.
 2. **Discover** how the project runs: compose files, `Dockerfile`, systemd unit files, deploy targets in
    `Makefile` or `justfile`, `scripts/deploy*`, a deploy section in the README, database images and

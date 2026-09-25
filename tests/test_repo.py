@@ -220,6 +220,17 @@ class Installer(unittest.TestCase):
         self.assertEqual(self.run_install('--uninstall'), 0)
         self.assertNotIn('wf-*', (project / '.git/info/exclude').read_text())
 
+    def test_skill_ignore_checks_accept_the_installed_state_link(self):
+        self.assertEqual(self.run_install(), 0)
+        commands = set()
+        for skill in skill_dirs():
+            commands.update(re.findall(r'`(git check-ignore -q [^`]+)`', (skill / 'SKILL.md').read_text()))
+        self.assertTrue(commands, 'skills check that development/ is ignored')
+        for command in sorted(commands):
+            with self.subTest(command=command):
+                r = subprocess.run(command.split(), cwd=self.project, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_non_git_project_is_rejected_without_changes(self):
         project = self.tmp / 'not-git'
         project.mkdir()

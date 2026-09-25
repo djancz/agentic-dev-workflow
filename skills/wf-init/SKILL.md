@@ -44,7 +44,7 @@ Paths are relative to this skill's directory. Read `references/stacks.md`, `refe
    skill paths in this tracked file; never write the installer's local absolute path into it.
 7. **Private state.** Run the workflow installer for this worktree if needed. It links
    `development/` to the common Git directory; never overwrite an existing directory. Add
-   `development/` to `.gitignore` if absent.
+   `/development` to `.gitignore` if absent; without a trailing slash it also matches the link.
 8. **Import files.** If `CLAUDE.md` or `GEMINI.md` is missing, create it with the single line
    `@AGENTS.md`. If it exists but does not mention `AGENTS.md`, append `@AGENTS.md` and say so in the
    report.

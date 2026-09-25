@@ -17,7 +17,7 @@ To list tasks or see where one stands, use `wf status` instead.
 
 ## New task (default)
 
-1. **Check the setup.** Run `git check-ignore -q development/`. If `development/` is not ignored, stop and
+1. **Check the setup.** Run `git check-ignore -q development`. If `development/` is not ignored, stop and
    suggest `wf init`, because task files must never be committed.
 2. **Number it.** N = the highest `TASK-<n>` under `development/tasks/` + 1, or 1 if there are none.
 3. **Write it.** Create `development/tasks/TASK-<N>-<slug>/TASK-<N>.md` from `templates/task.md`, filled
