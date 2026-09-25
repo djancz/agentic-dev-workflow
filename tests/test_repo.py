@@ -27,6 +27,7 @@ SHARED = REPO / 'shared'
 RUN_AGENT = SHARED / 'scripts' / 'run-agent.sh'
 VALIDATE_REVIEW = SHARED / 'scripts' / 'validate-review.py'
 NEW_ID = SHARED / 'scripts' / 'new-id.py'
+RESOLVE_ROLES = SHARED / 'scripts' / 'resolve-roles.py'
 LOOP = SHARED / 'loop.md'
 LOOP_SKILLS = ('wf-plan-loop', 'wf-impl-loop')
 CORE_DOCS = ('workflow.md', 'conventions.md', 'review-rubric.md', 'security.md')
@@ -771,6 +772,125 @@ class NewId(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(self.new_id(*args).returncode, 2)
         self.assertEqual(list(self.development.iterdir()), [])
+
+
+class ResolveRoles(unittest.TestCase):
+    BLOCK = """# Project
+<!-- wf:begin — managed by wf-init; edit the values, keep the markers -->
+- Test agent: self <!-- self | claude | codex | gemini | opencode -->
+- Rev agent: gemini
+- Rev model: default
+- Rev effort: high
+- Sec agent: claude
+- Fix agent: self
+- Max review rounds: 4
+- Models: default <!-- default | auto -->
+<!-- wf:end -->
+"""
+
+    def resolve(self, *args: str, block: str | None = None, roles: str = 'rev'):
+        command = [sys.executable, str(RESOLVE_ROLES), '--agents-md', '-', '--roles', roles, *args]
+        return subprocess.run(command, input=self.BLOCK if block is None else block,
+                              capture_output=True, text=True)
+
+    def lines(self, *args: str, **kwargs) -> list[str]:
+        r = self.resolve(*args, **kwargs)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.splitlines()
+
+    def test_shorthand_parts_default_when_omitted_or_empty(self):
+        for value, expected in [
+            ('codex', 'agent=codex model=default effort=default'),
+            ('codex,gpt-5', 'agent=codex model=gpt-5 effort=default'),
+            ('codex,,high', 'agent=codex model=default effort=high'),
+            ('opencode,ollama/llama3:8b,high', 'agent=opencode model=ollama/llama3:8b effort=high'),
+            ('codex,auto,auto', 'agent=codex model=auto effort=auto'),
+            (',sonnet', 'agent=self model=sonnet effort=default'),
+        ]:
+            with self.subTest(value=value):
+                self.assertEqual(self.lines('TASK-7', f'rev={value}')[0], f'rev: {expected}')
+
+    def test_long_form_overrides_only_the_given_field(self):
+        self.assertEqual(self.lines('rev-model=opus')[0], 'rev: agent=gemini model=opus effort=high')
+
+    def test_block_then_models_then_self(self):
+        self.assertEqual(self.lines(roles='test,rev,sec,fix'), [
+            'test: agent=self model=default effort=default',
+            'rev: agent=gemini model=default effort=high',
+            'sec: agent=claude model=default effort=default',
+            'fix: agent=self model=default effort=default',
+            'rounds: 4',
+        ])
+        self.assertEqual(self.lines('models=auto')[0], 'rev: agent=gemini model=auto effort=high')
+        auto_block = self.BLOCK.replace('- Models: default', '- Models: auto')
+        self.assertEqual(self.lines(block=auto_block)[0], 'rev: agent=gemini model=auto effort=high')
+        # An omitted shorthand part is an explicit default: it beats the block and models=auto.
+        self.assertEqual(self.lines('rev=codex', 'models=auto')[0],
+                         'rev: agent=codex model=default effort=default')
+
+    def test_roles_can_mix_forms(self):
+        self.assertEqual(self.lines('rev=codex,,high', 'fix-agent=claude', roles='rev,fix')[:2],
+                         ['rev: agent=codex model=default effort=high',
+                          'fix: agent=claude model=default effort=default'])
+
+    def test_rounds_default_and_range(self):
+        self.assertEqual(self.lines()[-1], 'rounds: 4')
+        self.assertEqual(self.lines('rounds=2')[-1], 'rounds: 2')
+        no_cap = self.BLOCK.replace('- Max review rounds: 4\n', '')
+        self.assertEqual(self.lines(block=no_cap)[-1], 'rounds: 3')
+        for rounds in ('0', '11', 'x'):
+            with self.subTest(rounds=rounds):
+                self.assertEqual(self.resolve(f'rounds={rounds}').returncode, 2)
+
+    def test_invalid_arguments_are_rejected(self):
+        for args, message in [
+            (('rev=codex,a,b,c',), 'agent[,model[,effort]]'),
+            (('rev=robot',), 'unknown agent'),
+            (('rev=codex', 'rev-effort=high'), 'either rev='),
+            (('rev-effort=high', 'rev=codex'), 'either rev='),
+            (('reviewer=codex',), 'use rev-agent= or rev='),
+            (('agent=claude',), 'test-agent='),
+            (('security-model=opus',), 'sec-model='),
+            (('rev-model=',), 'empty'),
+            (('colour=red',), 'unknown option'),
+            (('models=best',), 'default or auto'),
+            (('models=',), 'models= is empty'),
+            (('rounds=',), 'rounds= is empty'),
+        ]:
+            with self.subTest(args=args):
+                r = self.resolve(*args)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn(message, r.stderr)
+                self.assertEqual(r.stdout, '')
+
+    def test_block_is_required_and_old_keys_are_rejected(self):
+        r = self.resolve(block='# Project\n')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('wf init', r.stderr)
+        r = self.resolve(block=self.BLOCK.replace('- Rev agent:', '- Reviewer:'))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('"Rev agent"', r.stderr)
+
+    def test_spec_and_roadmap_reviews_run_before_wf_init(self):
+        defaults = ['rev: agent=self model=default effort=default', 'rounds: 3']
+        self.assertEqual(self.lines('--before-init', block='# Project\n'), defaults)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        r = subprocess.run([sys.executable, str(RESOLVE_ROLES), '--agents-md', str(tmp / 'AGENTS.md'),
+                            '--roles', 'rev', '--before-init', 'rev=codex'], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], 'rev: agent=codex model=default effort=default')
+        # An existing block is still validated.
+        r = self.resolve('--before-init', block=self.BLOCK.replace('- Rev agent:', '- Reviewer:'))
+        self.assertEqual(r.returncode, 2)
+
+    def test_skills_that_resolve_roles_link_the_script(self):
+        for name in ('wf-plan-loop', 'wf-impl-loop', 'wf-wave', 'wf-spec', 'wf-roadmap', 'wf-test',
+                     'wf-security-review'):
+            with self.subTest(skill=name):
+                link = SKILLS / name / 'scripts' / 'resolve-roles.py'
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.resolve(), RESOLVE_ROLES)
 
 
 class DevServer(unittest.TestCase):
