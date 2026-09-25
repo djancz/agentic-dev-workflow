@@ -33,7 +33,7 @@ the plan is approved.
 
 `wf task` → `wf plan` → `wf plan loop` → human Gate 1 → `wf wave start` (if needed) →
 `wf new-worktree` → `wf test` for features → `wf impl` → `wf impl loop` →
-`wf wave integrate` → human Gate 2 → `wf finalize` → PR merge.
+`wf wave integrate` → human Gate 2 → `wf finalize` → PR merge → `wf wave done`.
 For a non-feature change, the plan may say `Tests: N/A` with a reason, so `wf test` is skipped.
 `wf maintenance` and `wf deploy` retain their own explicit gates.
 

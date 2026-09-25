@@ -97,7 +97,7 @@ class SkillStructure(unittest.TestCase):
         readme = (REPO / 'README.md').read_text()
         guide = (REPO / 'docs' / 'skills.md').read_text()
         for command in ('wf prd', 'wf spec', 'wf roadmap', 'wf new-worktree',
-                        'wf test', 'wf wave integrate', 'wf finalize', 'wf next'):
+                        'wf test', 'wf wave integrate', 'wf finalize', 'wf next', 'wf wave done'):
             self.assertIn(command, readme)
             self.assertIn(command, guide)
         self.assertIn('reviewer=', readme)

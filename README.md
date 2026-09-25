@@ -74,7 +74,8 @@ init` in an existing project or `wf prd` in a new one.
    `wf impl TASK-1`, and `wf impl loop TASK-1`.
 5. After all wave tasks are ready, run `wf wave integrate WAVE-1` on the wave branch. Review the full
    check table, combined diff, and findings at Gate 2. Once approved, `wf finalize WAVE-1` prepares the
-   PR and asks separately before pushing. Merge the PR on your forge.
+   PR and asks separately before pushing. If the PR gets comments or CI fails, run `wf finalize WAVE-1`
+   again. Merge the PR on your forge, then run `wf wave done WAVE-1`.
 
 You can stop after any stage and resume with `wf status`. The status output names the next command;
 `wf next` runs it and the stages after it, stopping at the next gate, question, or failure.

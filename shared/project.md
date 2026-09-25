@@ -15,7 +15,8 @@ This file governs project planning and wave execution. The task review rules rem
 - `wf impl` writes the implementation in another fresh context. `wf impl loop` independently reviews
   and fixes the task, but approval means **ready to integrate**, not permission to push.
 - `wf wave integrate` combines reviewed tasks, runs the full trusted checks, and obtains an independent
-  integration review. Gate 2 approves that combined diff. `wf finalize` then makes the wave PR.
+  integration review. Gate 2 approves that combined diff. `wf finalize` then makes the wave PR and
+  handles its review comments and CI; after the merge, `wf wave done` closes the wave.
 - A one-task change is a wave of one. Every task in a wave starts from the wave's base commit, so tasks
   in one wave never depend on each other's code; they may share only contracts frozen in the approved
   spec. A task that needs another task's code belongs to a later wave, started after the earlier wave is
@@ -37,7 +38,7 @@ Records use a `Status`, `Revision`, and explicit `Approved` line; a revised docu
 
 The roadmap assigns every task to a wave. A wave lists task IDs, the earlier waves it depends on,
 branch, base commit, acceptance criteria, and
-`Status: Planned | In progress | Review requested | Approved | PR opened`.
+`Status: Planned | In progress | Review requested | Approved | PR opened | Merged`.
 Tasks in one wave must not share mutable files, database tables, configuration, migrations, or unstated
 API contracts. If the boundary is uncertain, put the tasks in consecutive waves.
 
