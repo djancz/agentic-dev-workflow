@@ -8,9 +8,47 @@ For an unsupported agent, point it directly at the relevant `skills/wf-*/SKILL.m
 
 ## A project already has development/
 
-The installer refuses to replace it. Inspect its contents and the path from
-`git rev-parse --path-format=absolute --git-common-dir`; move the old private records to
-`<common-git-dir>/wf-state/`, then rerun the installer. Keep a backup until `wf status` sees the records.
+The installer refuses a `development/` it did not create, or one that Git tracks. Inspect its contents,
+move it out of the main clone (or rename a tracked one), then rerun the installer. Keep a backup until
+`wf status` sees the records.
+
+## The installer reports records in .git/wf-state
+
+Older installations kept the records in `<common-git-dir>/wf-state` and linked `development/` to it.
+Claude Code never auto-approves a write that resolves into `.git`, so every record write prompted, even
+in auto mode. The installer now changes nothing until you migrate. From this workflow clone, once per
+project clone:
+
+```bash
+python3 install.py --project <main clone> --agents <agents> --migrate-state --dry-run
+python3 install.py --project <main clone> --agents <agents> --migrate-state
+```
+
+The migration renames the directory to `<main clone>/development` (no copy, so nothing is half-moved)
+and re-points every worktree link that leads to the old location, absolute or relative. A worktree
+without `development/`, or with a link elsewhere, is left alone and listed. It never overwrites: if both
+locations hold records, it stops so you can merge them by hand. If it is interrupted, run the same
+command again; it continues where it stopped. Run it in each clone that uses the old layout.
+
+## Claude prompts for edits in task worktrees
+
+Task worktrees live in `<repo>-worktrees/`, outside the main clone, and their `development/` links back
+to the main clone. A session started in the main clone prompts for writes to a task worktree; a session
+started in a task worktree prompts for record writes, because they resolve to the main clone. List both
+directories in `permissions.additionalDirectories`, for example in `~/.claude/settings.json` or each
+checkout's `.claude/settings.local.json`:
+
+```json
+{ "permissions": { "additionalDirectories": ["/path/to/repo", "/path/to/repo-worktrees"] } }
+```
+
+The parent `<repo>-worktrees` entry covers future worktrees too. `/add-dir` does the same for one session.
+
+## Records disappeared after git clean
+
+`development/` in the main clone is ignored, so `git clean -x` or `-X` deletes it with every record.
+Use `git clean -n` first and never pass `-x` or `-X` in a clone with workflow records. Recover from a
+backup; the PRs hold the delivered behavior and test evidence.
 
 ## A review does not finish
 

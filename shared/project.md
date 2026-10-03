@@ -24,8 +24,9 @@ This file governs project planning and wave execution. The task review rules rem
 
 ## Private state
 
-`install.py` links `development/` in each worktree to `wf-state/` in `git rev-parse --git-common-dir`.
-The link is ignored locally. Never add the state directory or its contents to a commit. The state is
+`install.py` keeps `development/` as a directory in the main worktree (the first entry of
+`git worktree list`) and links `development/` in each linked worktree to it. Both are ignored locally;
+`git clean -x` or `-X` in the main worktree would delete the records. Never add the state directory or its contents to a commit. The state is
 shared across worktrees of this clone, but not across other clones. PR text must include enough context
 for a teammate to understand the delivered behavior, tests, and accepted findings. Decisions others need
 later (architecture, public contracts, significant trade-offs) go into a tracked English document that
