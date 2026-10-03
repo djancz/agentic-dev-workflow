@@ -671,7 +671,8 @@ class RunAgent(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def run_agent(self, *args: str, mode: str = 'ok', path: str | None = None, **env: str):
+    def run_agent(self, *args: str, mode: str = 'ok', path: str | None = None, cwd: Path | None = None,
+                  **env: str):
         full_env = {
             **os.environ,
             'PATH': path or f'{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin',
@@ -679,7 +680,7 @@ class RunAgent(unittest.TestCase):
             'FAKE_LOG': str(self.logs),
             **env,
         }
-        return subprocess.run(['sh', str(RUN_AGENT), *args], cwd=self.repo, env=full_env,
+        return subprocess.run(['sh', str(RUN_AGENT), *args], cwd=cwd or self.repo, env=full_env,
                               capture_output=True, text=True)
 
     def args_of(self, agent: str) -> str:
@@ -844,6 +845,34 @@ class RunAgent(unittest.TestCase):
         output = self.repo / 'development/tasks/TASK-1/runs/impl-rev-r1.out.md'
         r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output))
         self.assertEqual(r.returncode, 0, 'writing the run output is allowed: ' + r.stderr)
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output), mode='record')
+        self.assertEqual(r.returncode, 3, r.stderr)
+
+    def test_review_in_a_linked_worktree_writes_through_the_main_records(self):
+        state = self.repo / 'development'
+        (state / 'tasks/TASK-1/runs').mkdir(parents=True)
+        (state / 'tasks/TASK-1/TASK-1.md').write_text('Status: Draft\n')
+        (self.repo / '.git/info/exclude').write_text('/development\n')
+        worktree = self.tmp / 'repo-worktrees/TASK-1'
+        subprocess.run(['git', '-C', str(self.repo), 'worktree', 'add', '-q', '-b', 'task', str(worktree)],
+                       check=True)
+        (worktree / 'development').symlink_to(os.path.relpath(state, worktree), target_is_directory=True)
+        output = worktree / 'development/tasks/TASK-1/runs/impl-rev-r1.out.md'
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output), cwd=worktree)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('- Verdict: Approved', (state / 'tasks/TASK-1/runs/impl-rev-r1.out.md').read_text())
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output), cwd=worktree,
+                           mode='record')
+        self.assertEqual(r.returncode, 3, 'an edit of a shared record is caught from the worktree too')
+
+    def test_review_that_edits_records_in_the_main_worktree_fails(self):
+        state = self.repo / 'development'
+        (state / 'tasks/TASK-1/runs').mkdir(parents=True)
+        (state / 'tasks/TASK-1/TASK-1.md').write_text('Status: Draft\n')
+        (self.repo / '.git/info/exclude').write_text('/development\n')
+        output = state / 'tasks/TASK-1/runs/impl-rev-r1.out.md'
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output))
+        self.assertEqual(r.returncode, 0, r.stderr)
         r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(output), mode='record')
         self.assertEqual(r.returncode, 3, r.stderr)
 
