@@ -290,8 +290,10 @@ class Installer(unittest.TestCase):
         status = subprocess.run(['git', '-C', str(worktree), 'status', '--porcelain'],
                                 capture_output=True, text=True, check=True).stdout
         self.assertEqual(status, '')
-        self.assertEqual((worktree / 'development').resolve(), (self.project / '.git/wf-state').resolve())
+        self.assertEqual((worktree / 'development').resolve(), (self.project / 'development').resolve())
         self.assertTrue((worktree / 'development').is_symlink())
+        self.assertFalse((self.project / 'development').is_symlink(), 'the main worktree holds the records')
+        self.assertFalse((self.project / '.git/wf-state').exists())
 
     def test_state_is_shared_between_worktrees_and_preserved_on_uninstall(self):
         self.assertEqual(self.run_install(), 0)
@@ -328,6 +330,299 @@ class Installer(unittest.TestCase):
         self.assertEqual(self.run_install('--uninstall-user', project=False), 0)
         self.assertFalse(own.is_symlink())
         self.assertTrue(foreign.is_symlink())
+
+
+
+class StateLayout(unittest.TestCase):
+    """Private records live in the main worktree's development/; linked worktrees link to it.
+    Records in the legacy <common-git-dir>/wf-state move only through --migrate-state."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.env = mock_env(HOME=str(self.tmp / 'home'), CLAUDE_CONFIG_DIR=None, CODEX_HOME=None)
+        self.env.__enter__()
+        (self.tmp / 'home').mkdir()
+        self.main = self.tmp / 'app'
+        self.siblings = self.tmp / 'app-worktrees'
+        self.init_repo(self.main)
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+        shutil.rmtree(self.tmp)
+
+    @staticmethod
+    def init_repo(path: Path) -> None:
+        subprocess.run(['git', 'init', '-q', str(path)], check=True)
+        (path / 'tracked').write_text('x\n')
+        subprocess.run(['git', '-C', str(path), 'add', 'tracked'], check=True)
+        subprocess.run(['git', '-C', str(path), '-c', 'user.name=t', '-c', 'user.email=t@t',
+                        'commit', '-qm', 'init'], check=True)
+
+    def add_worktree(self, name: str, main: Path | None = None) -> Path:
+        main = main or self.main
+        path = main.parent / f'{main.name}-worktrees' / name
+        subprocess.run(['git', '-C', str(main), 'worktree', 'add', '-q', '-b', name, str(path)], check=True)
+        return path
+
+    def run_install(self, project: Path, *args: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main(['--agents', 'claude', '--project', str(project), *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def make_legacy(self, main: Path | None = None) -> Path:
+        """Recreate the old layout: records in .git/wf-state and a relative link in the main worktree."""
+        main = main or self.main
+        legacy = main / '.git/wf-state'
+        (legacy / 'tasks/TASK-1-a').mkdir(parents=True)
+        (legacy / 'tasks/TASK-1-a/TASK-1.md').write_text('Status: Approved\n')
+        (legacy / 'waves').mkdir()
+        (legacy / 'waves/WAVE-1.md').write_text('wave\n')
+        (main / 'development').symlink_to('.git/wf-state', target_is_directory=True)
+        exclude = main / '.git/info/exclude'
+        exclude.write_text(exclude.read_text() + '/development\n')
+        return legacy
+
+    def snapshot(self, root: Path) -> dict[str, str]:
+        return {str(f.relative_to(root)): f.read_text() for f in sorted(root.rglob('*')) if f.is_file()}
+
+    def layout(self) -> dict[str, str]:
+        """Every development entry and the legacy directory, to prove nothing changed."""
+        result = {}
+        for path in [self.main, *sorted(self.siblings.glob('*'))]:
+            link = path / 'development'
+            result[str(link)] = os.readlink(link) if link.is_symlink() else ('dir' if link.is_dir() else '-')
+        legacy = self.main / '.git/wf-state'
+        result['legacy'] = repr(self.snapshot(legacy)) if legacy.is_dir() else '-'
+        return result
+
+    def assert_migrated(self, records: dict[str, str]) -> None:
+        state = self.main / 'development'
+        self.assertTrue(state.is_dir() and not state.is_symlink())
+        self.assertFalse((self.main / '.git/wf-state').exists())
+        self.assertEqual(self.snapshot(state), records)
+        status = subprocess.run(['git', '-C', str(self.main), 'status', '--porcelain'],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(status, '', 'the records stay ignored')
+
+    # ------------------------------------------------------------------ fresh installs
+
+    def test_main_worktree_gets_a_real_ignored_directory(self):
+        self.assertEqual(self.run_install(self.main)[0], 0)
+        state = self.main / 'development'
+        self.assertTrue(state.is_dir() and not state.is_symlink())
+        self.assertFalse((self.main / '.git/wf-state').exists())
+        r = subprocess.run(['git', '-C', str(self.main), 'check-ignore', '-q', 'development/tasks/x.md'])
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.run_install(self.main, '--dry-run')[0], 0, 'an existing state is ours')
+
+    def test_linked_worktree_links_to_the_main_worktree(self):
+        self.assertEqual(self.run_install(self.main)[0], 0)
+        (self.main / 'development/marker').write_text('shared')
+        worktree = self.add_worktree('task-1')
+        self.assertEqual(self.run_install(worktree)[0], 0)
+        link = worktree / 'development'
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(os.path.isabs(os.readlink(link)), 'the link is relative')
+        self.assertEqual((link / 'marker').read_text(), 'shared')
+        self.assertEqual(self.run_install(worktree, '--dry-run')[0], 0)
+        self.assertEqual(self.run_install(worktree, '--uninstall')[0], 0)
+        self.assertEqual((link / 'marker').read_text(), 'shared', 'uninstall preserves records and link')
+
+    def test_install_from_a_worktree_first_creates_the_main_directory(self):
+        worktree = self.add_worktree('task-1')
+        self.assertEqual(self.run_install(worktree)[0], 0)
+        self.assertTrue((self.main / 'development').is_dir())
+        self.assertEqual((worktree / 'development').resolve(), (self.main / 'development').resolve())
+
+    def test_no_state_creates_nothing(self):
+        self.assertEqual(self.run_install(self.main, '--no-state')[0], 0)
+        self.assertFalse((self.main / 'development').exists())
+
+    def test_tracked_development_directory_blocks_install(self):
+        (self.main / 'development').mkdir()
+        (self.main / 'development/doc.md').write_text('public\n')
+        subprocess.run(['git', '-C', str(self.main), 'add', 'development'], check=True)
+        exclude = self.main / '.git/info/exclude'
+        exclude.write_text(exclude.read_text() + '/development\n')
+        code, _, err = self.run_install(self.main)
+        self.assertEqual(code, 2)
+        self.assertIn('tracked', err)
+        self.assertFalse((self.main / '.claude/skills/wf-plan').exists())
+
+    def test_bare_repository_refuses_state_but_allows_no_state(self):
+        bare = self.tmp / 'bare.git'
+        subprocess.run(['git', 'clone', '-q', '--bare', str(self.main), str(bare)], check=True)
+        worktree = self.tmp / 'bare-worktree'
+        subprocess.run(['git', '-C', str(bare), 'worktree', 'add', '-q', str(worktree)], check=True)
+        code, _, err = self.run_install(worktree)
+        self.assertEqual(code, 2)
+        self.assertIn('bare', err)
+        self.assertFalse((worktree / 'development').exists())
+        self.assertFalse((worktree / '.claude/skills/wf-plan').exists())
+        self.assertEqual(self.run_install(worktree, '--no-state')[0], 0)
+
+    # ------------------------------------------------------------------ legacy detection
+
+    def test_legacy_layout_blocks_a_normal_install_without_changes(self):
+        self.make_legacy()
+        worktree = self.add_worktree('task-1')
+        (worktree / 'development').symlink_to(self.main / '.git/wf-state', target_is_directory=True)
+        before = self.layout()
+        exclude = (self.main / '.git/info/exclude').read_text()
+        for project in (self.main, worktree):
+            with self.subTest(project=project.name):
+                code, _, err = self.run_install(project)
+                self.assertEqual(code, 2)
+                self.assertIn('--migrate-state --dry-run', err)
+                self.assertIn(f'--project {self.main} ', err)
+                self.assertEqual(self.layout(), before)
+                self.assertEqual((self.main / '.git/info/exclude').read_text(), exclude)
+                self.assertFalse((project / '.claude/skills').exists(), 'no skill link is installed either')
+
+    def test_legacy_directory_without_any_link_is_detected(self):
+        (self.main / '.git/wf-state').mkdir()
+        code, _, err = self.run_install(self.main)
+        self.assertEqual(code, 2)
+        self.assertIn('migrate-state', err)
+        self.assertFalse((self.main / 'development').exists())
+
+    def test_uninstall_leaves_the_legacy_layout_alone(self):
+        self.make_legacy()
+        before = self.layout()
+        self.assertEqual(self.run_install(self.main, '--uninstall')[0], 0)
+        self.assertEqual(self.layout(), before)
+
+    # ------------------------------------------------------------------ migration
+
+    def legacy_with_worktrees(self) -> tuple[dict[str, str], dict[str, Path]]:
+        """Main link, an absolute worktree link, a relative one, a worktree without development/,
+        and a worktree whose development links elsewhere."""
+        legacy = self.make_legacy()
+        records = self.snapshot(legacy)
+        trees = {name: self.add_worktree(name) for name in ('absolute', 'relative', 'none', 'foreign')}
+        (trees['absolute'] / 'development').symlink_to(legacy, target_is_directory=True)
+        (trees['relative'] / 'development').symlink_to(
+            os.path.relpath(legacy, trees['relative']), target_is_directory=True)
+        (self.tmp / 'elsewhere').mkdir()
+        (trees['foreign'] / 'development').symlink_to(self.tmp / 'elsewhere', target_is_directory=True)
+        return records, trees
+
+    def test_dry_run_migration_changes_nothing(self):
+        records, trees = self.legacy_with_worktrees()
+        before = self.layout()
+        code, out, _ = self.run_install(self.main, '--migrate-state', '--dry-run')
+        self.assertEqual(code, 1)
+        self.assertIn('Would move', out)
+        self.assertEqual(self.layout(), before)
+        self.assertFalse((self.main / '.claude').exists())
+
+    def test_migration_moves_records_and_relinks_only_legacy_links(self):
+        records, trees = self.legacy_with_worktrees()
+        foreign_target = os.readlink(trees['foreign'] / 'development')
+        code, out, err = self.run_install(trees['relative'], '--migrate-state')
+        self.assertEqual(code, 0, err)
+        self.assert_migrated(records)
+        for name in ('absolute', 'relative'):
+            link = trees[name] / 'development'
+            self.assertTrue(link.is_symlink())
+            self.assertFalse(os.path.isabs(os.readlink(link)))
+            self.assertEqual(self.snapshot(link), records)
+        self.assertFalse(os.path.lexists(trees['none'] / 'development'), 'a missing link is not created')
+        self.assertEqual(os.readlink(trees['foreign'] / 'development'), foreign_target)
+        self.assertIn(f"Left alone (not a link to the legacy records): {trees['foreign'] / 'development'}", out)
+        self.assertFalse(list(self.siblings.rglob('.development.wf-new')))
+        code, _, _ = self.run_install(trees['relative'], '--migrate-state', '--dry-run')
+        self.assertEqual(code, 0, 'a completed migration is idempotent')
+        self.assertEqual(self.run_install(self.main, '--migrate-state')[0], 0)
+        self.assertEqual(self.run_install(trees['absolute'])[0], 0, 'a normal install accepts the new layout')
+        self.assert_migrated(records)
+
+    def test_migration_refuses_to_overwrite_a_main_directory(self):
+        self.make_legacy()
+        (self.main / 'development').unlink()
+        (self.main / 'development').mkdir()
+        (self.main / 'development/other.md').write_text('other\n')
+        before = self.layout()
+        code, _, err = self.run_install(self.main, '--migrate-state')
+        self.assertEqual(code, 2)
+        self.assertIn('merge them by hand', err)
+        self.assertEqual(self.layout(), before)
+        self.assertEqual((self.main / 'development/other.md').read_text(), 'other\n')
+
+    def test_migration_leaves_a_worktree_directory_alone(self):
+        records = self.snapshot(self.make_legacy())
+        worktree = self.add_worktree('own-dir')
+        (worktree / 'development').mkdir()
+        (worktree / 'development/mine.md').write_text('mine\n')
+        code, out, _ = self.run_install(self.main, '--migrate-state')
+        self.assertEqual(code, 0)
+        self.assert_migrated(records)
+        self.assertEqual((worktree / 'development/mine.md').read_text(), 'mine\n')
+        self.assertIn('Left alone', out)
+
+    def test_migration_resumes_after_the_main_link_was_removed(self):
+        records, trees = self.legacy_with_worktrees()
+        (self.main / 'development').unlink()  # interrupted right after step 1
+        self.assertEqual(self.run_install(self.main, '--migrate-state')[0], 0)
+        self.assert_migrated(records)
+        self.assertEqual(self.snapshot(trees['absolute'] / 'development'), records)
+
+    def test_migration_resumes_after_the_move(self):
+        records, trees = self.legacy_with_worktrees()
+        (self.main / 'development').unlink()
+        os.rename(self.main / '.git/wf-state', self.main / 'development')  # interrupted before relinking
+        stale = trees['relative'] / '.development.wf-new'
+        stale.symlink_to('nowhere')  # interrupted while relinking
+        self.assertEqual(self.run_install(self.main)[0], 2, 'dangling legacy links still need the migration')
+        self.assertEqual(self.run_install(self.main, '--migrate-state')[0], 0)
+        self.assert_migrated(records)
+        for name in ('absolute', 'relative'):
+            self.assertEqual(self.snapshot(trees[name] / 'development'), records)
+        self.assertFalse(os.path.lexists(stale))
+
+    def test_migration_never_moves_records_where_git_would_see_them(self):
+        legacy = self.make_legacy()
+        records = self.snapshot(legacy)
+        (self.main / '.gitignore').write_text('!/development\n')  # overrides info/exclude
+        code, _, err = self.run_install(self.main, '--migrate-state')
+        self.assertEqual(code, 2)
+        self.assertIn('would not be ignored', err)
+        self.assertEqual(self.snapshot(legacy), records)
+        self.assertTrue((self.main / 'development').is_symlink(), 'the old link is kept as well')
+
+    def test_migration_with_a_missing_legacy_directory_refuses(self):
+        self.make_legacy()
+        shutil.rmtree(self.main / '.git/wf-state')
+        code, _, err = self.run_install(self.main, '--migrate-state')
+        self.assertEqual(code, 2)
+        self.assertIn('missing', err)
+        self.assertTrue((self.main / 'development').is_symlink())
+
+    def test_each_clone_migrates_its_own_records(self):
+        other = self.tmp / 'shop'
+        self.init_repo(other)
+        mine = self.snapshot(self.make_legacy())
+        (other / '.git/wf-state').mkdir()
+        (other / '.git/wf-state/only-shop.md').write_text('shop\n')
+        (other / 'development').symlink_to('.git/wf-state', target_is_directory=True)
+        shop_tree = self.add_worktree('task-9', main=other)
+        (shop_tree / 'development').symlink_to('../../shop/.git/wf-state', target_is_directory=True)
+        self.assertEqual(self.run_install(self.main, '--migrate-state')[0], 0)
+        self.assert_migrated(mine)
+        self.assertTrue((other / '.git/wf-state/only-shop.md').exists(), 'another clone is untouched')
+        self.assertEqual(self.run_install(shop_tree, '--migrate-state')[0], 0)
+        self.assertEqual((other / 'development/only-shop.md').read_text(), 'shop\n')
+        self.assertEqual((shop_tree / 'development/only-shop.md').read_text(), 'shop\n')
+        self.assertFalse((other / 'development/tasks').exists())
+
+    def test_migrate_state_rejects_conflicting_options(self):
+        for extra in ('--uninstall', '--no-state'):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        install.parse_args(['--project', str(self.main), '--migrate-state', extra])
+                self.assertEqual(raised.exception.code, 2)
 
 
 FAKE_AGENT = r'''#!/bin/sh

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 Install the wf-* skills of this repository into one project's agent discovery directories. Symlinks
-mean a `git pull` here updates every installation. Also link private development/ records to the
-repository's common Git directory so all worktrees in the clone share them.
+mean a `git pull` here updates every installation. Also keep the private development/ records in the
+main worktree (ignored through info/exclude) and link development/ in every other worktree to them, so
+all worktrees of the clone share one set of records outside the protected .git directory.
+`--migrate-state` moves records from the legacy <common-git-dir>/wf-state location there; a normal
+install that finds the legacy location changes nothing and prints that command.
 
   project scope (--project)  claude  <project>/.claude/skills/<skill>
                              codex   <project>/.agents/skills/<skill>
@@ -11,7 +14,7 @@ repository's common Git directory so all worktrees in the clone share them.
                              (the links are added to the repository's info/exclude, never committed)
 
 Only skill symlinks whose raw target points into this repository's skills/ are changed or removed.
-Uninstall preserves the private development/ records and their link.
+Uninstall preserves the private development/ records and their links.
 Anything else under the same name, including an unowned dangling link, is a collision and stops the
 install before any destination changes. `--uninstall-user` is a migration aid for old user-scope links.
 
@@ -199,21 +202,180 @@ def git_exclude_path(project: Path) -> Path:
     return path if path.is_absolute() else project / path
 
 
-def plan_state(project: Path) -> tuple[Path, Path] | None:
-    """Keep private workflow records available in every worktree of this clone."""
-    common = subprocess.run(
-        ['git', '-C', str(project), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    target = Path(common).resolve() / 'wf-state'
+class LegacyState(Exception):
+    """The records still live in the legacy <common-git-dir>/wf-state location."""
+
+
+def git_output(project: Path, *args: str) -> str:
+    return subprocess.run(['git', '-C', str(project), *args],
+                          check=True, capture_output=True, text=True).stdout
+
+
+def worktrees(project: Path) -> list[tuple[Path, bool]]:
+    """Return (path, is_bare) for every worktree of the repository, the main worktree first."""
+    records = []
+    for block in git_output(project, 'worktree', 'list', '--porcelain').split('\n\n'):
+        lines = block.splitlines()
+        if lines and lines[0].startswith('worktree '):
+            records.append((Path(lines[0][len('worktree '):]), 'bare' in lines))
+    return records
+
+
+def main_worktree(project: Path) -> Path:
+    """The main worktree holds the records; never guess when it cannot be determined."""
+    records = worktrees(project)
+    if not records or records[0][1]:
+        raise ValueError('cannot determine the main worktree (bare repository); '
+                         'rerun with --no-state and manage development/ by hand')
+    main = records[0][0]
+    if not main.is_dir():
+        raise ValueError(f'main worktree {main} not found; rerun with --no-state')
+    return main.resolve()
+
+
+def legacy_state_dir(project: Path) -> Path:
+    common = git_output(project, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
+    return Path(common).resolve() / 'wf-state'
+
+
+def links_to(link: Path, target: Path) -> bool:
+    """True if link is a symlink that leads to target, even while target is missing."""
+    return link.is_symlink() and os.path.realpath(link) == os.path.realpath(target)
+
+
+def linked_worktrees(project: Path, main: Path) -> list[Path]:
+    paths = [path.resolve() for path, bare in worktrees(project) if not bare and path.is_dir()]
+    return [path for path in paths if path != main]
+
+
+def is_tracked(main: Path) -> bool:
+    return bool(git_output(main, 'ls-files', '--', 'development').strip())
+
+
+def legacy_in_use(project: Path, main: Path, legacy: Path) -> bool:
+    if legacy.exists() or legacy.is_symlink():
+        return True
+    return any(links_to(path / 'development', legacy) for path in [main, *linked_worktrees(project, main)])
+
+
+def plan_worktree_link(project: Path, state: Path) -> list[tuple]:
     link = project / 'development'
+    if links_to(link, state):
+        return []
     if link.is_symlink():
-        if link.resolve() == target:
-            return None
         raise ValueError(f'{link} is a link to another location; move it manually')
     if link.exists():
-        raise ValueError(f'{link} already exists; move its contents to {target} before installing')
-    return link, target
+        raise ValueError(f'{link} already exists; move its contents to {state} before installing')
+    return [('link', link, Path(os.path.relpath(state, project)))]
+
+
+def plan_state(project: Path, owned: bool, migrate_hint: str) -> list[tuple]:
+    """Keep private records in the main worktree's development/ and link every other worktree to it.
+    owned: the exclude file already ignores /development, so an existing directory there is ours."""
+    main = main_worktree(project)
+    legacy = legacy_state_dir(project)
+    if legacy_in_use(project, main, legacy):
+        raise LegacyState(
+            f'the records still live in {legacy} inside the Git directory, where agents cannot write '
+            f'without a prompt. Nothing was changed. Preview the migration with\n  {migrate_hint} --dry-run\n'
+            'then run the same command without --dry-run.')
+    state = main / 'development'
+    actions: list[tuple] = []
+    if state.is_symlink():
+        raise ValueError(f'{state} is a link to another location; move it manually')
+    if state.exists():
+        if not state.is_dir() or is_tracked(main):
+            raise ValueError(f'{state} is tracked by Git or not a directory; rename it before installing')
+        if not owned:
+            raise ValueError(f'{state} already exists and was not created by install.py; '
+                             'move its contents away before installing')
+    else:
+        actions.append(('mkdir', state, None))
+    if project != main:
+        actions += plan_worktree_link(project, state)
+    return actions
+
+
+def plan_migration(project: Path, owned: bool) -> list[tuple]:
+    """Move <common-git-dir>/wf-state to <main>/development with one rename and relink the worktrees.
+    Every check runs before any change, nothing is ever overwritten, and a rerun resumes an
+    interrupted migration."""
+    main = main_worktree(project)
+    legacy = legacy_state_dir(project)
+    state = main / 'development'
+    if not legacy_in_use(project, main, legacy):
+        return plan_state(project, owned, '')
+    if legacy.is_symlink() or (legacy.exists() and not legacy.is_dir()):
+        raise ValueError(f'{legacy} is not a plain directory; migrate it by hand')
+    moving = legacy.is_dir()
+    actions: list[tuple] = []
+    if links_to(state, legacy):
+        if not moving:
+            raise ValueError(f'{state} points to the missing {legacy}; restore the records first')
+        actions.append(('unlink', state, None))
+    elif state.is_symlink():
+        raise ValueError(f'{state} is a link to another location; move it manually')
+    elif state.exists():
+        if moving:
+            raise ValueError(f'both {legacy} and {state} exist; merge them by hand (nothing was changed)')
+        if not state.is_dir():
+            raise ValueError(f'{state} is not a directory')
+    elif not moving:
+        raise ValueError(f'worktrees link to the missing {legacy}; restore the records first')
+    if moving:
+        if is_tracked(main):
+            raise ValueError(f'{state} is tracked by Git; rename it before migrating')
+        if os.stat(legacy).st_dev != os.stat(main).st_dev:
+            raise ValueError(f'{legacy} and {main} are on different filesystems; move the records by hand')
+        actions.append(('rename', legacy, state))
+    # Only links that lead to the legacy directory, absolute or relative, are re-pointed. A worktree
+    # without development/ stays without it; anything else is reported and left alone.
+    for path in linked_worktrees(project, main):
+        link = path / 'development'
+        if links_to(link, legacy):
+            temp = path / '.development.wf-new'
+            if temp.exists() and not temp.is_symlink():
+                raise ValueError(f'{temp} exists and is not a leftover link; remove it by hand')
+            actions.append(('relink', link, Path(os.path.relpath(state, path))))
+        elif link.is_symlink() and not links_to(link, state):
+            actions.append(('skip', link, Path(os.readlink(link))))
+        elif link.exists() and not link.is_symlink():
+            actions.append(('skip', link, None))
+    return actions
+
+
+def apply_state(actions: list[tuple], dry_run: bool) -> None:
+    labels = {'mkdir': 'create directory', 'link': 'link', 'unlink': 'remove legacy link',
+              'rename': 'move', 'relink': 'relink'}
+    for verb, path, target in actions:
+        # Checked after the exclude update and before any change to the records.
+        if verb == 'rename' and not dry_run and subprocess.run(
+                ['git', '-C', str(target.parent), 'check-ignore', '-q', 'development']).returncode != 0:
+            raise ValueError(f'{target} would not be ignored by Git; fix the ignore rules first')
+    for verb, path, target in actions:
+        arrow = f' -> {target}' if target is not None else ''
+        if verb == 'skip':
+            print(f'Left alone (not a link to the legacy records): {path}{arrow}')
+            continue
+        print(f"{'Would ' + labels[verb] if dry_run else labels[verb].capitalize()}: {path}{arrow}")
+        if dry_run:
+            continue
+        if verb == 'mkdir':
+            path.mkdir(parents=True)
+        elif verb == 'link':
+            path.symlink_to(target, target_is_directory=True)
+        elif verb == 'unlink':
+            path.unlink()
+        elif verb == 'rename':
+            if target.exists() or target.is_symlink():
+                raise ValueError(f'{target} appeared during the migration; nothing was moved')
+            os.rename(path, target)
+        elif verb == 'relink':
+            temp = path.parent / '.development.wf-new'
+            if temp.is_symlink():
+                temp.unlink()
+            temp.symlink_to(target, target_is_directory=True)
+            os.replace(temp, path)
 
 
 def plan_exclude(project: Path, dests: list[Path], uninstall: bool) -> tuple[Path, str] | None:
@@ -261,8 +423,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument('--uninstall-user', action='store_true',
                         help='remove legacy user-scope links owned by this repository')
     parser.add_argument('--no-state', action='store_true',
-                        help='do not create a shared development/ state link')
+                        help='do not create or link the private development/ records')
+    parser.add_argument('--migrate-state', action='store_true',
+                        help='move the records from the legacy <common-git-dir>/wf-state into the main '
+                             'worktree and relink every worktree (combine with --dry-run to preview)')
     args = parser.parse_args(argv)
+    if args.migrate_state and (args.uninstall or args.uninstall_user or args.no_state):
+        parser.error('--migrate-state cannot be combined with --uninstall, --uninstall-user or --no-state')
     if args.uninstall_user and (args.project or args.uninstall):
         parser.error('--uninstall-user cannot be combined with --project or --uninstall')
     if not args.uninstall_user and args.project is None:
@@ -309,11 +476,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
 
-    state_action = None
+    state_actions: list[tuple] = []
     if project and not args.no_state and not args.uninstall:
+        exclude = git_exclude_path(project)
+        owned = exclude.is_file() and '/development' in exclude.read_text(encoding='utf-8').splitlines()
         try:
-            state_action = plan_state(project)
-        except ValueError as exc:
+            if args.migrate_state:
+                state_actions = plan_migration(project, owned)
+            else:
+                hint = (f'python3 {REPO / "install.py"} --project {main_worktree(project)} '
+                        f'--agents {",".join(agents)} --migrate-state')
+                state_actions = plan_state(project, owned, hint)
+        except LegacyState as exc:
+            print(f'ERROR: {exc}', file=sys.stderr)
+            return 2
+        except (ValueError, subprocess.CalledProcessError) as exc:
             all_collisions.append(str(exc))
 
     if all_collisions:
@@ -333,13 +510,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if exclude_change is not None:
         apply_exclude(exclude_change, args.dry_run)
-    if state_action is not None:
-        link, target = state_action
-        print(f"{'Would link' if args.dry_run else 'Linked'}: {link} -> {target}")
-        changed = True
-        if not args.dry_run:
-            target.mkdir(parents=True, exist_ok=True)
-            link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=True)
+    if state_actions:
+        changed = changed or any(verb != 'skip' for verb, _, _ in state_actions)
+        try:
+            apply_state(state_actions, args.dry_run)
+        except (OSError, ValueError) as exc:
+            print(f'ERROR: {exc}. Rerun the same command to resume; no record was deleted.', file=sys.stderr)
+            return 2
     if args.dry_run:
         print('Dry run: changes pending.' if changed else 'Dry run: nothing to do.')
         return 1 if changed else 0
