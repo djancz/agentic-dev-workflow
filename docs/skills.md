@@ -91,7 +91,7 @@ finding IDs and is recorded in the PR. Silence is not approval.
 
 ## Records and recovery
 
-Plans and reviews live in `development/`, shared across worktrees in one local clone. A PRD, spec, or
+Plans and reviews live in `development/` in the main worktree; each task worktree links to it. A PRD, spec, or
 roadmap revision loses its previous approval. A task review applies only to its recorded checkpoint;
 a wave Gate 2 applies only to its recorded integrated commit. Run `wf status` after a pause or a failed
 stage. When a loop escalates, read the unresolved findings and choose a new approach, an additional

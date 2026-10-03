@@ -53,11 +53,17 @@ OpenCode get their project skill directories. Re-run the same command after upda
 preserving private workflow records. A name
 collision stops installation before changes are made. See [agent setup](docs/agents.md).
 
-The installer also links `development/` in the project to private storage in its common Git directory.
-All worktrees of this local clone see the same plans and reviews. The link is ignored by Git; do not add
-workflow records to commits. Another clone does not receive those records, so PR text must explain the
-change and its test evidence. If a project already has a `development/` directory, the installer stops
-and tells you to move its contents to the private state location before trying again.
+The installer also keeps private workflow records in `development/` in the clone's main worktree and
+links `development/` in every task worktree to it, so all worktrees of this local clone see the same
+plans and reviews. Git ignores it; do not add workflow records to commits, and never run `git clean -x`
+or `-X` in the main clone, which would delete them. Another clone does not receive those records, so PR
+text must explain the change and its test evidence. If a project already has an unrelated
+`development/` directory, the installer stops before making changes.
+
+Installations made before this layout kept the records in `.git/wf-state`, where agents cannot write
+without a prompt. The installer detects that, changes nothing, and prints the command to run:
+`install.py --project <main clone> --agents <agents> --migrate-state --dry-run`, then the same command
+without `--dry-run`. See [troubleshooting](docs/troubleshooting.md).
 
 ## Everyday use
 
