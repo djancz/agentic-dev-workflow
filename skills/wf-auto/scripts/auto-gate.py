@@ -1,0 +1,1 @@
+../../../shared/scripts/auto-gate.py

@@ -35,6 +35,7 @@ plan's current `Revision`.
 When the verdict is `Approved*` for the current revision, present the **Gate 1** digest as
 `references/loop.md` → Gate describes. On explicit human approval, record the approved plan revision,
 then `Next: wf wave start WAVE-N` if needed, followed by `wf new-worktree TASK-N` and `wf test TASK-N`
-for a feature. Feedback creates a new plan revision and returns to review.
+for a feature. Feedback creates a new plan revision and returns to review. Under `wf auto`, the
+autopilot decides Gate 1 by its policy (`references/autopilot.md`) instead of waiting.
 
 End with `— wf-plan-loop · <timestamp>`.

@@ -39,7 +39,8 @@ cross-task interactions and security. Follow `references/wave-review.md` for pro
 timeouts, and stop conditions. The bounded review takes `rev=`, `fix=` (or their long forms), `models=`,
 and `rounds=` (default 3), as `references/loop.md` → Arguments says. Write `WAVE-<N>-review.md`; never
 self-approve a failed or missing review. When approved, show Gate 2: combined behavior, commits, checks,
-gaps, and open findings. Record only explicit human approval. Next: `wf finalize WAVE-<N>`.
+gaps, and open findings. Record only explicit human approval, or under `wf auto` the autopilot's
+decision (`references/autopilot.md`). Next: `wf finalize WAVE-<N>`.
 
 ## Fix (`wf wave fix WAVE-N`, run by the review loop)
 

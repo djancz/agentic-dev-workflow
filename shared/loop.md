@@ -107,7 +107,8 @@ ESCALATE  # never continue past the cap
 
 For a plan, present Gate 1 from `workflow.md` and stop. For an implementation, mark the task
 `Ready to integrate` and report `Next: wf wave integrate WAVE-N`; the wave review presents Gate 2.
-Never record approval yourself. Human change requests return to the relevant review loop.
+Never record approval yourself; under `wf auto`, the autopilot decides the gate as `autopilot.md` says.
+Human change requests return to the relevant review loop.
 
 ## Escalate (stop here)
 

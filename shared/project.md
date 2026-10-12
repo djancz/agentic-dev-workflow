@@ -97,4 +97,6 @@ applicable. Present the document or diff, risks, checks, and exact next action b
 Feedback creates a new revision and returns to review. Explicit acceptance of unresolved findings
 lists their IDs and severities in the record and PR. No approval is inferred from silence or a prior gate.
 Commit and local worktree actions follow the task's authorization. Push and PR creation require explicit
-approval after showing the branch, commits, title, and body.
+approval after showing the branch, commits, title, and body. The only exception is a `wf auto`
+authorization (`autopilot.md`): it covers Gate 1, Gate 2, the push and a draft PR of one task, and only
+while its policy allows each gate.

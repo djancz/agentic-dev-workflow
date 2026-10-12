@@ -55,6 +55,11 @@ severities, rationale, and their words in the plan or wave record; include them 
 silently downgrade High/Critical security findings or call an unrun check a pass. Never infer approval
 from silence, an earlier gate, or a generic request to continue.
 
+**Autopilot.** `wf auto` is the one exception: the human authorizes Gate 1, Gate 2, the push and a draft
+PR up front for one task in a wave of one, and the autopilot passes a gate only when
+`scripts/auto-gate.py` finds it eligible (`autopilot.md`). It records such an approval as the
+autopilot's, never accepts findings, and stops at the ordinary gate whenever the policy refuses.
+
 ## Deviations during implementation
 
 Record small differences that preserve the approved behavior. If an interface, acceptance criterion,

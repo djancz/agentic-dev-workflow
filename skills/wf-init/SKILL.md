@@ -93,6 +93,7 @@ project directory: `.claude/skills/`, `.agents/skills/`, `.gemini/skills/`, or `
 - Fix model: default
 - Fix effort: default
 - Dev server: none <!-- `<command>` at <url>, for browser checks; the command stays in the foreground -->
+- Autopilot: allowed <!-- allowed | disabled; wf auto may pass gates only by its policy -->
 
 | Check | Command |
 |---|---|
@@ -113,8 +114,8 @@ Project rules (may only tighten the workflow):
 ```
 
 When refreshing an existing block, keep the human's edits: all agent, model, effort, round settings,
-the dev server and the project rules. Rename old keys and keep their values: `Reviewer` → `Rev agent`,
-`Review model` → `Rev model`, `Review effort` → `Rev effort`, `Security reviewer` → `Sec agent`,
+the dev server, the `Autopilot` and `Autopilot paths` lines, and the project rules. Rename old keys
+and keep their values: `Reviewer` → `Rev agent`, `Review model` → `Rev model`, `Review effort` → `Rev effort`, `Security reviewer` → `Sec agent`,
 `Security model` → `Sec model`, `Security effort` → `Sec effort`. Change only the rows you re-verified,
 and add missing rows. Replace a `planned` row with its command once the toolchain for it exists and the
 command runs.

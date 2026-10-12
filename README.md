@@ -101,6 +101,27 @@ Behind `wf next`, a change runs `wf plan` → `wf plan loop` → Gate 1 → `wf 
 agent says why and what you can choose. Every stage also has its own command for manual control; see
 [commands and gates](docs/skills.md).
 
+## Autopilot: from assignment to a draft PR
+
+`wf auto <problem and desired behavior>` runs the same stages, reviews and checks as `wf next`, but passes
+Gate 1 and Gate 2 itself when a fixed policy allows it, then pushes the wave branch and opens a **draft**
+PR. Your message is the authorization, for that one task only. You review the draft PR and merge it
+yourself; the agent never merges.
+
+```text
+you:   wf auto CSV export drops rows with empty names; export them with an empty cell rev=codex
+agent: TASK-7 … plan approved by autopilot … wave approved by autopilot … draft PR: <url>
+```
+
+The policy (`shared/scripts/auto-gate.py`) passes Gate 1 only for a small or medium plan with normal
+security sensitivity, no open decisions, and an approved review of its current revision. It passes Gate 2
+only when the integrated wave review approved the current commit, every check passed or is N/A or a
+failure proven to exist on the base already, and the diff leaves dependencies, migrations, CI, agent
+instructions, scanner ignores, and build or deploy files untouched. Otherwise it stops at the usual gate
+with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
+(`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
+off, or `- Autopilot paths: <glob>, …` to protect more paths.
+
 ## Start a new project
 
 Create an empty Git repository, install the skills, and type `wf prd <idea>`. The agent asks for missing

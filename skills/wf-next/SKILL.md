@@ -23,5 +23,6 @@ and report where things stand and the exact next action, when:
 - the next stage runs in another worktree and you cannot work there: name the directory and the command.
 
 `wf next` never records an approval, never pushes, never runs `wf deploy`, and never skips a stage or an
-independent review. Stages that need a fresh context delegate as their skills say. End with
-`— wf-next · <timestamp>`.
+independent review. Passing gates by policy up to a draft PR is `wf auto`, which needs its own explicit
+request; `wf next` never acts on an earlier `wf auto` authorization. Stages that need a fresh context
+delegate as their skills say. End with `— wf-next · <timestamp>`.
