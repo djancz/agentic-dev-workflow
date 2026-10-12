@@ -1469,6 +1469,8 @@ Read the target; ran the checks.
                 self.git('rm', '-q', path)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                target.unlink()
             if isinstance(content, Path):
                 target.symlink_to(content)
             else:
@@ -1837,10 +1839,19 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         r = self.plan_gate()
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn('header Round "3" is not the last round 2', r.stdout)
-        review.write_text(rejected + '\n```\n' + fenced)
+        for unclosed in ('\n```\n' + fenced, '\n````\n' + fenced + '```\n'):
+            review.write_text(rejected + unclosed)
+            r = self.plan_gate()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn('a code fence is not closed', r.stderr)
+
+    def test_a_comment_opener_quoted_in_evidence_is_evidence(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text() + '\n### Findings\n\nNone.\n\n```html\n<!-- old header\n```\n\n'
+                          '### Late observations\n\n<!-- Round 2+ only. Omit if none. -->\n')
         r = self.plan_gate()
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn('a code fence is not closed', r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_second_severity_cannot_hide_a_must_fix_finding(self):
         self.write_plan(verdict='Approved with comments')
@@ -1905,6 +1916,38 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
                 self.assert_refused('TASK-7: the plan is not approved at its current revision')
         self.write_plan(status='Approved', approved='2026-10-01 — "plan approved, wf impl"')
         self.assertEqual(self.wave_gate().returncode, 0)
+        self.write_plan(status='Approved',
+                        approved='2026-10-01 10:00 UTC — "revision 1 was wrong; I approve revision 2"')
+        r = self.wave_gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_gate_2_needs_a_plan_review_of_the_current_revision(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        plan = self.task / 'TASK-7-plan.md'
+        plan.write_text(plan.read_text().replace('- Revision: 2', '- Revision: 3')
+                        .replace('- Approved: revision 2 by autopilot (2026-10-01 10:00 UTC)',
+                                 '- Approved: 2026-10-01 — "plan approved"'))
+        self.assert_refused('the plan review covers "plan revision 2", not the current plan revision 3')
+
+    def test_generic_requests_are_not_authorizations(self):
+        for words in ('wf next', 'none', 'Continue.', 'pokračuj'):
+            with self.subTest(words=words):
+                self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn('is a generic request', r.stdout)
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.record.write_text(self.record.read_text().replace('"wf auto fix the CSV export"', '"wf next"'))
+        self.assert_refused('the wave record is a generic request')
+
+    def test_runners_without_an_extension_or_behind_a_changed_link_are_protected(self):
+        self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`cd tools && bash check`'))
+        self.make_wave({'app.py': 'print(2)\n', 'tools/check': 'exit 0\n'}, base_files={'tools/check': 'exit 1\n'})
+        self.assert_refused('a file that a check command runs: tools/check')
+        self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`python3 scripts/check.py`'))
+        self.make_wave({'app.py': 'print(2)\n', 'scripts': Path('other')},
+                       base_files={'tools/check.py': 'pass\n', 'other/check.py': 'pass\n', 'scripts': Path('tools')})
+        self.assert_refused('a file that a check command runs: scripts')
 
     def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
         cases = {
@@ -1925,8 +1968,6 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
                                'does not name the base commit it ran on'),
             'another commit': ('FAIL (pre-existing: 190 errors on HEAD~1 0000000)',
                                'does not name the base commit it ran on'),
-            'only the command': ('FAIL (pre-existing: ruff check . on base <base>)',
-                                 'records no output from the base, only the command'),
         }
         for name, (result, reason) in cases.items():
             with self.subTest(case=name):
@@ -1934,6 +1975,11 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
                           '| build | N/A (no build step) | — |')
                 self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
                 self.assert_refused(reason)
+        # The policy checks the base SHA, in the result or the Evidence cell; the wave review checks the output.
+        checks = ('| test-unit | PASS | `12 passed` |\n| lint | FAIL (pre-existing: ruff check .) | '
+                  'base <base>: 190 errors; HEAD: the same 190 |\n| build | N/A (no build step) | — |')
+        self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
+        self.assertEqual(self.wave_gate().returncode, 0)
 
 
 class AutopilotDocs(unittest.TestCase):
