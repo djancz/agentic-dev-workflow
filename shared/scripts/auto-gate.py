@@ -4,20 +4,26 @@
   auto-gate.py plan --agents-md AGENTS.md development/tasks/TASK-7-csv-export
   auto-gate.py wave --agents-md AGENTS.md --base origin/main --head HEAD development/waves/WAVE-3.md
 
-The policy is deliberately narrow and reads only recorded facts. Gate 1 (plan) passes when the plan is a
-Draft with a Tests line and no open decisions, and its latest review approved the current revision with
-no must-fix findings; any Size and Sensitivity qualify, because a high-sensitivity task gets its
-security review in wf impl loop and Gate 2 requires that review approved. Gate 2 (wave) passes when the
-wave review approved the given HEAD with no must-fix findings, every task's implementation review (and
-security review, if any) approved its Checkpoint, which is the tip of the task branch, the full checks
-table has exactly one result per check of the wf block, at least one PASS and otherwise only N/A or a
-proven `FAIL (pre-existing: <evidence>)`, --base is the wave's base branch, is merged into HEAD and
-contains none of the wave's own commits, and the wave diff (renames counted on both sides) touches no
-protected path: dependency manifests and lockfiles, migrations, CI and repository configuration, agent
-instructions, check, lint and scanner configuration, build and deploy files, files a check command
-names, and the globs of the block's `Autopilot paths`. Every review header must agree with its last
-round. A block line `- Autopilot: disabled` refuses every gate; any other value than allowed or disabled
-is invalid.
+The policy is deliberately narrow and reads only recorded facts. Gate 1 (plan) passes when the ticket's
+Notes record the autopilot authorization, the plan is a Draft with a Tests line and no open decisions,
+and its latest review approved the current revision with no must-fix findings; any Size and Sensitivity
+qualify, because a high-sensitivity task gets its security review in wf impl loop and Gate 2 requires
+that review approved. Gate 2 (wave) passes when the wave record carries the authorization and lists
+exactly one task, the wave review approved the given HEAD with no must-fix findings, the task's
+implementation review (and its security review, required unless the plan says `Sensitivity: normal`)
+approved its Checkpoint, which is the tip of the task's `task/TASK-<N>-<slug>` branch, the full checks
+table has exactly one result per check of the wf block, no check is planned, at least one PASS and
+otherwise only N/A or a proven `FAIL (pre-existing: <evidence>)`, --base is the wave's base branch, is
+merged into HEAD and contains none of the wave's own commits, and the wave diff (renames counted on both
+sides) touches no protected path: dependency manifests and lockfiles, migrations, CI and repository
+configuration, agent instructions, check, lint and scanner configuration, build and deploy files, files
+a check command names on the base or HEAD (and the targets of such symlinks), and the globs of the
+block's `Autopilot paths`. The latest round of every review must pass the validator of a delegated round,
+and the review header must agree with it. A SHA counts only when it names exactly one commit.
+
+A block line `- Autopilot: disabled` refuses every gate. Any other value than allowed or disabled, an
+indented or repeated Autopilot, Autopilot paths or Base branch line, a repeated check name, a repeated
+record header field, or a record that is not UTF-8 is invalid input.
 
 Exit codes: 0 eligible, 1 not eligible (one reason per line), 2 invalid input.
 """
@@ -27,45 +33,64 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import importlib.util
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location('resolve_roles', HERE / 'resolve-roles.py')
-resolve_roles = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(resolve_roles)
+
+
+def load(name: str, file: str):
+    spec = importlib.util.spec_from_file_location(name, HERE / file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+resolve_roles = load('resolve_roles', 'resolve-roles.py')
+validate_review = load('validate_review', 'validate-review.py')
+validate_wave_review = load('validate_wave_review', 'validate-wave-review.py')
 
 APPROVED = {'Approved', 'Approved with comments'}
+SHA = re.compile(r'[0-9a-f]{7,40}')
 REVIEWED_COMMIT = re.compile(r'commit ([0-9a-f]{7,40})')
+SAFETY_KEYS = ('Autopilot', 'Autopilot paths', 'Base branch')
+SHELL_SEPARATORS = re.compile(r'[\s;&|()<>`\'"=]+')
 PROTECTED = (
-    # dependencies
-    'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
-    'bun.lock', 'bun.lockb', '.npmrc', '.yarnrc*', 'requirements*', '*/requirements/*', 'constraints*.txt',
-    'pyproject.toml', 'setup.py', 'setup.cfg', 'poetry.lock', 'uv.lock', 'pipfile', 'pipfile.lock',
-    'cargo.toml', 'cargo.lock', 'go.mod', 'go.sum', 'go.work*', 'gemfile', 'gemfile.lock',
-    'composer.json', 'composer.lock', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle*',
-    'gradle.lockfile', '*.csproj', 'packages.lock.json', 'mix.exs', 'mix.lock', 'flake.nix', 'flake.lock',
+    # dependencies and toolchain pins
+    'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
+    'yarn.lock', 'bun.lock', 'bun.lockb', '.npmrc', '.yarnrc*', 'lerna.json', 'nx.json', 'turbo.json',
+    'requirements*', '*/requirements/*', 'constraints*.txt', 'pyproject.toml', 'setup.py', 'setup.cfg',
+    'poetry.lock', 'uv.lock', 'pipfile', 'pipfile.lock', 'cargo.toml', 'cargo.lock', 'go.mod', 'go.sum',
+    'go.work*', 'gemfile', 'gemfile.lock', 'composer.json', 'composer.lock', 'pom.xml', 'build.gradle',
+    'build.gradle.kts', 'settings.gradle*', 'gradle.lockfile', '*.csproj', 'packages.lock.json', 'mix.exs',
+    'mix.lock', 'flake.nix', 'flake.lock', '.nvmrc', '.node-version', '.python-version', '.tool-versions',
+    'rust-toolchain*',
     # database migrations
-    '*/migrations/*', 'migrations/*', '*/migrate/*', 'alembic/*', '*/alembic/*',
+    'migrations/*', '*/migrations/*', 'migrate/*', '*/migrate/*', 'alembic/*', '*/alembic/*', 'alembic.ini',
     # CI, forge and repository configuration
     '.github/*', '*/.github/*', '.gitlab-ci.yml', '.gitlab/*', '.circleci/*', '.buildkite/*',
     'jenkinsfile', 'azure-pipelines.yml', '.woodpecker*', '.drone.yml', 'codeowners',
     '.gitignore', '.gitattributes', '.gitmodules', '.pre-commit-config.yaml',
-    # agent instructions and installed skills
-    'agents.md', 'claude.md', 'gemini.md', '.cursorrules', '.cursor/*', '.windsurfrules',
-    '.claude/*', '.agents/*', '.gemini/*', '.opencode/*', '.codex/*',
+    # agent instructions and skills
+    'agents.md', 'agents.override.md', 'claude.md', 'gemini.md', 'skill.md', '.cursorrules', '.cursor/*',
+    '.windsurfrules', '.claude/*', '.agents/*', '.gemini/*', '.opencode/*', '.codex/*',
     # check, lint, type and scanner configuration and ignores
     '.gitleaksignore', '.gitleaks.toml', '.semgrepignore', '.semgrep*', '.bandit', '.trivyignore',
     '.snyk', '.secrets.baseline', 'ruff.toml', '.ruff.toml', 'mypy.ini', '.mypy.ini', '.flake8',
     '.pylintrc', 'pylintrc', 'pytest.ini', 'tox.ini', 'noxfile.py', '.coveragerc',
-    '.eslintrc*', 'eslint.config.*', '.prettierrc*', 'prettier.config.*', 'biome.json*', 'tsconfig*.json',
-    'jest.config.*', 'vitest.config.*', 'playwright.config.*', 'cypress.config.*', '.golangci*',
-    'deny.toml', 'clippy.toml', 'rustfmt.toml', '.rustfmt.toml',
+    '.eslintrc*', 'eslint.config.*', '.eslintignore', '.prettierrc*', 'prettier.config.*', '.prettierignore',
+    '.stylelintrc*', 'stylelint.config.*', 'biome.json*', 'tsconfig*.json', 'jest.config.*',
+    'vitest.config.*', 'playwright.config.*', 'cypress.config.*', '.golangci*', 'deny.toml', 'clippy.toml',
+    'rustfmt.toml', '.rustfmt.toml',
     # build, deploy and secrets
-    'makefile', 'gnumakefile', 'justfile', 'taskfile.y*ml', 'dockerfile*', 'containerfile*',
-    '.dockerignore', 'docker-compose*', 'compose.y*ml', '.env*',
+    'makefile', 'gnumakefile', 'justfile', 'taskfile.y*ml', 'cmakelists.txt', '*.cmake', 'meson.build',
+    'meson_options.txt', 'build.zig', 'build.zig.zon', 'vite.config.*', 'webpack.config.*',
+    'rollup.config.*', 'babel.config.*', '.babelrc*', 'dockerfile*', 'containerfile*', '.dockerignore',
+    'docker-compose*', 'compose.y*ml', 'procfile', 'vercel.json', 'netlify.toml', 'fly.toml', '.env*',
 )
 
 
@@ -78,32 +103,33 @@ def read(path: Path) -> str:
         return path.read_text(encoding='utf-8')
     except OSError as exc:
         raise InputError(f'cannot read {path}: {exc.strerror or exc}') from exc
+    except UnicodeDecodeError as exc:
+        raise InputError(f'cannot read {path}: not UTF-8 ({exc.reason} at byte {exc.start})') from exc
 
 
 def uncomment(text: str) -> str:
     return re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
 
 
-def header(text: str) -> dict[str, str]:
+def clean(text: str) -> str:
+    """The text without HTML comments and fenced code blocks: examples are not records."""
+    return validate_review.FENCE.sub('', uncomment(text))
+
+
+def header(text: str, path: Path) -> dict[str, str]:
     """`Key: value` lines (with or without a leading `- `) before the first `## ` section."""
-    head = re.split(r'^## ', uncomment(text), maxsplit=1, flags=re.MULTILINE)[0]
+    head = re.split(r'^## ', clean(text), maxsplit=1, flags=re.MULTILINE)[0]
     fields: dict[str, str] = {}
     for key, value in re.findall(r'^(?:- )?([A-Z][A-Za-z -]*?): *(.*?) *$', head, flags=re.MULTILINE):
-        fields.setdefault(key, value)
+        if key in fields:
+            raise InputError(f'{path}: the header sets {key} more than once')
+        fields[key] = value
     return fields
 
 
 def sections(text: str, title: str) -> list[str]:
     return [body.strip() for body in re.findall(rf'^## {re.escape(title)}[ \t]*\n(.*?)(?=^## |\Z)',
-                                                uncomment(text), flags=re.MULTILINE | re.DOTALL)]
-
-
-def same_commit(actual: str, expected: str) -> bool:
-    """`commit <sha>` that names `expected` (full or abbreviated, at least 7 hex digits)."""
-    match = REVIEWED_COMMIT.fullmatch(actual.strip())
-    if not match or not re.fullmatch(r'[0-9a-f]{7,40}', expected):
-        return False
-    return match[1].startswith(expected) or expected.startswith(match[1])
+                                                clean(text), flags=re.MULTILINE | re.DOTALL)]
 
 
 def block(agents_md: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
@@ -114,11 +140,16 @@ def block(agents_md: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
     except ValueError as exc:
         raise InputError(str(exc)) from exc
     body = uncomment(re.search(r'<!-- wf:begin.*?-->(.*?)<!-- wf:end -->', text, flags=re.DOTALL)[1])
-    values = re.findall(r'^- Autopilot: *(.*?) *$', body, flags=re.MULTILINE)
-    if len(values) > 1:
-        raise InputError('the wf block sets Autopilot more than once')
-    if values and values[0] not in {'allowed', 'disabled'}:
-        raise InputError(f'Autopilot must be allowed or disabled, got "{values[0]}"')
+    # resolve-roles reads only `- Key: value` at the start of a line; any other spelling would be ignored.
+    for key in SAFETY_KEYS:
+        lines = re.findall(rf'^[ \t]*[-*+][ \t]+{re.escape(key)}[ \t]*:.*$', body,
+                           flags=re.MULTILINE | re.IGNORECASE)
+        if any(not line.startswith(f'- {key}:') for line in lines):
+            raise InputError(f'the wf block writes its {key} line differently; write it as "- {key}: …"')
+        if len(lines) > 1:
+            raise InputError(f'the wf block sets {key} more than once')
+    if settings.get('Autopilot', 'allowed') not in {'allowed', 'disabled'}:
+        raise InputError(f'Autopilot must be allowed or disabled, got "{settings["Autopilot"]}"')
     checks = []
     for line in body.splitlines():
         cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
@@ -127,6 +158,10 @@ def block(agents_md: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
         if cells[0].lower() == 'check' or set(''.join(cells)) <= set('-: '):
             continue
         checks.append((cells[0], '|'.join(cells[1:]).strip().strip('`')))
+    names = [name for name, _ in checks]
+    for name in names:
+        if names.count(name) > 1:
+            raise InputError(f'the wf block lists the check {name} more than once')
     return settings, checks
 
 
@@ -143,49 +178,61 @@ def one_file(directory: Path, pattern: str) -> Path | None:
     return found[0] if found else None
 
 
-def round_fields(text: str) -> tuple[int, dict[str, str]] | None:
-    """Number and `- Key: value` fields of the last `## Round <n>` section."""
-    rounds = re.findall(r'^## Round (\d+)\b[^\n]*\n(.*?)(?=^## |\Z)', uncomment(text),
-                        flags=re.MULTILINE | re.DOTALL)
+def last_round(text: str) -> tuple[int, str] | str:
+    """Number and section of the last `## Round <n>`, or why the rounds cannot be trusted."""
+    body = clean(text)
+    if re.search(r'^## Round\b(?! \d+\b)', body, flags=re.MULTILINE):
+        return 'a Round heading has no number'
+    rounds = [(int(m[1]), m[0]) for m in re.finditer(r'^## Round (\d+)\b[^\n]*(?:\n|\Z).*?(?=^## |\Z)',
+                                                     body, flags=re.MULTILINE | re.DOTALL)]
     if not rounds:
-        return None
-    number, body = rounds[-1]
-    if int(number) != max(int(n) for n, _ in rounds):
-        return None
-    fields: dict[str, str] = {}
-    for key, value in re.findall(r'^- ([A-Z][A-Za-z -]*?): *(.*?) *$', body, flags=re.MULTILINE):
-        fields.setdefault(key, value)
-    return int(number), fields
+        return 'no numbered review round to confirm the header'
+    numbers = [number for number, _ in rounds]
+    if len(set(numbers)) != len(numbers):
+        return 'a round number appears more than once'
+    if numbers[-1] != max(numbers):
+        return 'the last round is not the highest-numbered one'
+    return rounds[-1]
 
 
-def review_reasons(path: Path | None, label: str, target: str, check) -> list[str]:
-    """Reasons a review file does not approve `target`; `check(reviewed)` compares the Reviewed field.
+def review_reasons(path: Path, label: str, target: str, matches, validate) -> list[str]:
+    """Reasons a review file does not approve `target`.
 
-    The header must agree with the last round, so a header edited by hand cannot approve anything."""
-    if path is None:
+    `matches(reviewed)` compares a Reviewed value with the target, and `validate(section, number)` is the
+    validator of a delegated round. The last round must be valid and the header must agree with it, so a
+    header or a round edited by hand cannot approve anything."""
+    if not path.exists():
         return [f'{label}: no review file']
     text = read(path)
-    head = header(text)
+    head = header(text, path)
     reasons = []
+    if 'Latest verdict' in head and 'Verdict' in head:
+        reasons.append(f'{label}: the header has both Latest verdict and Verdict')
     verdict = head.get('Latest verdict') or head.get('Verdict')
     if verdict not in APPROVED:
         reasons.append(f'{label}: latest verdict is "{verdict or "missing"}", not Approved')
     if head.get('Must-fix open', '').strip() != '0':
         reasons.append(f'{label}: Must-fix open is "{head.get("Must-fix open", "missing")}", not 0')
     reviewed = head.get('Reviewed', '').split(' (', 1)[0].strip()
-    if not check(reviewed):
+    if not matches(reviewed):
         reasons.append(f'{label}: reviewed "{reviewed or "missing"}", not {target}')
-    last = round_fields(text)
-    if last is None:
-        return reasons + [f'{label}: no numbered review round to confirm the header']
-    number, body = last
+    last = last_round(text)
+    if isinstance(last, str):
+        return reasons + [f'{label}: {last}']
+    number, section = last
+    try:
+        validate(section, number)
+    except ValueError as exc:
+        reasons.append(f'{label}: round {number} is not a valid review round: {exc}')
     if head.get('Round', '').strip() != str(number):
         reasons.append(f'{label}: header Round "{head.get("Round", "missing")}" is not the last round {number}')
     for field, value in (('Verdict', verdict), ('Must-fix open', head.get('Must-fix open', '').strip()),
                          ('Reviewed', reviewed)):
-        actual = body.get(field, '').strip()
-        if field == 'Reviewed':
-            actual = actual.split(' (', 1)[0].strip()
+        values = re.findall(rf'^- {re.escape(field)}: *(.*?) *$', section, flags=re.MULTILINE)
+        if len(values) != 1:
+            reasons.append(f'{label}: round {number} has {len(values)} {field} fields, not one')
+            continue
+        actual = values[0].split(' (', 1)[0].strip() if field == 'Reviewed' else values[0]
         if actual != value:
             reasons.append(f'{label}: round {number} says {field} "{actual or "missing"}", '
                            f'but the header says "{value or "missing"}"')
@@ -201,12 +248,16 @@ def plan_gate(task_dir: Path, settings: dict[str, str]) -> tuple[list[str], str]
     task = match[1]
     plan_path = task_dir / f'{task}-plan.md'
     plan_text = read(plan_path)
-    plan = header(plan_text)
+    plan = header(plan_text, plan_path)
     reasons = disabled(settings)
 
     ticket = task_dir / f'{task}.md'
-    if ticket.exists() and header(read(ticket)).get('Status') == 'Dropped':
+    ticket_text = read(ticket) if ticket.exists() else ''
+    if ticket_text and header(ticket_text, ticket).get('Status') == 'Dropped':
         reasons.append(f'{task} is Dropped')
+    if not any(re.search(r'^(?:- )?Autopilot authorization: *\S', notes, flags=re.MULTILINE)
+               for notes in sections(ticket_text, 'Notes')):
+        reasons.append(f'the {task} ticket records no Autopilot authorization in its Notes')
     if plan.get('Status') != 'Draft':
         reasons.append(f'plan Status is "{plan.get("Status", "missing")}", not Draft')
     revision = plan.get('Revision', '')
@@ -219,34 +270,86 @@ def plan_gate(task_dir: Path, settings: dict[str, str]) -> tuple[list[str], str]
         reasons.append('plan has open decisions (one Open decisions section that says "None")')
 
     target = f'plan revision {revision}'
-    review = task_dir / f'{task}-plan-review.md'
-    reasons += review_reasons(review if review.exists() else None, 'plan review', target,
-                              lambda reviewed: reviewed == target)
+    reasons += review_reasons(task_dir / f'{task}-plan-review.md', 'plan review', target,
+                              lambda reviewed: reviewed == target,
+                              lambda section, n: validate_review.validate(section, 'plan', n, target))
     return reasons, f'Gate 1 for {task} {target}'
 
 
-def git(repo: Path, *args: str, check: bool = True) -> str | None:
-    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True)
+def git(repo: Path, *args: str, check: bool = True, strip: bool = True) -> str | None:
+    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True,
+                            encoding='utf-8', errors='surrogateescape')
     if result.returncode:
         if not check:
             return None
         raise InputError(f'git {" ".join(args)}: {result.stderr.strip()}')
-    return result.stdout.strip()
+    return result.stdout.strip() if strip else result.stdout
+
+
+def commit_named(repo: Path, sha: str) -> str | None:
+    """The one commit that a full or abbreviated SHA names; None when it names none or several.
+
+    Unlike `rev-parse <sha>`, a branch or tag that happens to be called like the SHA cannot stand in."""
+    if not SHA.fullmatch(sha):
+        return None
+    objects = (git(repo, 'rev-parse', f'--disambiguate={sha}', check=False) or '').split()
+    commits = [obj for obj in objects if git(repo, 'cat-file', '-t', obj, check=False) == 'commit']
+    return commits[0] if len(commits) == 1 else None
+
+
+def same_commit(repo: Path, reviewed: str, expected: str) -> bool:
+    """`commit <sha>` whose SHA names exactly the commit `expected`."""
+    match = REVIEWED_COMMIT.fullmatch(reviewed.strip())
+    return bool(match) and commit_named(repo, match[1]) == expected
 
 
 def is_ancestor(repo: Path, older: str, newer: str) -> bool:
     return git(repo, 'merge-base', '--is-ancestor', older, newer, check=False) is not None
 
 
-def command_files(checks: list[tuple[str, str]], repo: Path, base: str) -> list[str]:
-    """Repository files that a check command names (scripts, manage.py, config passed as arguments)."""
-    tracked = set(git(repo, 'ls-tree', '-r', '--name-only', base).splitlines())
-    found = []
-    for _, command in checks:
-        for token in re.split(r'[\s;&|()<>`\'"=]+', command):
-            token = token.removeprefix('./')
-            if token in tracked:
-                found.append(token)
+def tree(repo: Path, rev: str) -> dict[str, tuple[str, str]]:
+    """Path -> (mode, object) of every file in `rev`, read NUL-separated so that no name is quoted."""
+    entries = {}
+    for item in git(repo, 'ls-tree', '-r', '-z', '--full-tree', rev, strip=False).split('\0'):
+        if item:
+            meta, path = item.split('\t', 1)
+            mode, _, obj = meta.split(' ')
+            entries[path] = (mode, obj)
+    return entries
+
+
+def command_words(command: str, depth: int = 3) -> set[str]:
+    """Every word a shell could pass on from `command`, also inside quoted `sh -c` strings."""
+    words = set(SHELL_SEPARATORS.split(command))
+    try:
+        quoted = shlex.split(command)
+    except ValueError:
+        quoted = []
+    for word in quoted:
+        words.add(word)
+        words.update(part.strip() for part in re.split(r'[;&|()<>`=]+', word))
+        if depth and word != command and re.search(r'[\s\'"]', word):
+            words |= command_words(word, depth - 1)
+    return words
+
+
+def command_files(checks: list[tuple[str, str]], repo: Path, revs: tuple[str, ...]) -> set[str]:
+    """Files that a check command names in any of `revs` (scripts, manage.py, config passed as
+    arguments), and the targets of those that are symlinks."""
+    trees = [tree(repo, rev) for rev in revs]
+    found: set[str] = set()
+    pending = [posixpath.normpath(word.removeprefix('./'))
+               for _, command in checks for word in command_words(command) if word]
+    while pending:
+        path = pending.pop()
+        hits = [entries[path] for entries in trees if path in entries]
+        if path in found or not hits:
+            continue
+        found.add(path)
+        for mode, obj in hits:
+            if mode == '120000':
+                target = git(repo, 'cat-file', 'blob', obj, strip=False)
+                pending.append(posixpath.normpath(posixpath.join(posixpath.dirname(path), target)))
     return found
 
 
@@ -264,15 +367,16 @@ def protected_paths(paths: list[str], extra: list[str]) -> list[str]:
 
 RESULT_PASS = re.compile(r'PASS')
 RESULT_NA = re.compile(r'N/A \([^)]*\w[^)]*\)')
-RESULT_PRE_EXISTING = re.compile(r'FAIL \(pre-existing(?:: [^)]+)?\)')
+RESULT_PRE_EXISTING = re.compile(r'FAIL \(pre-existing: [^)]*\w[^)]*\)')
 
 
 def checks_reasons(text: str, checks: list[tuple[str, str]]) -> list[str]:
+    reasons = [f'check {name} is planned, so it is NOT RUN (planned)'
+               for name, command in checks if command.lower().startswith('planned')]
     found = sections(text, 'Full checks')
     if len(found) != 1:
-        return ['the wave record needs exactly one Full checks section']
+        return reasons + ['the wave record needs exactly one Full checks section']
     rows: dict[str, list[tuple[str, str]]] = {}
-    reasons = []
     for line in found[0].splitlines():
         if not line.strip().startswith('|'):
             continue
@@ -305,32 +409,68 @@ def checks_reasons(text: str, checks: list[tuple[str, str]]) -> list[str]:
     return reasons
 
 
+def task_reasons(task: str, tasks_root: Path, repo: Path) -> list[str]:
+    """Reasons the task's reviews do not approve the tip of its task branch."""
+    task_dir = one_file(tasks_root, f'{task}-*') if tasks_root.is_dir() else None
+    if task_dir is None or not task_dir.is_dir():
+        return [f'{task}: no task directory']
+    reasons = []
+    plan_path = task_dir / f'{task}-plan.md'
+    plan = header(read(plan_path), plan_path) if plan_path.exists() else {}
+    if not plan:
+        reasons.append(f'{task}: no plan')
+    summary = task_dir / f'{task}-impl-summary.md'
+    fields = header(read(summary), summary) if summary.exists() else {}
+    checkpoint = fields.get('Checkpoint', '')
+    if not SHA.fullmatch(checkpoint):
+        return reasons + [f'{task}: the implementation summary has no Checkpoint']
+    full = commit_named(repo, checkpoint)
+    if full is None:
+        return reasons + [f'{task}: Checkpoint {checkpoint} does not name exactly one commit in this repository']
+    task_branch = fields.get('Branch', '')
+    if not task_branch.startswith(f'task/{task}-'):
+        reasons.append(f'{task}: Branch "{task_branch or "missing"}" is not a task/{task}-<slug> branch')
+    elif git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{task_branch}', check=False) != full:
+        reasons.append(f'{task}: Checkpoint {checkpoint[:12]} is not the tip of its branch "{task_branch}"')
+    reviews = [('impl', f'{task}-impl-review.md', 'implementation')]
+    security = task_dir / f'{task}-security-review.md'
+    if plan.get('Sensitivity', '').strip() != 'normal' or security.exists():
+        reviews.append(('security', security.name, 'security'))
+    for kind, name, label in reviews:
+        reasons += review_reasons(task_dir / name, f'{task} {label} review', f'commit {checkpoint[:12]}',
+                                  lambda reviewed: same_commit(repo, reviewed, full),
+                                  lambda section, n, kind=kind: validate_review.validate(
+                                      section, kind, n, f'commit {full}'))
+    return reasons
+
+
 def wave_gate(record: Path, settings: dict[str, str], checks: list[tuple[str, str]], base: str,
               head: str, repo: Path) -> tuple[list[str], str]:
     text = read(record)
-    wave = header(text)
+    wave = header(text, record)
     match = re.match(r'(WAVE-\d+)\.md$', record.name)
     if not match:
         raise InputError(f'{record} is not a WAVE-<N>.md record')
     wave_id = match[1]
     head_sha = git(repo, 'rev-parse', '--verify', f'{head}^{{commit}}')
-    base_sha = git(repo, 'rev-parse', '--verify', f'{base}^{{commit}}')
     reasons = disabled(settings)
 
+    # Resolve the base fully qualified, so a local branch called origin/<base> cannot stand in for it.
     branch = wave.get('Base branch', '')
-    if base not in {branch, f'origin/{branch}'} or not branch:
+    qualified = {branch: f'refs/heads/{branch}', f'origin/{branch}': f'refs/remotes/origin/{branch}'}
+    if not branch or base not in qualified:
         reasons.append(f'--base {base} is not the wave record\'s Base branch "{branch or "missing"}"')
+    base_sha = git(repo, 'rev-parse', '--verify', f'{qualified.get(base, base)}^{{commit}}')
     if settings.get('Base branch') and branch != settings['Base branch']:
         reasons.append(f'the wave Base branch "{branch}" is not the wf block\'s "{settings["Base branch"]}"')
-    base_commit = wave.get('Base commit', '')
-    if not re.fullmatch(r'[0-9a-f]{7,40}', base_commit) or git(
-            repo, 'rev-parse', '--verify', '--quiet', f'{base_commit}^{{commit}}', check=False) is None:
-        reasons.append(f'the wave record has no valid Base commit ("{base_commit or "missing"}")')
+    base_commit = commit_named(repo, wave.get('Base commit', ''))
+    if base_commit is None:
+        reasons.append(f'the wave record has no valid Base commit ("{wave.get("Base commit") or "missing"}")')
     elif not (is_ancestor(repo, base_commit, base_sha) and is_ancestor(repo, base_commit, head_sha)):
-        reasons.append(f'the recorded Base commit {base_commit} is not an ancestor of {base} and HEAD')
+        reasons.append(f'the recorded Base commit {base_commit[:12]} is not an ancestor of {base} and HEAD')
     if not is_ancestor(repo, base_sha, head_sha):
         reasons.append(f'{base} is not merged into HEAD; sync with the base and review again')
-    elif re.fullmatch(r'[0-9a-f]{7,40}', base_commit) and is_ancestor(repo, base_commit, head_sha):
+    elif base_commit and is_ancestor(repo, base_commit, head_sha):
         # The wave's own commits are its first-parent chain since the recorded base. None of them may be
         # reachable from the base ref, or a moved base ref would hide them from the diff below.
         own = git(repo, 'rev-list', '--first-parent', f'{base_commit}..{head_sha}').splitlines()
@@ -341,51 +481,28 @@ def wave_gate(record: Path, settings: dict[str, str], checks: list[tuple[str, st
 
     if wave.get('Status') not in {'In progress', 'Review requested'}:
         reasons.append(f'wave Status is "{wave.get("Status", "missing")}", not In progress or Review requested')
-    review = record.with_name(f'{wave_id}-review.md')
-    reasons += review_reasons(review if review.exists() else None, 'wave review', f'commit {head_sha[:12]}',
-                              lambda reviewed: same_commit(reviewed, head_sha))
+    if wave.get('Autopilot', '').strip().lower() in {'', 'none', 'pending'}:
+        reasons.append('the wave record has no Autopilot authorization')
+    reasons += review_reasons(record.with_name(f'{wave_id}-review.md'), 'wave review',
+                              f'commit {head_sha[:12]}', lambda reviewed: same_commit(repo, reviewed, head_sha),
+                              lambda section, n: validate_wave_review.validate(section, head_sha, n))
 
-    tasks = re.findall(r'TASK-\d+', wave.get('Tasks', ''))
-    if not tasks:
-        reasons.append('the wave record lists no tasks')
-    tasks_root = record.parent.parent / 'tasks'
-    for task in tasks:
-        task_dir = one_file(tasks_root, f'{task}-*') if tasks_root.is_dir() else None
-        if task_dir is None or not task_dir.is_dir():
-            reasons.append(f'{task}: no task directory')
-            continue
-        summary = task_dir / f'{task}-impl-summary.md'
-        fields = header(read(summary)) if summary.exists() else {}
-        checkpoint = fields.get('Checkpoint', '')
-        if not re.fullmatch(r'[0-9a-f]{7,40}', checkpoint):
-            reasons.append(f'{task}: the implementation summary has no Checkpoint')
-            continue
-        full = git(repo, 'rev-parse', '--verify', '--quiet', f'{checkpoint}^{{commit}}', check=False)
-        if full is None:
-            reasons.append(f'{task}: Checkpoint {checkpoint} is not a commit in this repository')
-            continue
-        task_branch = fields.get('Branch', '')
-        tip = git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{task_branch}', check=False) \
-            if task_branch else None
-        if tip != full:
-            reasons.append(f'{task}: Checkpoint {checkpoint[:12]} is not the tip of its branch '
-                           f'"{task_branch or "missing"}"')
-        impl = task_dir / f'{task}-impl-review.md'
-        reasons += review_reasons(impl if impl.exists() else None, f'{task} implementation review',
-                                  f'commit {checkpoint[:12]}', lambda r, c=full: same_commit(r, c))
-        security = task_dir / f'{task}-security-review.md'
-        if security.exists():
-            reasons += review_reasons(security, f'{task} security review', f'commit {checkpoint[:12]}',
-                                      lambda r, c=full: same_commit(r, c))
+    tasks = wave.get('Tasks', '').strip()
+    if re.fullmatch(r'TASK-\d+', tasks):
+        reasons += task_reasons(tasks, record.parent.parent / 'tasks', repo)
+    else:
+        reasons.append(f'the autopilot covers a wave of exactly one task, but Tasks is "{tasks or "missing"}"')
 
     reasons += checks_reasons(text, checks)
 
     extra = [p.strip() for p in settings.get('Autopilot paths', '').split(',') if p.strip()]
-    # --no-renames lists both sides of a rename, so moving a protected file away is caught too.
-    changed = git(repo, 'diff', '--no-renames', '--name-only', f'{base_sha}..{head_sha}').splitlines()
+    # --no-renames lists both sides of a rename, so moving a protected file away is caught too; -z keeps
+    # names with unusual characters unquoted.
+    changed = [path for path in git(repo, 'diff', '--no-renames', '--name-only', '-z',
+                                    f'{base_sha}..{head_sha}', strip=False).split('\0') if path]
     for path in protected_paths(changed, extra):
         reasons.append(f'the wave changes a protected path: {path}')
-    for path in sorted(set(changed) & set(command_files(checks, repo, base_sha))):
+    for path in sorted(set(changed) & command_files(checks, repo, (base_sha, head_sha))):
         reasons.append(f'the wave changes a file that a check command runs: {path}')
     if not changed:
         reasons.append(f'the wave has no changes against {base}')

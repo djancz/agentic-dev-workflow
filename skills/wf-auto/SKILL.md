@@ -60,6 +60,7 @@ stage print one line: stage, outcome, artifact.
    section in the body (`references/autopilot.md` → After Gate 2). Stop there.
 
 Before each gate decision, re-read the headers from disk; never decide from memory of an earlier stage.
+The policy refuses a gate when the ticket or wave record lacks the authorization, so record it first.
 A human reply at a stopped gate is an ordinary gate answer: record it as the stage's skill says. The
 autopilot continues only after a new `wf auto TASK-<N>` or `wf auto WAVE-<N>`.
 

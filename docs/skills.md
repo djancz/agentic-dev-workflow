@@ -96,8 +96,9 @@ finding IDs and is recorded in the PR. Silence is not approval.
 `wf auto <goal>` (or `wf auto TASK-N` / `wf auto WAVE-N` to continue) is an explicit, up-front
 authorization for Gate 1 and Gate 2 of one task in a wave of one. It stops at the push-and-PR question
 with the PR prepared; that question, the push and the merge stay yours. Each gate passes only when
-`scripts/auto-gate.py` reports it eligible; otherwise the run stops at the ordinary gate and shows the
-policy's reasons. The policy, the protected paths, and what is never automatic are in
+`scripts/auto-gate.py` reports it eligible from the recorded facts: the authorization in the ticket and
+wave record, valid review rounds that match their headers, the checks, and the diff. Otherwise the run
+stops at the ordinary gate and shows the policy's reasons. The policy, the protected paths, and what is never automatic are in
 `shared/autopilot.md`. Approvals it records read `Approved: … by autopilot (<timestamp>)`. It never
 pushes, opens or merges a PR, force-pushes, deploys, accepts findings, or extends a round cap. Block
 keys: `Autopilot: allowed | disabled` and `Autopilot paths: <glob>, …` (more protected paths; the

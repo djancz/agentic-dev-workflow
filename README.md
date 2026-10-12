@@ -113,11 +113,14 @@ you:   wf auto CSV export drops rows with empty names; export them with an empty
 agent: TASK-7 … plan approved by autopilot … wave approved by autopilot … PR draft: <…>. Push and open it?
 ```
 
-The policy (`shared/scripts/auto-gate.py`) passes Gate 1 for a plan with no open decisions and an
-approved review of its current revision. It passes Gate 2
-only when the integrated wave review approved the current commit, every check passed or is N/A or a
-failure proven to exist on the base already, and the diff leaves dependencies, migrations, CI, agent
-instructions, scanner ignores, and build or deploy files untouched. Otherwise it stops at the usual gate
+The policy (`shared/scripts/auto-gate.py`) reads only the recorded facts, including your recorded
+authorization. It passes Gate 1 for a plan with no open decisions and an approved review of its current
+revision. It passes Gate 2 for a wave of that one task only when the integrated wave review approved the
+current commit, the task's implementation review (and its security review, for a sensitive task)
+approved the tip of its task branch, every check passed or is N/A or a failure proven to exist on the
+base already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores,
+build or deploy files, and the files the checks run untouched. A review counts only when its last round
+is valid and matches its header. Otherwise it stops at the usual gate
 with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
 (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
 off, or `- Autopilot paths: <glob>, …` to protect more paths.
