@@ -1271,6 +1271,7 @@ class AutoGate(unittest.TestCase):
 
 - Status: Open
 - Wave: WAVE-3
+- Branch: task/TASK-7-csv-export
 
 ## Notes
 
@@ -1284,7 +1285,7 @@ class AutoGate(unittest.TestCase):
 - Revision: 2
 - Size: {size}
 - Sensitivity: {sensitivity}
-- Approved: —
+- Approved: {approved}
 - Wave: WAVE-3
 - Tests: {tests}
 - Updated: 2026-10-01 10:00 UTC
@@ -1353,10 +1354,11 @@ Read the target; ran the checks.
     def write_plan(self, status='Draft', size='S', sensitivity='normal', decisions='None.',
                    tests='required', verdict='Approved', must_fix='0', reviewed='plan revision 2',
                    notes='Autopilot authorization: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"',
-                   **rounds):
+                   approved='—', **rounds):
         (self.task / 'TASK-7.md').write_text(self.TICKET.format(notes=notes))
         (self.task / 'TASK-7-plan.md').write_text(self.PLAN.format(
-            status=status, size=size, sensitivity=sensitivity, decisions=decisions, tests=tests))
+            status=status, size=size, sensitivity=sensitivity, decisions=decisions, tests=tests,
+            approved=approved))
         (self.task / 'TASK-7-plan-review.md').write_text(
             self.review('Plan', verdict, must_fix, reviewed, **rounds))
 
@@ -1474,7 +1476,8 @@ Read the target; ran the checks.
     def make_wave(self, changed: dict[str, str | Path | None], checks: str | None = None,
                   status: str = 'Review requested', base_files: dict[str, str | Path] | None = None,
                   sensitivity: str = 'normal'):
-        self.write_plan(status='Approved', sensitivity=sensitivity)
+        self.write_plan(status='Approved', sensitivity=sensitivity,
+                        approved='revision 2 by autopilot (2026-10-01 10:00 UTC)')
         if getattr(self, 'repo', None) and self.repo.exists():
             shutil.rmtree(self.repo)
         self.repo = self.tmp / 'repo'
@@ -1513,7 +1516,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
 
 | Check | Result | Evidence |
 |---|---|---|
-{self.CHECKS if checks is None else checks}
+{self.CHECKS if checks is None else checks.replace('<base>', self.base[:12])}
 
 ## Review and open findings
 """)
@@ -1543,7 +1546,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
 
     def test_wave_gate_allows_proven_pre_existing_failures(self):
         checks = ('| test-unit | PASS | `12 passed` |\n'
-                  '| lint | FAIL (pre-existing: 190 errors on base, 190 on HEAD) | `ruff check .` |\n'
+                  '| lint | FAIL (pre-existing: 190 errors on base <base>, 190 on HEAD) | `ruff check .` |\n'
                   '| build | N/A (no build step) | — |')
         self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
         r = self.wave_gate()
@@ -1671,7 +1674,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         text = self.record.read_text()
         self.record.write_text(text.replace('Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"',
                                             'Autopilot: none'))
-        self.assert_refused('the wave record has no Autopilot authorization')
+        self.assert_refused('the wave record records no Autopilot authorization')
         self.record.write_text(text.replace('Tasks: TASK-7', 'Tasks: TASK-7, TASK-8'))
         self.assert_refused('a wave of exactly one task, but Tasks is "TASK-7, TASK-8"')
 
@@ -1816,6 +1819,117 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         r = self.plan_gate()
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('not UTF-8', r.stderr)
+
+    # Regressions from the second review round
+
+    def test_longer_or_unclosed_fences_cannot_hide_a_round(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        rejected = self.review('Plan', 'Approved', '0', 'plan revision 2', round_verdict='Changes requested',
+                               round_must_fix='1').replace('- Round: 2', '- Round: 3')
+        fenced = ('\n## Round 3 — x\n\n- Verdict: Approved\n- Must-fix open: 0\n- Reviewed: plan revision 2\n'
+                  '- Reviewer: x\n\n### Method\n\nRead it.\n')
+        review.write_text(rejected + '\n````\n```\n' + fenced + '````\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('header Round "3" is not the last round 2', r.stdout)
+        review.write_text(rejected + '\n```\n' + fenced)
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('a code fence is not closed', r.stderr)
+
+    def test_a_second_severity_cannot_hide_a_must_fix_finding(self):
+        self.write_plan(verdict='Approved with comments')
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text() + '\n### Findings\n\n### [P2-1] Export loses rows\n'
+                          '- Severity: Minor\n- Severity: Major\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('every finding heading must have one valid Severity', r.stdout)
+
+    def test_authorization_must_be_recorded_and_for_this_task(self):
+        cases = {
+            'none': ('Autopilot authorization: none', 'records no Autopilot authorization'),
+            'no words': ('Autopilot authorization: 2026-10-01 09:00 UTC — ""', 'records no Autopilot'),
+            'another task': ('Autopilot authorization: 2026-10-01 09:00 UTC — "wf auto TASK-8"',
+                             'is for TASK-8, not this task'),
+            'latest counts': ('Autopilot authorization: 2026-10-01 09:00 UTC — "wf auto TASK-7"\n'
+                              'Autopilot authorization: 2026-10-02 09:00 UTC — "wf auto TASK-9"',
+                              'is for TASK-9, not this task'),
+        }
+        for name, (notes, reason) in cases.items():
+            with self.subTest(case=name):
+                self.write_plan(notes=notes)
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn(reason, r.stdout)
+        self.write_plan(notes='Autopilot authorization: 2026-10-02 09:00 UTC — "wf auto TASK-7"')
+        self.assertEqual(self.plan_gate().returncode, 0)
+
+    def test_wave_authorization_must_be_for_this_wave(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        text = self.record.read_text()
+        for words, ok in (('wf auto TASK-8', False), ('wf auto WAVE-4', False), ('wf auto WAVE-3', True),
+                          ('wf auto TASK-7', True)):
+            with self.subTest(words=words):
+                self.record.write_text(text.replace('"wf auto fix the CSV export"', f'"{words}"'))
+                r = self.wave_gate()
+                self.assertEqual(r.returncode, 0 if ok else 1, r.stdout + r.stderr)
+
+    def test_task_branch_must_be_the_one_the_ticket_records(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.git('branch', 'task/TASK-7-old', self.base)
+        summary = self.task / 'TASK-7-impl-summary.md'
+        summary.write_text(summary.read_text().replace(self.checkpoint, self.base)
+                           .replace('task/TASK-7-csv-export', 'task/TASK-7-old'))
+        (self.task / 'TASK-7-impl-review.md').write_text(
+            self.review('Implementation', 'Approved', '0', f'commit {self.base[:12]}'))
+        self.assert_refused('Branch "task/TASK-7-old" is not the branch the ticket records')
+
+    def test_gate_2_needs_the_plan_approved_at_its_current_revision(self):
+        cases = {
+            'draft again': dict(status='Draft', approved='—'),
+            'older revision approved': dict(status='Approved', approved='revision 1 by autopilot (x)'),
+            'no approval recorded': dict(status='Approved', approved='—'),
+        }
+        for name, plan in cases.items():
+            with self.subTest(case=name):
+                self.make_wave({'app.py': 'print(2)\n'}, sensitivity='high')
+                (self.task / 'TASK-7-security-review.md').write_text(
+                    self.review('Security', 'Approved', '0', f'commit {self.checkpoint[:12]}'))
+                self.write_plan(sensitivity='normal', **plan)
+                self.assert_refused('TASK-7: the plan is not approved at its current revision')
+        self.write_plan(status='Approved', approved='2026-10-01 — "plan approved, wf impl"')
+        self.assertEqual(self.wave_gate().returncode, 0)
+
+    def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
+        cases = {
+            'cd': ('`cd tools && python3 check.py`', {'tools/check.py': 'pass\n'}),
+            'directory symlink': ('`python3 scripts/check.py`',
+                                  {'tools/check.py': 'pass\n', 'scripts': Path('tools')}),
+        }
+        for name, (command, base_files) in cases.items():
+            with self.subTest(case=name):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', command))
+                self.make_wave({'app.py': 'print(2)\n', 'tools/check.py': 'raise SystemExit(0)\n'},
+                               base_files=base_files)
+                self.assert_refused('a file that a check command runs: tools/check.py')
+
+    def test_a_pre_existing_failure_must_show_the_base_failure(self):
+        cases = {
+            'no base commit': ('FAIL (pre-existing: 190 errors on base, 190 on HEAD)',
+                               'does not name the base commit it ran on'),
+            'another commit': ('FAIL (pre-existing: 190 errors on HEAD~1 0000000)',
+                               'does not name the base commit it ran on'),
+            'only the command': ('FAIL (pre-existing: ruff check . on base <base>)',
+                                 'records no output from the base, only the command'),
+        }
+        for name, (result, reason) in cases.items():
+            with self.subTest(case=name):
+                checks = (f'| test-unit | PASS | `12 passed` |\n| lint | {result} | `ruff check .` |\n'
+                          '| build | N/A (no build step) | — |')
+                self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
+                self.assert_refused(reason)
 
 
 class AutopilotDocs(unittest.TestCase):

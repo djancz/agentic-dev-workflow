@@ -4,26 +4,30 @@
   auto-gate.py plan --agents-md AGENTS.md development/tasks/TASK-7-csv-export
   auto-gate.py wave --agents-md AGENTS.md --base origin/main --head HEAD development/waves/WAVE-3.md
 
-The policy is deliberately narrow and reads only recorded facts. Gate 1 (plan) passes when the ticket's
-Notes record the autopilot authorization, the plan is a Draft with a Tests line and no open decisions,
-and its latest review approved the current revision with no must-fix findings; any Size and Sensitivity
-qualify, because a high-sensitivity task gets its security review in wf impl loop and Gate 2 requires
-that review approved. Gate 2 (wave) passes when the wave record carries the authorization and lists
-exactly one task, the wave review approved the given HEAD with no must-fix findings, the task's
-implementation review (and its security review, required unless the plan says `Sensitivity: normal`)
-approved its Checkpoint, which is the tip of the task's `task/TASK-<N>-<slug>` branch, the full checks
-table has exactly one result per check of the wf block, no check is planned, at least one PASS and
-otherwise only N/A or a proven `FAIL (pre-existing: <evidence>)`, --base is the wave's base branch, is
-merged into HEAD and contains none of the wave's own commits, and the wave diff (renames counted on both
-sides) touches no protected path: dependency manifests and lockfiles, migrations, CI and repository
-configuration, agent instructions, check, lint and scanner configuration, build and deploy files, files
-a check command names on the base or HEAD (and the targets of such symlinks), and the globs of the
-block's `Autopilot paths`. The latest round of every review must pass the validator of a delegated round,
-and the review header must agree with it. A SHA counts only when it names exactly one commit.
+The policy is deliberately narrow and reads only recorded facts. An authorization reads
+`<timestamp> — "<the human's words>"`; when the words name a task or wave, it must be this one. Gate 1
+(plan) passes when the latest authorization in the ticket's Notes qualifies, the plan is a Draft with a
+Tests line and no open decisions, and its latest review approved the current revision with no must-fix
+findings; any Size and Sensitivity qualify, because a high-sensitivity task gets its security review in
+wf impl loop and Gate 2 requires that review approved. Gate 2 (wave) passes when the wave record's
+Autopilot line qualifies and the record lists exactly one task, whose plan is approved at its current
+revision; the wave review approved the given HEAD with no must-fix findings; the task's implementation
+review (and its security review, required unless the plan says `Sensitivity: normal`) approved its
+Checkpoint, which is the tip of the `task/TASK-<N>-<slug>` branch that the ticket records; the full
+checks table has exactly one result per check of the wf block, no check is planned, at least one PASS
+and otherwise only N/A or `FAIL (pre-existing: <evidence>)` whose evidence names the base commit and
+more than the command; --base is the wave's base branch, is merged into HEAD and contains none of the
+wave's own commits; and the wave diff (renames counted on both sides) touches no protected path:
+dependency manifests and lockfiles, migrations, CI and repository configuration, agent instructions,
+check, lint and scanner configuration, build and deploy files, files a check command names on the base
+or HEAD (and the targets of such symlinks), any file whose name a check command mentions as a path or
+with an extension, and the globs of the block's `Autopilot paths`. The latest round of every review
+must pass the validator of a delegated round, and the review header must agree with it. A SHA counts
+only when it names exactly one commit.
 
 A block line `- Autopilot: disabled` refuses every gate. Any other value than allowed or disabled, an
 indented or repeated Autopilot, Autopilot paths or Base branch line, a repeated check name, a repeated
-record header field, or a record that is not UTF-8 is invalid input.
+record header field, an unclosed code fence in a record, or a record that is not UTF-8 is invalid input.
 
 Exit codes: 0 eligible, 1 not eligible (one reason per line), 2 invalid input.
 """
@@ -98,13 +102,17 @@ class InputError(ValueError):
     """The records or arguments cannot be read; not a policy refusal."""
 
 
-def read(path: Path) -> str:
+def read(path: Path, record: bool = True) -> str:
+    """A file's text; a record must not leave a code fence open, which would hide what follows it."""
     try:
-        return path.read_text(encoding='utf-8')
+        text = path.read_text(encoding='utf-8')
     except OSError as exc:
         raise InputError(f'cannot read {path}: {exc.strerror or exc}') from exc
     except UnicodeDecodeError as exc:
         raise InputError(f'cannot read {path}: not UTF-8 ({exc.reason} at byte {exc.start})') from exc
+    if record and re.search(r'^[ \t]*(`{3,}|~{3,})', clean(text), flags=re.MULTILINE):
+        raise InputError(f'{path}: a code fence is not closed')
+    return text
 
 
 def uncomment(text: str) -> str:
@@ -134,7 +142,7 @@ def sections(text: str, title: str) -> list[str]:
 
 def block(agents_md: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
     """The wf block's settings and its `| Check | Command |` rows."""
-    text = read(agents_md)
+    text = read(agents_md, record=False)
     try:
         settings = resolve_roles.block_settings(text)
     except ValueError as exc:
@@ -163,6 +171,19 @@ def block(agents_md: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
         if names.count(name) > 1:
             raise InputError(f'the wf block lists the check {name} more than once')
     return settings, checks
+
+
+def authorization_reasons(value: str | None, where: str, allowed: set[str]) -> list[str]:
+    """Reasons `<timestamp> — "<the human's words>"` is not an authorization for this task or wave.
+
+    The words may name a task or wave (`wf auto TASK-7`); then it must be one of `allowed`."""
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}\b[^"]*?) +[—-] +"(.*\w.*)"', (value or '').strip())
+    if not match:
+        return [f'{where} records no Autopilot authorization as <timestamp> — "<the human\'s words>"']
+    other = sorted(set(re.findall(r'\b(?:TASK|WAVE)-\d+\b', match[2])) - allowed)
+    if other:
+        return [f'the Autopilot authorization in {where} is for {", ".join(other)}, not this task']
+    return []
 
 
 def disabled(settings: dict[str, str]) -> list[str]:
@@ -255,9 +276,13 @@ def plan_gate(task_dir: Path, settings: dict[str, str]) -> tuple[list[str], str]
     ticket_text = read(ticket) if ticket.exists() else ''
     if ticket_text and header(ticket_text, ticket).get('Status') == 'Dropped':
         reasons.append(f'{task} is Dropped')
-    if not any(re.search(r'^(?:- )?Autopilot authorization: *\S', notes, flags=re.MULTILINE)
-               for notes in sections(ticket_text, 'Notes')):
-        reasons.append(f'the {task} ticket records no Autopilot authorization in its Notes')
+    # The latest authorization in the Notes counts; `wf auto TASK-<N>` adds a new one below the first.
+    authorizations = [value for notes in sections(ticket_text, 'Notes')
+                      for value in re.findall(r'^(?:- )?Autopilot authorization: *(.*?) *$', notes,
+                                              flags=re.MULTILINE)]
+    allowed = {task} | ({plan['Wave']} if re.fullmatch(r'WAVE-\d+', plan.get('Wave', '')) else set())
+    reasons += authorization_reasons(authorizations[-1] if authorizations else None,
+                                     f'the {task} ticket\'s Notes', allowed)
     if plan.get('Status') != 'Draft':
         reasons.append(f'plan Status is "{plan.get("Status", "missing")}", not Draft')
     revision = plan.get('Revision', '')
@@ -353,6 +378,19 @@ def command_files(checks: list[tuple[str, str]], repo: Path, revs: tuple[str, ..
     return found
 
 
+def command_names(checks: list[tuple[str, str]]) -> set[str]:
+    """File names that a check command mentions as a path or with an extension. A command can reach a file
+    through `cd`, a symlinked directory or a relative path, so a changed file with such a name counts
+    as run by the check wherever it is."""
+    names = set()
+    for _, command in checks:
+        for word in command_words(command):
+            name = posixpath.basename(posixpath.normpath(word)) if word else ''
+            if name.strip('.') and ('/' in word or '.' in name):
+                names.add(name)
+    return names
+
+
 def protected_paths(paths: list[str], extra: list[str]) -> list[str]:
     patterns = [p.lower() for p in (*PROTECTED, *extra)]
     hits = []
@@ -370,7 +408,21 @@ RESULT_NA = re.compile(r'N/A \([^)]*\w[^)]*\)')
 RESULT_PRE_EXISTING = re.compile(r'FAIL \(pre-existing: [^)]*\w[^)]*\)')
 
 
-def checks_reasons(text: str, checks: list[tuple[str, str]]) -> list[str]:
+def base_evidence_reason(name: str, result: str, command: str, repo: Path, bases: set[str]) -> str | None:
+    """Why `FAIL (pre-existing: <evidence>)` does not show the failure on the base, or None.
+
+    The evidence names the base commit the check ran on and says more than the command."""
+    evidence = result[len('FAIL (pre-existing:'):-1]
+    shas = re.findall(r'\b[0-9a-f]{7,40}\b', evidence)
+    if not any(commit_named(repo, sha) in bases for sha in shas):
+        return f'check {name}: the pre-existing failure does not name the base commit it ran on'
+    rest = re.sub(r'\b[0-9a-f]{7,40}\b|\b(?:on|at|in|base|commit)\b|[`\s.,:;()—-]', '', evidence)
+    if not rest or rest == re.sub(r'[`\s.,:;()—-]', '', command):
+        return f'check {name}: the pre-existing failure records no output from the base, only the command'
+    return None
+
+
+def checks_reasons(text: str, checks: list[tuple[str, str]], repo: Path, bases: set[str]) -> list[str]:
     reasons = [f'check {name} is planned, so it is NOT RUN (planned)'
                for name, command in checks if command.lower().startswith('planned')]
     found = sections(text, 'Full checks')
@@ -402,6 +454,8 @@ def checks_reasons(text: str, checks: list[tuple[str, str]]) -> list[str]:
         if RESULT_PRE_EXISTING.fullmatch(result):
             if not evidence.strip(' —-'):
                 reasons.append(f'check {name}: a pre-existing failure needs the base evidence')
+            elif problem := base_evidence_reason(name, result, dict(checks).get(name, ''), repo, bases):
+                reasons.append(problem)
             continue
         reasons.append(f'check {name}: {result or "no result"}')
     if not any(RESULT_PASS.fullmatch(results[0][0]) for results in rows.values()):
@@ -417,8 +471,14 @@ def task_reasons(task: str, tasks_root: Path, repo: Path) -> list[str]:
     reasons = []
     plan_path = task_dir / f'{task}-plan.md'
     plan = header(read(plan_path), plan_path) if plan_path.exists() else {}
-    if not plan:
-        reasons.append(f'{task}: no plan')
+    # The plan's Sensitivity decides the security review, so only an approved current revision counts.
+    approved = re.search(r'\brevision (\d+)\b', plan.get('Approved', ''))
+    if (plan.get('Status') != 'Approved' or plan.get('Approved', '').strip() in {'', '—', '-', 'none'}
+            or (approved and approved[1] != plan.get('Revision'))):
+        reasons.append(f'{task}: the plan is not approved at its current revision (Status '
+                       f'"{plan.get("Status", "missing")}", Approved "{plan.get("Approved", "missing")}")')
+    ticket = task_dir / f'{task}.md'
+    ticket_branch = header(read(ticket), ticket).get('Branch', '') if ticket.exists() else ''
     summary = task_dir / f'{task}-impl-summary.md'
     fields = header(read(summary), summary) if summary.exists() else {}
     checkpoint = fields.get('Checkpoint', '')
@@ -430,6 +490,9 @@ def task_reasons(task: str, tasks_root: Path, repo: Path) -> list[str]:
     task_branch = fields.get('Branch', '')
     if not task_branch.startswith(f'task/{task}-'):
         reasons.append(f'{task}: Branch "{task_branch or "missing"}" is not a task/{task}-<slug> branch')
+    elif task_branch != ticket_branch:
+        reasons.append(f'{task}: Branch "{task_branch}" is not the branch the ticket records '
+                       f'("{ticket_branch or "missing"}")')
     elif git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{task_branch}', check=False) != full:
         reasons.append(f'{task}: Checkpoint {checkpoint[:12]} is not the tip of its branch "{task_branch}"')
     reviews = [('impl', f'{task}-impl-review.md', 'implementation')]
@@ -481,8 +544,6 @@ def wave_gate(record: Path, settings: dict[str, str], checks: list[tuple[str, st
 
     if wave.get('Status') not in {'In progress', 'Review requested'}:
         reasons.append(f'wave Status is "{wave.get("Status", "missing")}", not In progress or Review requested')
-    if wave.get('Autopilot', '').strip().lower() in {'', 'none', 'pending'}:
-        reasons.append('the wave record has no Autopilot authorization')
     reasons += review_reasons(record.with_name(f'{wave_id}-review.md'), 'wave review',
                               f'commit {head_sha[:12]}', lambda reviewed: same_commit(repo, reviewed, head_sha),
                               lambda section, n: validate_wave_review.validate(section, head_sha, n))
@@ -492,8 +553,9 @@ def wave_gate(record: Path, settings: dict[str, str], checks: list[tuple[str, st
         reasons += task_reasons(tasks, record.parent.parent / 'tasks', repo)
     else:
         reasons.append(f'the autopilot covers a wave of exactly one task, but Tasks is "{tasks or "missing"}"')
+    reasons += authorization_reasons(wave.get('Autopilot'), 'the wave record', {wave_id, tasks})
 
-    reasons += checks_reasons(text, checks)
+    reasons += checks_reasons(text, checks, repo, {base_sha, base_commit} - {None})
 
     extra = [p.strip() for p in settings.get('Autopilot paths', '').split(',') if p.strip()]
     # --no-renames lists both sides of a rename, so moving a protected file away is caught too; -z keeps
@@ -502,8 +564,11 @@ def wave_gate(record: Path, settings: dict[str, str], checks: list[tuple[str, st
                                     f'{base_sha}..{head_sha}', strip=False).split('\0') if path]
     for path in protected_paths(changed, extra):
         reasons.append(f'the wave changes a protected path: {path}')
-    for path in sorted(set(changed) & command_files(checks, repo, (base_sha, head_sha))):
-        reasons.append(f'the wave changes a file that a check command runs: {path}')
+    runs = command_files(checks, repo, (base_sha, head_sha))
+    names = command_names(checks)
+    for path in changed:
+        if path in runs or posixpath.basename(path) in names:
+            reasons.append(f'the wave changes a file that a check command runs: {path}')
     if not changed:
         reasons.append(f'the wave has no changes against {base}')
     return reasons, f'Gate 2 for {wave_id} commit {head_sha[:12]}'
