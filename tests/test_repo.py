@@ -1248,9 +1248,13 @@ class AutoGate(unittest.TestCase):
 {extra}
 | Check | Command |
 |---|---|
-| test-unit | `make test` |
+| test-unit | `python3 run_tests.py` |
+| lint | `ruff check .` |
+| build | N/A — no build step |
 <!-- wf:end -->
 """
+    CHECKS = ('| test-unit | PASS | `12 passed` |\n| lint | PASS | `All checks passed` |\n'
+              '| build | N/A (no build step) | — |')
     PLAN = """# TASK-7 — Plan: CSV export
 
 - Status: {status}
@@ -1259,7 +1263,7 @@ class AutoGate(unittest.TestCase):
 - Sensitivity: {sensitivity}
 - Approved: —
 - Wave: WAVE-3
-- Tests: required
+- Tests: {tests}
 - Updated: 2026-10-01 10:00 UTC
 
 ## Goal
@@ -1281,7 +1285,22 @@ None.
 - Must-fix open: {must_fix}
 - Reviewed: {reviewed}
 
+## Round 1 — 2026-10-01 09:00 UTC
+
+- Verdict: Changes requested
+- Must-fix open: 1
+- Reviewed: {old}
+
 ## Round 2 — 2026-10-01 10:00 UTC
+
+- Verdict: {round_verdict}
+- Must-fix open: {round_must_fix}
+- Reviewed: {round_reviewed}
+- Reviewer: codex / default / default (fresh context: headless)
+
+### Method
+
+Read the target; ran the checks.
 """
 
     def setUp(self):
@@ -1300,37 +1319,51 @@ None.
     def run_gate(self, *args: str):
         return subprocess.run([sys.executable, str(AUTO_GATE), *args], capture_output=True, text=True)
 
+    def review(self, kind: str, verdict: str, must_fix: str, reviewed: str, **round_overrides) -> str:
+        values = dict(round_verdict=verdict, round_must_fix=must_fix, round_reviewed=reviewed)
+        values.update(round_overrides)
+        return self.REVIEW.format(kind=kind, verdict=verdict, must_fix=must_fix, reviewed=reviewed,
+                                  old=reviewed, **values)
+
     # Gate 1
 
     def write_plan(self, status='Draft', size='S', sensitivity='normal', decisions='None.',
-                   verdict='Approved', must_fix='0', reviewed='plan revision 2'):
+                   tests='required', verdict='Approved', must_fix='0', reviewed='plan revision 2', **rounds):
         (self.task / 'TASK-7-plan.md').write_text(self.PLAN.format(
-            status=status, size=size, sensitivity=sensitivity, decisions=decisions))
-        (self.task / 'TASK-7-plan-review.md').write_text(self.REVIEW.format(
-            kind='Plan', verdict=verdict, must_fix=must_fix, reviewed=reviewed))
+            status=status, size=size, sensitivity=sensitivity, decisions=decisions, tests=tests))
+        (self.task / 'TASK-7-plan-review.md').write_text(
+            self.review('Plan', verdict, must_fix, reviewed, **rounds))
 
     def plan_gate(self):
         return self.run_gate('plan', '--agents-md', str(self.agents_md), str(self.task))
 
-    def test_plan_gate_passes_an_approved_small_normal_plan(self):
+    def test_plan_gate_passes_an_approved_plan(self):
         self.write_plan()
         r = self.plan_gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('eligible: Gate 1 for TASK-7 plan revision 2', r.stdout)
 
-    def test_plan_gate_accepts_approved_with_comments_and_size_m(self):
-        self.write_plan(size='M', verdict='Approved with comments')
-        self.assertEqual(self.plan_gate().returncode, 0)
+    def test_plan_gate_accepts_any_size_and_sensitivity(self):
+        for size, sensitivity in (('M', 'normal'), ('L', 'normal'), ('S', 'high'), ('L', 'high')):
+            with self.subTest(size=size, sensitivity=sensitivity):
+                self.write_plan(size=size, sensitivity=sensitivity, verdict='Approved with comments')
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_plan_gate_refusals(self):
         cases = {
-            'size L': (dict(size='L'), 'Size is "L"'),
-            'high sensitivity': (dict(sensitivity='high'), 'Sensitivity is "high"'),
             'open decision': (dict(decisions='- Use a streaming writer? Recommend yes.'), 'open decisions'),
             'changes requested': (dict(verdict='Changes requested', must_fix='1'), 'latest verdict'),
             'must-fix open': (dict(must_fix='2'), 'Must-fix open is "2"'),
             'stale review': (dict(reviewed='plan revision 1'), 'not plan revision 2'),
             'already approved': (dict(status='Approved'), 'not Draft'),
+            'tests placeholder': (dict(tests='TBD'), 'plan Tests must be'),
+            'tests N/A without reason': (dict(tests='N/A'), 'plan Tests must be'),
+            'tests N/A with a dash': (dict(tests='N/A -'), 'plan Tests must be'),
+            'header disagrees with round': (dict(round_verdict='Changes requested', round_must_fix='2'),
+                                            'round 2 says Verdict "Changes requested"'),
+            'header reviewed another revision': (dict(round_reviewed='plan revision 1'),
+                                                 'round 2 says Reviewed "plan revision 1"'),
         }
         for name, (kwargs, reason) in cases.items():
             with self.subTest(case=name):
@@ -1340,9 +1373,20 @@ None.
                 self.assertIn('not eligible', r.stdout)
                 self.assertIn(reason, r.stdout)
 
-    def test_plan_gate_without_a_review_is_refused(self):
+    def test_plan_gate_reads_every_open_decisions_section(self):
         self.write_plan()
-        (self.task / 'TASK-7-plan-review.md').unlink()
+        plan = self.task / 'TASK-7-plan.md'
+        plan.write_text(plan.read_text() + '\n## Open decisions\n\n- Drop the header row? Recommend no.\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('open decisions', r.stdout)
+
+    def test_plan_gate_without_a_review_or_round_is_refused(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text().split('## Round 1')[0])
+        self.assertIn('no numbered review round', self.plan_gate().stdout)
+        review.unlink()
         r = self.plan_gate()
         self.assertEqual(r.returncode, 1)
         self.assertIn('plan review: no review file', r.stdout)
@@ -1353,6 +1397,15 @@ None.
         r = self.plan_gate()
         self.assertEqual(r.returncode, 1)
         self.assertIn('Autopilot: disabled', r.stdout)
+
+    def test_unknown_or_repeated_autopilot_values_are_invalid(self):
+        self.write_plan()
+        for extra in ('- Autopilot: off', '- Autopilot: disabled\n- Autopilot: allowed'):
+            with self.subTest(extra=extra):
+                self.write_block(extra)
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn('Autopilot', r.stderr)
 
     def test_invalid_input_exits_2(self):
         self.write_plan()
@@ -1376,29 +1429,41 @@ None.
         return subprocess.run(['git', '-C', str(self.repo), *args], check=True, capture_output=True,
                               text=True).stdout.strip()
 
-    def make_wave(self, changed: dict[str, str], checks: str = '| test-unit | PASS | `12 passed` |',
-                  status: str = 'Review requested'):
+    def commit(self, changed: dict[str, str | None], message: str) -> str:
+        for path, content in changed.items():
+            target = self.repo / path
+            if content is None:
+                self.git('rm', '-q', path)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+            self.git('add', path)
+        self.git('commit', '-q', '-m', message)
+        return self.git('rev-parse', 'HEAD')
+
+    def make_wave(self, changed: dict[str, str | None], checks: str | None = None,
+                  status: str = 'Review requested', base_files: dict[str, str] | None = None):
+        if getattr(self, 'repo', None) and self.repo.exists():
+            shutil.rmtree(self.repo)
         self.repo = self.tmp / 'repo'
         self.repo.mkdir()
         self.git('init', '-q', '-b', 'main')
         self.git('config', 'user.email', 'test@example.com')
         self.git('config', 'user.name', 'Test')
         self.git('config', 'commit.gpgsign', 'false')
-        (self.repo / 'app.py').write_text('print(1)\n')
-        self.git('add', 'app.py')
-        self.git('commit', '-q', '-m', 'base')
+        self.base = self.commit({'app.py': 'print(1)\n', 'run_tests.py': 'pass\n', **(base_files or {})}, 'base')
         self.git('checkout', '-q', '-b', 'wave/WAVE-3-csv')
-        for path, content in changed.items():
-            (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
-            (self.repo / path).write_text(content)
-            self.git('add', path)
+        self.git('checkout', '-q', '-b', 'task/TASK-7-csv-export')
+        self.checkpoint = self.commit(changed, 'wip(TASK-7): implementation')
+        self.git('checkout', '-q', 'wave/WAVE-3-csv')
+        self.git('merge', '-q', '--squash', 'task/TASK-7-csv-export')
         self.git('commit', '-q', '-m', 'feat: export empty names')
         self.head = self.git('rev-parse', 'HEAD')
-        checkpoint = 'c' * 40
         (self.task / 'TASK-7-impl-summary.md').write_text(
-            f'# TASK-7 — Implementation summary\n\n- Status: Ready to integrate\n- Checkpoint: {checkpoint}\n')
-        (self.task / 'TASK-7-impl-review.md').write_text(self.REVIEW.format(
-            kind='Implementation', verdict='Approved', must_fix='0', reviewed=f'commit {checkpoint[:12]}'))
+            '# TASK-7 — Implementation summary\n\n- Status: Ready to integrate\n'
+            f'- Branch: task/TASK-7-csv-export\n- Base: wave/WAVE-3-csv\n- Checkpoint: {self.checkpoint}\n')
+        (self.task / 'TASK-7-impl-review.md').write_text(
+            self.review('Implementation', 'Approved', '0', f'commit {self.checkpoint[:12]}'))
         waves = self.tmp / 'development' / 'waves'
         waves.mkdir(parents=True, exist_ok=True)
         self.record = waves / 'WAVE-3.md'
@@ -1406,6 +1471,7 @@ None.
 
 Status: {status}
 Base branch: main
+Base commit: {self.base}
 Branch: wave/WAVE-3-csv
 Tasks: TASK-7
 Approved: none
@@ -1415,20 +1481,27 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
 
 | Check | Result | Evidence |
 |---|---|---|
-{checks}
+{self.CHECKS if checks is None else checks}
 
 ## Review and open findings
 """)
         self.write_wave_review(f'commit {self.head}')
 
-    def write_wave_review(self, reviewed: str, verdict: str = 'Approved', must_fix: str = '0'):
+    def write_wave_review(self, reviewed: str, verdict: str = 'Approved', must_fix: str = '0',
+                          round_reviewed: str | None = None):
         self.record.with_name('WAVE-3-review.md').write_text(
             f'# WAVE-3 — Review\n\n- Round: 1\n- Reviewed: {reviewed}\n- Verdict: {verdict}\n'
-            f'- Must-fix open: {must_fix}\n\n## Round 1\n')
+            f'- Must-fix open: {must_fix}\n\n## Round 1\n\n- Reviewed: {round_reviewed or reviewed}\n'
+            f'- Verdict: {verdict}\n- Must-fix open: {must_fix}\n\n### Method\n\nRead the diff.\n')
 
-    def wave_gate(self):
-        return self.run_gate('wave', '--agents-md', str(self.agents_md), '--base', 'main', '--head', 'HEAD',
+    def wave_gate(self, base: str = 'main'):
+        return self.run_gate('wave', '--agents-md', str(self.agents_md), '--base', base, '--head', 'HEAD',
                              '--repo', str(self.repo), str(self.record))
+
+    def assert_refused(self, reason: str, **kwargs):
+        r = self.wave_gate(**kwargs)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(reason, r.stdout)
 
     def test_wave_gate_passes_an_approved_clean_wave(self):
         self.make_wave({'app.py': 'print(2)\n', 'tests/test_app.py': 'assert True\n'})
@@ -1436,74 +1509,120 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(f'eligible: Gate 2 for WAVE-3 commit {self.head[:12]}', r.stdout)
 
-    def test_wave_gate_allows_proven_pre_existing_failures_and_na(self):
+    def test_wave_gate_allows_proven_pre_existing_failures(self):
         checks = ('| test-unit | PASS | `12 passed` |\n'
-                  '| lint | FAIL (pre-existing: 190 errors on base 1234abc, 190 on HEAD) | `ruff check .` |\n'
+                  '| lint | FAIL (pre-existing: 190 errors on base, 190 on HEAD) | `ruff check .` |\n'
                   '| build | N/A (no build step) | — |')
         self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
-        self.assertEqual(self.wave_gate().returncode, 0, self.wave_gate().stdout)
+        r = self.wave_gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_wave_gate_refuses_new_failures_unrun_checks_and_unproven_claims(self):
+    def test_wave_gate_refuses_failed_unrun_missing_or_malformed_checks(self):
+        pass_rest = '| lint | PASS | ok |\n| build | N/A (no build step) | — |'
         cases = {
-            'fail': ('| test-unit | FAIL | `1 failed` |', 'check test-unit: FAIL'),
-            'not run': ('| test-unit | PASS | ok |\n| sast | NOT RUN (semgrep missing) | — |', 'check sast: NOT RUN'),
-            'nothing passed': ('| build | N/A (no build) | — |', 'no check passed'),
-            'no evidence': ('| test-unit | PASS | ok |\n| lint | FAIL (pre-existing) | |', 'needs the base evidence'),
+            'fail': ('| test-unit | FAIL | `1 failed` |\n' + pass_rest, 'check test-unit: FAIL'),
+            'not run': ('| test-unit | NOT RUN (no python) | — |\n' + pass_rest, 'check test-unit: NOT RUN'),
+            'missing row': (pass_rest, 'check test-unit: no result'),
+            'two-cell row': ('| test-unit | FAIL |\n' + pass_rest, 'malformed Full checks row'),
+            'duplicate row': ('| test-unit | FAIL | x |\n| test-unit | PASS | y |\n' + pass_rest,
+                              'check test-unit: more than one result'),
+            'loose pass': ('| test-unit | PASS? no: 3 failed | x |\n' + pass_rest, 'check test-unit: PASS?'),
+            'annotated pass': ('| test-unit | PASS (3 failed, rerun later) | x |\n' + pass_rest,
+                               'check test-unit: PASS (3 failed'),
+            'n/a without reason': ('| test-unit | PASS | ok |\n| lint | N/A (-) | — |\n'
+                                   '| build | N/A (no build step) | — |', 'check lint: N/A (-)'),
+            'loose pre-existing': ('| test-unit | PASS | ok |\n| lint | FAIL (pre-existing-ish, 4 new) | x |\n'
+                                   '| build | N/A (no build step) | — |', 'check lint: FAIL (pre-existing-ish'),
+            'no evidence': ('| test-unit | PASS | ok |\n| lint | FAIL (pre-existing: on base) | |\n'
+                            '| build | N/A (no build step) | — |', 'needs the base evidence'),
+            'nothing passed': ('| test-unit | N/A (x) | — |\n| lint | N/A (x) | — |\n| build | N/A (x) | — |',
+                               'no check passed'),
         }
         for name, (checks, reason) in cases.items():
             with self.subTest(case=name):
                 self.make_wave({'app.py': 'print(2)\n'}, checks=checks)
-                r = self.wave_gate()
-                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-                self.assertIn(reason, r.stdout)
-                shutil.rmtree(self.repo)
+                self.assert_refused(reason)
 
     def test_wave_gate_refuses_protected_paths(self):
         for path in ('requirements.txt', 'gui/migrations/0002_auto.py', '.github/workflows/ci.yml', 'AGENTS.md',
-                     '.gitleaksignore', 'Dockerfile', 'web/package-lock.json', '.claude/settings.json'):
+                     '.gitleaksignore', 'Dockerfile', 'web/package-lock.json', '.claude/settings.json',
+                     'Makefile', 'ruff.toml', 'sub/.github/workflows/x.yml', 'app/requirements/base.txt',
+                     'Containerfile', 'docs/CODEOWNERS', '.gitmodules', 'requirements-dev.in', 'dockerfile'):
             with self.subTest(path=path):
                 self.make_wave({'app.py': 'print(2)\n', path: 'x\n'})
-                r = self.wave_gate()
-                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-                self.assertIn(f'protected path: {path}', r.stdout)
-                shutil.rmtree(self.repo)
+                self.assert_refused(f'protected path: {path}')
+
+    def test_renames_count_on_both_sides(self):
+        base = {'requirements.txt': 'django\n', '.github/workflows/ci.yml': 'on: push\n'}
+        self.make_wave({'requirements.txt': None, 'lib_reqs.txt': 'django\n'}, base_files=base)
+        self.assert_refused('protected path: requirements.txt')
+        self.make_wave({'.github/workflows/ci.yml': None, 'docs_ci.yml': 'on: push\n'}, base_files=base)
+        self.assert_refused('protected path: .github/workflows/ci.yml')
+
+    def test_files_that_check_commands_run_are_protected(self):
+        self.make_wave({'app.py': 'print(2)\n', 'run_tests.py': 'raise SystemExit(0)\n'})
+        self.assert_refused('a file that a check command runs: run_tests.py')
 
     def test_project_can_add_protected_paths(self):
         self.write_block('- Autopilot paths: lndg/settings*.py, docs/*')
         self.make_wave({'app.py': 'print(2)\n', 'docs/guide.md': 'x\n'})
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('protected path: docs/guide.md', r.stdout)
+        self.assert_refused('protected path: docs/guide.md')
 
-    def test_wave_gate_refuses_a_stale_or_unapproved_review(self):
+    def test_base_must_be_the_recorded_base_and_merged(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.assert_refused("not the wave record's Base branch", base='HEAD~1')
+        self.git('branch', '-q', 'main-moved', 'main')
+        self.git('checkout', '-q', 'main')
+        self.commit({'other.py': 'x = 1\n'}, 'unrelated base change')
+        self.git('checkout', '-q', 'wave/WAVE-3-csv')
+        self.assert_refused('main is not merged into HEAD')
+
+    def test_a_moved_base_ref_cannot_hide_wave_commits(self):
+        self.make_wave({'requirements.txt': 'django\n'})
+        self.commit({'app.py': 'print(3)\n'}, 'fix: second wave commit')
+        self.head = self.git('rev-parse', 'HEAD')
+        self.write_wave_review(f'commit {self.head}')
+        self.git('branch', '-f', 'main', 'HEAD~1')
+        self.assert_refused('main already contains wave commit')
+
+    def test_base_commit_must_be_recorded(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.record.write_text(self.record.read_text().replace(f'Base commit: {self.base}', 'Base commit: pending'))
+        self.assert_refused('no valid Base commit')
+
+    def test_wave_gate_refuses_a_stale_unapproved_or_hand_edited_review(self):
         self.make_wave({'app.py': 'print(2)\n'})
         self.write_wave_review('commit ' + 'b' * 40)
-        self.assertIn('wave review: reviewed', self.wave_gate().stdout)
+        self.assert_refused('wave review: reviewed')
         self.write_wave_review(f'commit {self.head}', verdict='Changes requested', must_fix='1')
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('latest verdict is "Changes requested"', r.stdout)
+        self.assert_refused('latest verdict is "Changes requested"')
+        self.write_wave_review(f'commit {self.head}', round_reviewed='commit ' + 'b' * 40)
+        self.assert_refused('round 1 says Reviewed')
+        self.write_wave_review(f'commit {self.head[:7]}zzz')
+        self.assert_refused('wave review: reviewed')
 
-    def test_wave_gate_requires_task_reviews_of_the_current_checkpoint(self):
+    def test_wave_gate_requires_task_reviews_of_the_branch_checkpoint(self):
         self.make_wave({'app.py': 'print(2)\n'})
-        (self.task / 'TASK-7-impl-review.md').write_text(self.REVIEW.format(
-            kind='Implementation', verdict='Approved', must_fix='0', reviewed='commit ' + 'd' * 12))
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('TASK-7 implementation review: reviewed', r.stdout)
-        (self.task / 'TASK-7-impl-review.md').write_text(self.REVIEW.format(
-            kind='Implementation', verdict='Approved', must_fix='0', reviewed='commit ' + 'c' * 12))
-        (self.task / 'TASK-7-security-review.md').write_text(self.REVIEW.format(
-            kind='Security', verdict='Changes requested', must_fix='1', reviewed='commit ' + 'c' * 12))
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('TASK-7 security review: latest verdict', r.stdout)
+        (self.task / 'TASK-7-impl-review.md').write_text(
+            self.review('Implementation', 'Approved', '0', 'commit ' + self.base[:12]))
+        self.assert_refused('TASK-7 implementation review: reviewed')
+        (self.task / 'TASK-7-impl-review.md').write_text(
+            self.review('Implementation', 'Approved', '0', f'commit {self.checkpoint[:12]}'))
+        (self.task / 'TASK-7-security-review.md').write_text(
+            self.review('Security', 'Changes requested', '1', f'commit {self.checkpoint[:12]}'))
+        self.assert_refused('TASK-7 security review: latest verdict')
+
+    def test_checkpoint_must_exist_and_be_the_task_branch_tip(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        summary = self.task / 'TASK-7-impl-summary.md'
+        summary.write_text(summary.read_text().replace(self.checkpoint, 'c' * 40))
+        self.assert_refused('is not a commit in this repository')
+        summary.write_text(summary.read_text().replace('c' * 40, self.base))
+        self.assert_refused('is not the tip of its branch')
 
     def test_wave_gate_refuses_an_approved_or_opened_wave(self):
         self.make_wave({'app.py': 'print(2)\n'}, status='PR opened')
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('wave Status is "PR opened"', r.stdout)
+        self.assert_refused('wave Status is "PR opened"')
 
 
 class AutopilotDocs(unittest.TestCase):
@@ -1522,9 +1641,19 @@ class AutopilotDocs(unittest.TestCase):
             with self.subTest(doc=doc.name):
                 self.assertIn('wf auto', doc.read_text())
         rules = (SHARED / 'autopilot.md').read_text()
-        for phrase in ('draft', 'never merges', 'only the human accepts findings', 'auto-gate.py'):
+        for phrase in ('never pushes, opens, merges', 'only the human accepts findings', 'auto-gate.py',
+                       'push-and-PR question'):
             self.assertIn(phrase, rules)
         self.assertIn('never records an approval', (SKILLS / 'wf-next' / 'SKILL.md').read_text())
+
+    def test_no_doc_promises_an_automatic_push_or_pr(self):
+        docs = (REPO / 'README.md', REPO / 'AGENTS.md', *(REPO / 'docs').glob('*.md'), *SHARED.glob('*.md'),
+                *SKILLS.glob('*/SKILL.md'))
+        for doc in docs:
+            text = re.sub(r'\s+', ' ', doc.read_text().lower())
+            for phrase in (r'\bdraft pr\b', r'\bready pr\b', r'opens the pr as a draft', r'autopilot pushes'):
+                with self.subTest(doc=str(doc.relative_to(REPO)), phrase=phrase):
+                    self.assertIsNone(re.search(phrase, text))
 
 
 class DevServer(unittest.TestCase):

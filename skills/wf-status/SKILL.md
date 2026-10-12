@@ -16,10 +16,11 @@ This skill is strictly read-only: do not fetch, switch branches, or write files.
 
 Show PRD, spec, and roadmap revision/status when they exist. Show the current milestone and each wave's
 status, branch, task counts, latest integration review verdict, and next command. For each active task,
-show ID, concern, wave, plan status, test report status, implementation checkpoint, latest review verdict,
-and the next action. Mark approvals recorded `by autopilot` and waves with an `Autopilot:` authorization;
-a stopped autopilot run continues only with `wf auto TASK-N` or `wf auto WAVE-N`. If no work exists,
-suggest `wf prd` for a new project or `wf task` for an existing one. If multiple tasks could be resumed, list them rather than choosing arbitrarily.
+show ID, concern, wave, plan status, test report status, implementation checkpoint, latest review
+verdict, and the next action. Mark approvals recorded `by autopilot` and waves with an `Autopilot:`
+authorization; a stopped autopilot run continues only with `wf auto TASK-N` or `wf auto WAVE-N`. If no
+work exists, suggest `wf prd` for a new project or `wf task` for an existing one. If multiple tasks
+could be resumed, list them rather than choosing arbitrarily.
 
 For `wf status TASK-N` or `wf status WAVE-N`, show the relevant artifact paths and Git branch/worktree
 state. Distinguish observed facts from inferred next action. A changed checkpoint invalidates review

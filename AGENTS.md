@@ -8,8 +8,8 @@ Use `name` and `description` frontmatter only.
 Preserve these invariants: every approval is explicit (a `wf auto` authorization is explicit, scoped
 to one task, and passes a gate only through `scripts/auto-gate.py`); feature tests and reviews use a
 fresh context; checks report missing or skipped runs honestly; loops have finite caps and stop on
-stagnation; a wave PR is created only after its integrated diff is reviewed and the human approves it,
-or, under `wf auto`, as a draft that the human reviews before any merge. Work records under
+stagnation; a wave PR is created only after its integrated diff is reviewed and the human approves the
+push and PR, also after a `wf auto` run. Work records under
 `development/` stay private. The repository must contain no personal or company material from the
 local references.
 

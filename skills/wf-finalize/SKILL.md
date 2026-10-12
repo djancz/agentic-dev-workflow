@@ -32,10 +32,10 @@ If approved, push only the wave branch. Use a supported forge CLI when authentic
 its compare URL and the exact title/body for manual creation. Never force-push or merge the PR without a
 separate explicit instruction. Record the PR URL and `Pushed: <sha>` in the wave record and mark it
 `PR opened`.
-**Under the autopilot** (the wave record has an `Autopilot:` authorization and `Approved: … by
-autopilot` for the current `HEAD`), follow `references/autopilot.md` → The pull request instead of
-asking: push the wave branch, open the PR as a draft, read its body back and clean it, then stop. A
-human-approved wave keeps the question above.
+A wave approved `by autopilot` (`references/autopilot.md`) asks the same question: add the
+*Autopilot* section to the body and stop there; the autopilot never pushes or opens the PR.
+After creating a PR, read its body back and remove anything a host appended that
+`references/conventions.md` → Git forbids.
 Prepare the optional merge commit text from its template for a forge that preserves wave commits;
 do not require squashing the entire wave into one commit. Next: after the merge, `wf wave done WAVE-<N>`.
 
