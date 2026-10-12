@@ -1461,12 +1461,16 @@ Read the target; ran the checks.
         return subprocess.run(['git', '-C', str(self.repo), *args], check=True, capture_output=True,
                               text=True).stdout.strip()
 
-    def commit(self, changed: dict[str, str | Path | None], message: str) -> str:
-        """Commit file contents; None removes a file and a Path value makes a symlink to it."""
+    def commit(self, changed: dict[str, str | Path | tuple[str, str] | None], message: str) -> str:
+        """Commit file contents; None removes a file, a Path value makes a symlink to it, and
+        ('gitlink', sha) records a submodule at that commit."""
         for path, content in changed.items():
             target = self.repo / path
             if content is None:
                 self.git('rm', '-q', '--', path)
+                continue
+            if isinstance(content, tuple):
+                self.git('update-index', '--add', '--cacheinfo', f'160000,{content[1]},{path}')
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_symlink():
@@ -2002,7 +2006,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
     # Regressions from the fifth review round
 
     def test_commands_the_policy_cannot_read_keep_gate_2_with_the_human(self):
-        runner = {'runners/check-unit.sh': 'exit 1\n', 'runners/nested/x': ''}
+        runner = {'runners/check-unit.sh': 'exit 1\n', 'runners/nested/x': '', 'runners/subdir/check-unit.sh': ''}
         cases = {
             'glob': ('bash scripts/check-*.sh', {'scripts/check-unit.sh': 'exit 1\n'}, 'a shell glob'),
             'glob in a directory': ('bash scripts*/check-*.sh', {'scripts': Path('runners')}, 'a shell glob'),
@@ -2015,15 +2019,15 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
             'path through a link': ('bash scripts/check-unit.sh', {'scripts': Path('runners')},
                                     'the symbolic link scripts'),
             'link to a runner the wave adds': ('bash tools/check', {'tools/check': Path('../runners/new')},
-                                               'the symbolic link tools/check'),
+                                               'the symbolic link tools/check', {'runners/new': 'exit 0\n'}),
             'chain of links': ('bash link0/check-unit.sh',
                                {f'link{i}': Path(f'link{i + 1}') for i in range(22)} | {'link22': Path('runners')},
                                'the symbolic link link0'),
         }
-        for name, (command, base_files, reason) in cases.items():
+        for name, (command, base_files, reason, *added) in cases.items():
             with self.subTest(case=name):
                 self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
-                self.make_wave({'app.py': 'print(2)\n'}, base_files=runner | base_files)
+                self.make_wave({'app.py': 'print(2)\n', **(added[0] if added else {})}, base_files=runner | base_files)
                 r = self.wave_gate()
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn('check test-unit: the command uses ', r.stdout)
@@ -2061,6 +2065,48 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         r = self.plan_gate()
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('an HTML comment opens inside a line', r.stderr)
+
+    # Regressions from the seventh review round
+
+    def test_a_second_comment_on_a_line_is_invalid_input(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        approved = review.read_text()
+        for tail in ('\n<!-- note --> <!-- hidden\n## Round 3 — x\n-->\n',
+                     '\n<!-- note\nstill a note --> <!-- hidden\n## Round 3 — x\n-->\n'):
+            with self.subTest(tail=tail):
+                review.write_text(approved + tail)
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn('an HTML comment opens inside a line', r.stderr)
+
+    def test_a_runner_found_by_name_must_not_be_a_link(self):
+        for command in ('bash "$PWD/tools/check"', 'bash ${PWD}/tools/check'):
+            with self.subTest(command=command):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
+                self.make_wave({'app.py': 'print(2)\n', 'runners/original': 'exit 0\n'},
+                               base_files={'runners/original': 'exit 1\n', 'tools/check': Path('../runners/original')})
+                self.assert_refused('check test-unit: the command uses the symbolic link tools/check')
+
+    def test_submodules_keep_gate_2_with_the_human(self):
+        self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`bash vendor-checks/check.sh`'))
+        self.make_wave({'app.py': 'print(2)\n', 'vendor-checks': ('gitlink', '2' * 40)},
+                       base_files={'vendor-checks': ('gitlink', '1' * 40)})
+        r = self.wave_gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('check test-unit: the command uses the submodule vendor-checks', r.stdout)
+        self.assertIn('the wave changes a submodule: vendor-checks', r.stdout)
+
+    def test_quoted_arguments_and_options_are_not_shell_operations(self):
+        for command in ("cargo test --test '*'", 'python3 -m pytest -q -k cd', 'test -z "$(gofmt -l .)"'):
+            with self.subTest(command=command):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
+                self.make_wave({'app.py': 'print(2)\n'})
+                r = self.wave_gate()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', "`sh -c 'cd tools && ls *.sh'`"))
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.assert_refused('check test-unit: the command uses a change of directory, a shell glob')
 
     def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
         cases = {

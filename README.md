@@ -117,13 +117,13 @@ agent: TASK-7 … plan approved by autopilot … wave approved by autopilot … 
 The policy (`shared/scripts/auto-gate.py`) reads only the recorded facts, including your recorded
 authorization. It passes Gate 1 for a plan with no open decisions and an approved review of its current
 revision. It passes Gate 2 for a wave of that one task only when the integrated wave review approved the
-current commit, the task's implementation review (and its security review, for a sensitive task)
-approved the tip of its task branch, every check passed or is N/A or a failure proven to exist on the
-base already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores,
-build or deploy files, symbolic links, and the files the checks run untouched. Gate 2 also needs the
+current commit, the task's implementation review (and its security review, for a sensitive task) approved
+the tip of its task branch, every check passed or is N/A or a failure proven to exist on the base
+already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores, build or
+deploy files, symbolic links, submodules, and the files the checks run untouched. Gate 2 also needs the
 plan approved as `Approved: revision <n> …` with an approving plan review of that revision, and check
-commands it can read statically (no `cd`, globs, `..`, or symlinked paths). A review counts only when
-its last round is valid and matches its header. Otherwise it stops at the usual gate
+commands it can read statically (no `cd`, unquoted globs, `..`, symlinked paths, or submodules). A review
+counts only when its last round is valid and matches its header. Otherwise it stops at the usual gate
 with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
 (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
 off, or `- Autopilot paths: <glob>, …` to protect more paths.
