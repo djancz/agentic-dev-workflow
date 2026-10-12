@@ -105,8 +105,9 @@ agent says why and what you can choose. Every stage also has its own command for
 
 `wf auto <problem and desired behavior>` runs the same stages, reviews and checks as `wf next`, but passes
 Gate 1 and Gate 2 itself when a fixed policy allows it. It stops with the integrated, approved wave and
-the PR prepared: branch, commits, title and body. Your message is the authorization, for those two gates
-of that one task only; pushing, opening the PR and merging stay with you.
+the PR prepared: branch, commits, title and body. Your message, which names `wf auto` or the autopilot,
+is the authorization, for those two gates of that one task only; pushing, opening the PR and merging
+stay with you.
 
 ```text
 you:   wf auto CSV export drops rows with empty names; export them with an empty cell rev=codex
@@ -119,8 +120,9 @@ revision. It passes Gate 2 for a wave of that one task only when the integrated 
 current commit, the task's implementation review (and its security review, for a sensitive task)
 approved the tip of its task branch, every check passed or is N/A or a failure proven to exist on the
 base already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores,
-build or deploy files, and the files the checks run untouched. A review counts only when its last round
-is valid and matches its header. Otherwise it stops at the usual gate
+build or deploy files, symbolic links, and the files the checks run untouched. Gate 2 also needs the
+plan approved as `Approved: revision <n> …` with an approving plan review of that revision. A review
+counts only when its last round is valid and matches its header. Otherwise it stops at the usual gate
 with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
 (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
 off, or `- Autopilot paths: <glob>, …` to protect more paths.

@@ -1906,6 +1906,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
             'draft again': dict(status='Draft', approved='—'),
             'older revision approved': dict(status='Approved', approved='revision 1 by autopilot (x)'),
             'no approval recorded': dict(status='Approved', approved='—'),
+            'approval only in prose': dict(status='Approved', approved='2026-10-01 — "I approve revision 2"'),
         }
         for name, plan in cases.items():
             with self.subTest(case=name):
@@ -1913,11 +1914,10 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
                 (self.task / 'TASK-7-security-review.md').write_text(
                     self.review('Security', 'Approved', '0', f'commit {self.checkpoint[:12]}'))
                 self.write_plan(sensitivity='normal', **plan)
-                self.assert_refused('TASK-7: the plan is not approved at its current revision')
-        self.write_plan(status='Approved', approved='2026-10-01 — "plan approved, wf impl"')
-        self.assertEqual(self.wave_gate().returncode, 0)
+                self.assert_refused('TASK-7: the plan is not approved as "Approved: revision 2 …"')
+        # A human approval recorded as workflow.md says counts; its quoted words may name other revisions.
         self.write_plan(status='Approved',
-                        approved='2026-10-01 10:00 UTC — "revision 1 was wrong; I approve revision 2"')
+                        approved='revision 2 (2026-10-01 10:00 UTC) — "revision 1 was wrong; I approve this one"')
         r = self.wave_gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
@@ -1936,33 +1936,30 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         plan = self.task / 'TASK-7-plan.md'
         plan.write_text(plan.read_text().replace('- Revision: 2', '- Revision: 3'))
 
-    def test_gate_2_validates_the_plan_review_it_relies_on(self):
+    def test_gate_2_needs_a_valid_approving_plan_review(self):
         self.make_wave({'app.py': 'print(2)\n'})
         self.revise_plan_to_3('revision 3 by autopilot (x)', round_reviewed='plan revision 2')
         self.assert_refused('TASK-7 plan review: round 2 says Reviewed "plan revision 2"')
         review = self.task / 'TASK-7-plan-review.md'
         review.write_text(review.read_text().split('## Round 1')[0])
         self.assert_refused('TASK-7 plan review: no numbered review round')
-        # A human may pass Gate 1 by accepting open findings, so Gate 2 needs a valid review, not an approval.
-        self.revise_plan_to_3('2026-10-01 — "plan approved with P2-1 accepted"', verdict='Changes requested',
-                              must_fix='1')
-        review.write_text(review.read_text() + '\n### Findings\n\n### [P2-1] Large exports are slow\n'
-                          '- Severity: Major\n')
-        r = self.wave_gate()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Only the human accepts findings, so a plan passed with open findings keeps Gate 2 with the human.
+        for approved in ('revision 3 by autopilot (x)', 'revision 3 (2026-10-01) — "approved, P2-1 accepted"'):
+            with self.subTest(approved=approved):
+                self.revise_plan_to_3(approved, verdict='Changes requested', must_fix='1')
+                review.write_text(review.read_text() + '\n### Findings\n\n### [P2-1] Large exports are slow\n'
+                                  '- Severity: Major\n')
+                self.assert_refused('TASK-7 plan review: latest verdict is "Changes requested"')
 
-    def test_the_last_revision_an_approval_names_must_be_current(self):
+    def test_an_approval_must_start_with_the_current_revision(self):
         self.make_wave({'app.py': 'print(2)\n'})
-        self.revise_plan_to_3('2026-10-01 — "I approve revision 2"')
-        self.assert_refused('TASK-7: the plan is not approved at its current revision')
-        self.revise_plan_to_3('2026-10-02 — "revision 2 was wrong; I approve revision 3"')
+        for approved in ('revision 2 (2026-10-01) — "approved"', '2026-10-02 — "I approve Revision 3"',
+                         '2026-10-02 — "I approve revision 3; it fixes revision 2"'):
+            with self.subTest(approved=approved):
+                self.revise_plan_to_3(approved)
+                self.assert_refused('TASK-7: the plan is not approved as "Approved: revision 3 …"')
+        self.revise_plan_to_3('revision 3 (2026-10-02 09:00 UTC) — "I approve revision 3; it fixes revision 2"')
         self.assertEqual(self.wave_gate().returncode, 0)
-
-    def test_other_wf_commands_are_not_authorizations(self):
-        for words in ('wf next TASK-7', 'wf status', 'continue TASK-7', 'pokračuj WAVE-3'):
-            with self.subTest(words=words):
-                self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
-                self.assertIn('is a generic request', self.plan_gate().stdout)
 
     def test_runners_named_by_a_glob_or_behind_a_named_link_are_protected(self):
         cases = {
@@ -1989,16 +1986,22 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         r = self.plan_gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_generic_requests_are_not_authorizations(self):
-        for words in ('wf next', 'none', 'Continue.', 'pokračuj'):
+    def test_the_authorization_must_ask_for_the_autopilot(self):
+        for words in ('wf next', 'none', 'Continue.', 'pokračuj', 'please continue', 'continue with TASK-7',
+                      '/wf-next TASK-7', 'wf status'):
             with self.subTest(words=words):
                 self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
                 r = self.plan_gate()
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-                self.assertIn('is a generic request', r.stdout)
+                self.assertIn('does not ask for wf auto or the autopilot', r.stdout)
+        for words in ('/wf-auto TASK-7', 'spusť na to autopilota', 'Autopilot, please'):
+            with self.subTest(words=words):
+                self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
+                r = self.plan_gate()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.make_wave({'app.py': 'print(2)\n'})
         self.record.write_text(self.record.read_text().replace('"wf auto fix the CSV export"', '"wf next"'))
-        self.assert_refused('the wave record is a generic request')
+        self.assert_refused('the wave record ("wf next") does not ask for wf auto or the autopilot')
 
     def test_runners_without_an_extension_or_behind_a_changed_link_are_protected(self):
         self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`cd tools && bash check`'))
@@ -2007,7 +2010,30 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`python3 scripts/check.py`'))
         self.make_wave({'app.py': 'print(2)\n', 'scripts': Path('other')},
                        base_files={'tools/check.py': 'pass\n', 'other/check.py': 'pass\n', 'scripts': Path('tools')})
-        self.assert_refused('a file that a check command runs: scripts')
+        self.assert_refused('the wave changes a symbolic link: scripts')
+
+    # Regressions from the fifth review round
+
+    def test_globs_and_paths_through_linked_directories_are_protected(self):
+        cases = {
+            'glob through a link': ('`bash scripts/check-*.sh`', {'scripts': Path('runners')}),
+            'link under the cd directory': ('`cd tools && bash scripts/check-*.sh`',
+                                            {'tools/scripts': Path('../runners')}),
+        }
+        for name, (command, links) in cases.items():
+            with self.subTest(case=name):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', command))
+                self.make_wave({'app.py': 'print(2)\n', 'runners/check-unit.sh': 'exit 0\n'},
+                               base_files={'runners/check-unit.sh': 'exit 1\n', 'tools/x': '', **links})
+                self.assert_refused('a file that a check command runs: runners/check-unit.sh')
+
+    def test_an_unclosed_comment_is_invalid_input(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text() + '\n<!-- note\n\n## Round 3 — later\n\n- Verdict: Changes requested\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('an HTML comment is not closed', r.stderr)
 
     def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
         cases = {

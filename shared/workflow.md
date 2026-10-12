@@ -40,8 +40,9 @@ For a non-feature change, the plan may say `Tests: N/A` with a reason, so `wf te
 ## Human gates
 
 Gate 1 shows the task goal, scope, acceptance tests, security level, approach, review verdict, and
-open decisions. The human approves the exact plan revision before implementation. Feedback makes a
-new revision and sends it through review again. A plan review verdict never substitutes for human
+open decisions. The human approves the exact plan revision before implementation; record it in the plan
+as `Status: Approved` and `Approved: revision <n> (<timestamp>) — "<the human's words>"`. Feedback makes
+a new revision and sends it through review again. A plan review verdict never substitutes for human
 approval.
 
 Gate 2 belongs to the integrated wave, not an individual task. It shows the combined diff summary,

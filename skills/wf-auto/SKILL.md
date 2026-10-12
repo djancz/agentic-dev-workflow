@@ -20,6 +20,9 @@ the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
 `wf auto <assignment> [rev=…] [fix=…] [sec=…] [test=…] [models=…] [rounds=<n>]` starts a new task.
 `wf auto TASK-<N>` or `wf auto WAVE-<N>` continues an existing one: resolve its next stage exactly as
 `<skills-dir>/wf-status/SKILL.md` → Status does, record the new authorization, and continue from there.
+The human's words must name `wf auto` or the autopilot; when they only describe the outcome ("dotáhni
+to až do PR"), ask once whether to run the autopilot and record the reply that names it as the
+authorization (`references/autopilot.md` → Authorization).
 Role options pass to every stage that takes them (`references/loop.md` → Arguments). A reviewer from
 another model family (for example `rev=codex`) is recommended, because nobody else reads the code before
 the PR.
