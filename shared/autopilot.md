@@ -62,12 +62,17 @@ script's docstring is the full policy. In short:
   plan says `Sensitivity: normal`), approved its Checkpoint, which is the tip of the
   `task/TASK-<N>-<slug>` branch its ticket records; the full checks have one result per check of the
   block, at least one PASS, and otherwise only `N/A (<reason>)` or `FAIL (pre-existing: <evidence>)`;
-  the base is merged into `HEAD`; and the diff against it, renames counted on both sides, touches no
-  protected path. A `planned` check is `NOT RUN`, so it stops the autopilot until the check exists.
+  the base is merged into `HEAD`; every check command reads statically, without a change of directory
+  (`cd`, `pushd`), a shell glob, a `..` segment, or a path through a symbolic link, because otherwise
+  the policy cannot tell which files it runs; and the diff against the base, renames counted on both
+  sides, touches no protected path. A `planned` check is `NOT RUN`, so it stops the autopilot until the
+  check exists.
 - **Records must agree.** The last `## Round` of every review must pass the same validator as a delegated
   round (`validate-review.py`, `validate-wave-review.py`), and the review header must match it. A
-  repeated header field or round, a round inside a code fence or an HTML comment, or a fence or comment
-  left open cannot approve anything. A commit counts only when its SHA names exactly that one commit.
+  repeated header field or round, or a round inside a code fence or an HTML comment, cannot approve
+  anything. A comment opens only at the start of a line, as the templates write it; a `<!--` in inline
+  code is text. A fence or comment left open, or a comment that opens inside a line, is invalid input.
+  A commit counts only when its SHA names exactly that one commit.
 - **Pre-existing failures.** A check that failed before the change may stay red when the integrator ran
   it on the base commit and recorded `FAIL (pre-existing: <base evidence>)` in the wave record: the same
   check fails on the base, and the wave adds no new failure (no new error, test, or file in its output).
@@ -78,13 +83,12 @@ script's docstring is the full policy. In short:
 - **Protected paths** need a human: dependency manifests and lockfiles, migrations, CI, forge and
   repository files (`.gitignore`, `CODEOWNERS`, submodules), agent instructions and skill links, check,
   lint, type and scanner configuration and ignores, build and deploy files (`Makefile`, CMake, Docker),
-  environment files, every symbolic link, every file a check command may run on the base or `HEAD`
-  (named by its path or a shell glob, from the root, from a directory the command names, or through a
-  linked directory, or by its file name alone, and the target of such a symlink), and the globs a
-  project adds with `- Autopilot paths: <glob>, <glob>`. Matching ignores case. A project may add
-  paths; it cannot remove the built-in ones. The block's `Autopilot`, `Autopilot paths` and
-  `Base branch` lines must each appear at most once, written as `- Key: value` at the start of a line,
-  and check names must be unique; otherwise the policy exits 2.
+  environment files, every symbolic link, every file a check command names on the base or `HEAD`, by its
+  path or by its file name alone (a command may reach a file in ways the policy does not follow), and the
+  globs a project adds with `- Autopilot paths: <glob>, <glob>`. Matching ignores case. A project may add
+  paths; it cannot remove the built-in ones. The block's `Autopilot`, `Autopilot paths` and `Base branch`
+  lines must each appear at most once, written as `- Key: value` at the start of a line, and check names
+  must be unique; otherwise the policy exits 2.
 
 ## Recording an automatic approval
 

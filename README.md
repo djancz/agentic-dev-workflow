@@ -121,8 +121,9 @@ current commit, the task's implementation review (and its security review, for a
 approved the tip of its task branch, every check passed or is N/A or a failure proven to exist on the
 base already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores,
 build or deploy files, symbolic links, and the files the checks run untouched. Gate 2 also needs the
-plan approved as `Approved: revision <n> …` with an approving plan review of that revision. A review
-counts only when its last round is valid and matches its header. Otherwise it stops at the usual gate
+plan approved as `Approved: revision <n> …` with an approving plan review of that revision, and check
+commands it can read statically (no `cd`, globs, `..`, or symlinked paths). A review counts only when
+its last round is valid and matches its header. Otherwise it stops at the usual gate
 with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
 (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
 off, or `- Autopilot paths: <glob>, …` to protect more paths.

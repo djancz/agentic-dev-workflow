@@ -1808,8 +1808,6 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
                             {'scripts/test runner.py': 'raise SystemExit(0)\n'}, 'scripts/test runner.py'),
             'dot-dot path': ('`python3 scripts/../run_tests.py`', {'scripts/x.py': ''},
                              {'run_tests.py': 'raise SystemExit(0)\n'}, 'run_tests.py'),
-            'symlink target': ('`ci/run`', {'ci/run': Path('../run_tests.py')},
-                               {'run_tests.py': 'raise SystemExit(0)\n'}, 'run_tests.py'),
             'runner added by the wave': ('`bash -c "python3 tools/check.py"`', {},
                                          {'tools/check.py': 'raise SystemExit(0)\n'}, 'tools/check.py'),
         }
@@ -1961,22 +1959,11 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         self.revise_plan_to_3('revision 3 (2026-10-02 09:00 UTC) — "I approve revision 3; it fixes revision 2"')
         self.assertEqual(self.wave_gate().returncode, 0)
 
-    def test_runners_named_by_a_glob_or_behind_a_named_link_are_protected(self):
-        cases = {
-            'glob': ('`bash scripts/check-*.sh`', {'scripts/check-unit.sh': 'exit 1\n'},
-                     'scripts/check-unit.sh'),
-            'glob after cd': ('`cd scripts && bash check-*.sh`', {'scripts/check-unit.sh': 'exit 1\n'},
-                              'scripts/check-unit.sh'),
-            'link reached by cd': ('`cd tools && bash check`',
-                                   {'runners/original': 'exit 1\n', 'tools/check': Path('../runners/original')},
-                                   'runners/original'),
-            'name after --': ('`python3 -- -check.py`', {'-check.py': 'raise SystemExit(1)\n'}, '-check.py'),
-        }
-        for name, (command, base_files, runner) in cases.items():
-            with self.subTest(case=name):
-                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', command))
-                self.make_wave({'app.py': 'print(2)\n', runner: 'exit 0\n'}, base_files=base_files)
-                self.assert_refused(f'a file that a check command runs: {runner}')
+    def test_a_runner_whose_name_starts_with_a_dash_is_protected(self):
+        self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', '`python3 -- -check.py`'))
+        self.make_wave({'app.py': 'print(2)\n', '-check.py': 'exit 0\n'},
+                       base_files={'-check.py': 'raise SystemExit(1)\n'})
+        self.assert_refused('a file that a check command runs: -check.py')
 
     def test_fence_markers_inside_comments_stay_comments(self):
         self.write_plan()
@@ -2014,18 +2001,34 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
 
     # Regressions from the fifth review round
 
-    def test_globs_and_paths_through_linked_directories_are_protected(self):
+    def test_commands_the_policy_cannot_read_keep_gate_2_with_the_human(self):
+        runner = {'runners/check-unit.sh': 'exit 1\n', 'runners/nested/x': ''}
         cases = {
-            'glob through a link': ('`bash scripts/check-*.sh`', {'scripts': Path('runners')}),
-            'link under the cd directory': ('`cd tools && bash scripts/check-*.sh`',
-                                            {'tools/scripts': Path('../runners')}),
+            'glob': ('bash scripts/check-*.sh', {'scripts/check-unit.sh': 'exit 1\n'}, 'a shell glob'),
+            'glob in a directory': ('bash scripts*/check-*.sh', {'scripts': Path('runners')}, 'a shell glob'),
+            'change of directory': ('cd tools && bash check', {'tools/check': 'exit 1\n'},
+                                    'a change of directory'),
+            'cd below a link': ('cd tools/scripts/subdir && bash check-unit.sh',
+                                {'tools/x': '', 'tools/scripts': Path('../runners')}, 'a change of directory'),
+            'dot-dot after a link': ('bash scripts/../check-unit.sh', {'scripts': Path('runners/nested')},
+                                     'a ".." path segment'),
+            'path through a link': ('bash scripts/check-unit.sh', {'scripts': Path('runners')},
+                                    'the symbolic link scripts'),
+            'link to a runner the wave adds': ('bash tools/check', {'tools/check': Path('../runners/new')},
+                                               'the symbolic link tools/check'),
+            'chain of links': ('bash link0/check-unit.sh',
+                               {f'link{i}': Path(f'link{i + 1}') for i in range(22)} | {'link22': Path('runners')},
+                               'the symbolic link link0'),
         }
-        for name, (command, links) in cases.items():
+        for name, (command, base_files, reason) in cases.items():
             with self.subTest(case=name):
-                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', command))
-                self.make_wave({'app.py': 'print(2)\n', 'runners/check-unit.sh': 'exit 0\n'},
-                               base_files={'runners/check-unit.sh': 'exit 1\n', 'tools/x': '', **links})
-                self.assert_refused('a file that a check command runs: runners/check-unit.sh')
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
+                self.make_wave({'app.py': 'print(2)\n'}, base_files=runner | base_files)
+                r = self.wave_gate()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn('check test-unit: the command uses ', r.stdout)
+                self.assertIn(reason, r.stdout)
+                self.assertIn('so Gate 2 stays with the human', r.stdout)
 
     def test_an_unclosed_comment_is_invalid_input(self):
         self.write_plan()
@@ -2034,6 +2037,30 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         r = self.plan_gate()
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('an HTML comment is not closed', r.stderr)
+
+    # Regressions from the sixth review round
+
+    def test_a_comment_marker_in_inline_code_is_text(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        quoted = review.read_text().replace('Read the target; ran the checks.',
+                                            'Read the target; searched the source for `<!--`.')
+        review.write_text(quoted)
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        review.write_text(quoted + '\n### Findings\n\n### [P2-1] Export loses rows\n- Severity: Major\n\n'
+                          '### Late observations\n\n<!-- Round 2+ only. Omit if none. -->\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('round 2 is not a valid review round: Must-fix open is 0', r.stdout)
+
+    def test_a_comment_that_opens_inside_a_line_is_invalid_input(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text() + '\nSee below <!-- hidden\n## Round 3 — x\n-->\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('an HTML comment opens inside a line', r.stderr)
 
     def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
         cases = {
