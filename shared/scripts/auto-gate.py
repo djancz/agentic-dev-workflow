@@ -5,26 +5,33 @@
   auto-gate.py wave --agents-md AGENTS.md --base origin/main --head HEAD development/waves/WAVE-3.md
 
 The policy is deliberately narrow and reads only recorded facts. An authorization reads
-`<timestamp> — "<the human's words>"`; the words are not a generic request to continue, and when they
-name a task or wave, it must be this one. Gate 1
-(plan) passes when the latest authorization in the ticket's Notes qualifies, the plan is a Draft with a
-Tests line and no open decisions, and its latest review approved the current revision with no must-fix
-findings; any Size and Sensitivity qualify, because a high-sensitivity task gets its security review in
-wf impl loop and Gate 2 requires that review approved. Gate 2 (wave) passes when the wave record's
-Autopilot line qualifies and the record lists exactly one task, whose plan is approved at its current
-revision and has a plan review of that revision; the wave review approved the given HEAD with no must-fix findings; the task's implementation
-review (and its security review, required unless the plan says `Sensitivity: normal`) approved its
-Checkpoint, which is the tip of the `task/TASK-<N>-<slug>` branch that the ticket records; the full
-checks table has exactly one result per check of the wf block, no check is planned, at least one PASS
-and otherwise only N/A or `FAIL (pre-existing: <evidence>)` whose result or Evidence cell names the
-base commit by SHA; --base is the wave's base branch, is merged into HEAD and contains none of the
-wave's own commits; and the wave diff (renames counted on both sides) touches no protected path:
-dependency manifests and lockfiles, migrations, CI and repository configuration, agent instructions,
-check, lint and scanner configuration, build and deploy files, files a check command names on the base
-or HEAD (and the targets of such symlinks), any file whose name is a word of a check command, a link
-on the way to a path a command names, and the globs of the block's `Autopilot paths`. The latest round of every review
-must pass the validator of a delegated round, and the review header must agree with it. A SHA counts
-only when it names exactly one commit.
+`<timestamp> — "<the human's words>"`; the words are neither another wf command nor a generic request
+to continue, and when they name a task or wave, it must be this one.
+
+Gate 1 (plan) passes when the latest authorization in the ticket's Notes qualifies, the plan is a Draft
+with a Tests line and no open decisions, and its latest review approved the current revision with no
+must-fix findings. Any Size and Sensitivity qualify, because a high-sensitivity task gets its security
+review in wf impl loop and Gate 2 requires that review approved.
+
+Gate 2 (wave) passes when the wave record's Autopilot line qualifies and the record lists exactly one
+task; that task's plan is approved at its current revision (the last revision its approval names, if
+any, is the current one) and has a valid plan review of that revision, which need not approve it
+because the human may have accepted its findings; the wave review approved the given HEAD with no
+must-fix findings; the task's implementation review (and its security review, required unless the plan
+says `Sensitivity: normal`) approved its Checkpoint, which is the tip of the `task/TASK-<N>-<slug>`
+branch that the ticket records; the full checks table has exactly one result per check of the wf
+block, no check is planned, at least one PASS and otherwise only N/A or `FAIL (pre-existing:
+<evidence>)` whose result or Evidence cell names the base commit by SHA; --base is the wave's base
+branch, is merged into HEAD and contains none of the wave's own commits; and the wave diff (renames
+counted on both sides) touches no protected path: dependency manifests and lockfiles, migrations, CI
+and repository configuration, agent instructions, check, lint and scanner configuration, build and
+deploy files, files a check command may run on the base or HEAD (named by path, by a shell glob, or by
+file name alone, and the targets of such symlinks), a link on the way to a path a command names, and
+the globs of the block's `Autopilot paths`.
+
+The latest round of every review must pass the validator of a delegated round, and the review header
+must agree with it. Code fences and HTML comments are read together, so neither hides the other. A SHA
+counts only when it names exactly one commit.
 
 A block line `- Autopilot: disabled` refuses every gate. Any other value than allowed or disabled, an
 indented or repeated Autopilot, Autopilot paths or Base branch line, a repeated check name, a repeated
@@ -64,8 +71,9 @@ SHA = re.compile(r'[0-9a-f]{7,40}')
 REVIEWED_COMMIT = re.compile(r'commit ([0-9a-f]{7,40})')
 SAFETY_KEYS = ('Autopilot', 'Autopilot paths', 'Base branch')
 SHELL_SEPARATORS = re.compile(r'[\s;&|()<>`\'"=]+')
-GENERIC_REQUEST = re.compile(r'(?i)(?:none|n/a|pending|[—-]|continue|go on|go ahead|next|wf next|ok|okay|yes|'
-                             r'pokračuj|pokracuj|dál|dal|ano|jo)[.!]*')
+# Another wf command, or a word to continue, with or without task and wave IDs.
+GENERIC_REQUEST = re.compile(r'(?i)wf\s+(?!auto\b)\S.*|(?:none|n/a|pending|[—-]|continue|go on|go ahead|next|'
+                             r'ok|okay|yes|pokračuj|pokracuj|dál|dal|ano|jo)(?:[\s,]+(?:TASK|WAVE)-\d+)*[.!]*')
 PROTECTED = (
     # dependencies and toolchain pins
     'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
@@ -113,7 +121,7 @@ def read(path: Path, record: bool = True) -> str:
         raise InputError(f'cannot read {path}: {exc.strerror or exc}') from exc
     except UnicodeDecodeError as exc:
         raise InputError(f'cannot read {path}: not UTF-8 ({exc.reason} at byte {exc.start})') from exc
-    if record and re.search(r'^[ \t]*(`{3,}|~{3,})', clean(text), flags=re.MULTILINE):
+    if record and scan(text)[1]:
         raise InputError(f'{path}: a code fence is not closed')
     return text
 
@@ -122,10 +130,38 @@ def uncomment(text: str) -> str:
     return re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
 
 
+def scan(text: str) -> tuple[str, bool]:
+    """The text without fenced code blocks and HTML comments, and whether a fence is left open.
+
+    One pass reads both, so a fence marker inside a comment and a `<!--` inside a fence stay literal. A
+    fence closes with at least as many of its own characters and nothing else on the line."""
+    kept, fence, comment = [], '', False
+    for line in text.splitlines(keepends=True):
+        if fence:
+            if re.fullmatch(rf'[ \t]*{re.escape(fence)}{re.escape(fence[0])}*[ \t]*', line.rstrip('\r\n')):
+                fence = ''
+            continue
+        if comment:
+            end = line.find('-->')
+            if end < 0:
+                continue
+            line, comment = line[end + 3:], False
+        elif opening := re.match(r'[ \t]*(`{3,}(?=[^`]*$)|~{3,})', line):
+            fence = opening[1]
+            continue
+        while (start := line.find('<!--')) >= 0:
+            end = line.find('-->', start + 4)
+            if end < 0:
+                line, comment = line[:start] + '\n', True
+                break
+            line = line[:start] + line[end + 3:]
+        kept.append(line)
+    return ''.join(kept), bool(fence)
+
+
 def clean(text: str) -> str:
-    """The text without fenced code blocks and HTML comments: examples are not records. Fences go
-    first, so a `<!--` quoted in evidence cannot swallow the rest of the record."""
-    return uncomment(validate_review.FENCE.sub('', text))
+    """The text without fenced code blocks and HTML comments: examples are not records."""
+    return scan(text)[0]
 
 
 def header(text: str, path: Path) -> dict[str, str]:
@@ -223,8 +259,9 @@ def last_round(text: str) -> tuple[int, str] | str:
     return rounds[-1]
 
 
-def review_reasons(path: Path, label: str, target: str, matches, validate) -> list[str]:
-    """Reasons a review file does not approve `target`.
+def review_reasons(path: Path, label: str, target: str, matches, validate, approval: bool = True) -> list[str]:
+    """Reasons a review file does not approve `target`, or with `approval=False` does not validly
+    review it (the human may have accepted its open findings at the gate).
 
     `matches(reviewed)` compares a Reviewed value with the target, and `validate(section, number)` is the
     validator of a delegated round. The last round must be valid and the header must agree with it, so a
@@ -237,9 +274,9 @@ def review_reasons(path: Path, label: str, target: str, matches, validate) -> li
     if 'Latest verdict' in head and 'Verdict' in head:
         reasons.append(f'{label}: the header has both Latest verdict and Verdict')
     verdict = head.get('Latest verdict') or head.get('Verdict')
-    if verdict not in APPROVED:
+    if approval and verdict not in APPROVED:
         reasons.append(f'{label}: latest verdict is "{verdict or "missing"}", not Approved')
-    if head.get('Must-fix open', '').strip() != '0':
+    if approval and head.get('Must-fix open', '').strip() != '0':
         reasons.append(f'{label}: Must-fix open is "{head.get("Must-fix open", "missing")}", not 0')
     reviewed = head.get('Reviewed', '').split(' (', 1)[0].strip()
     if not matches(reviewed):
@@ -368,16 +405,32 @@ def command_words(command: str, depth: int = 3) -> set[str]:
 def command_paths(checks: list[tuple[str, str]]) -> set[str]:
     """Normalised words of the commands that run (not N/A or planned rows), as repository paths."""
     return {posixpath.normpath(word.removeprefix('./')) for _, command in checks
-            if not re.match(r'(?i)(N/A|planned)\b', command) for word in command_words(command)
-            if word and not word.startswith('-')}
+            if not re.match(r'(?i)(N/A|planned)\b', command) for word in command_words(command) if word}
+
+
+def glob_matches(pattern: str, path: str) -> bool:
+    """Shell glob matching: `*`, `?` and `[...]` stay within one path segment."""
+    parts, segments = pattern.split('/'), path.split('/')
+    return len(parts) == len(segments) and all(fnmatch.fnmatchcase(s, p) for p, s in zip(parts, segments))
 
 
 def command_files(checks: list[tuple[str, str]], repo: Path, revs: tuple[str, ...]) -> set[str]:
-    """Files that a check command names in any of `revs` (scripts, manage.py, config passed as
-    arguments), and the targets of those that are symlinks."""
+    """Files in any of `revs` that a check command may run, and the targets of those that are symlinks.
+
+    A word names a file by its path, by a shell glob (also relative to a directory the command names,
+    which it may `cd` into), or by its file name alone, since the command may reach it through `cd` or
+    a linked directory. This errs towards the human gate."""
     trees = [tree(repo, rev) for rev in revs]
+    paths = {path for entries in trees for path in entries}
+    words = command_paths(checks)
+    tracked_dirs = {path.rsplit('/', depth)[0] for path in paths for depth in range(1, path.count('/') + 1)}
+    directories = {''} | (words & tracked_dirs)
+    names = {posixpath.basename(word) for word in words if word.strip('.') and not re.search(r'[*?[]', word)}
+    patterns = {posixpath.normpath(posixpath.join(directory, word)) for word in words
+                if re.search(r'[*?[]', word) for directory in directories}
+    pending = [path for path in paths if path in words or posixpath.basename(path) in names
+               or any(glob_matches(pattern, path) for pattern in patterns)]
     found: set[str] = set()
-    pending = list(command_paths(checks))
     while pending:
         path = pending.pop()
         hits = [entries[path] for entries in trees if path in entries]
@@ -392,13 +445,9 @@ def command_files(checks: list[tuple[str, str]], repo: Path, revs: tuple[str, ..
 
 
 def runs_changed_file(path: str, words: set[str], files: set[str]) -> bool:
-    """Whether a check command may run the changed `path`: it names the path (or its symlink target), a
-    word of the command is its file name (the command may `cd` there or go through a linked
-    directory), or the path is a directory link on the way to a named path. This errs towards the
-    human gate."""
-    name = posixpath.basename(path)
-    return (path in files or name in {posixpath.basename(word) for word in words if word.strip('.')}
-            or any(word.startswith(f'{path}/') for word in words))
+    """Whether a check command may run the changed `path`: it is one of the command's files, or a
+    directory link on the way to a path the command names."""
+    return path in files or any(word.startswith(f'{path}/') for word in words)
 
 
 def protected_paths(paths: list[str], extra: list[str]) -> list[str]:
@@ -474,17 +523,19 @@ def task_reasons(task: str, tasks_root: Path, repo: Path) -> list[str]:
     plan_path = task_dir / f'{task}-plan.md'
     plan = header(read(plan_path), plan_path) if plan_path.exists() else {}
     # The plan's Sensitivity decides the security review, so only an approved current revision counts:
-    # every way through Gate 1 has a plan review of that revision, and an autopilot approval names it.
-    approved = re.match(r'revision (\d+)\b', plan.get('Approved', ''))
+    # every way through Gate 1 has a valid plan review of that revision, and when the approval names a
+    # revision, the last one it names is the current one.
+    revision = plan.get('Revision', '')
+    named = re.findall(r'\brevision (\d+)\b', plan.get('Approved', ''))
     if (plan.get('Status') != 'Approved' or plan.get('Approved', '').strip() in {'', '—', '-', 'none'}
-            or (approved and approved[1] != plan.get('Revision'))):
+            or (named and named[-1] != revision)):
         reasons.append(f'{task}: the plan is not approved at its current revision (Status '
                        f'"{plan.get("Status", "missing")}", Approved "{plan.get("Approved", "missing")}")')
-    plan_review = task_dir / f'{task}-plan-review.md'
-    covered = header(read(plan_review), plan_review).get('Reviewed', '') if plan_review.exists() else ''
-    if covered.split(' (', 1)[0].strip() != f'plan revision {plan.get("Revision")}':
-        reasons.append(f'{task}: the plan review covers "{covered or "nothing"}", not the current plan '
-                       f'revision {plan.get("Revision", "missing")}')
+    target = f'plan revision {revision}'
+    reasons += review_reasons(task_dir / f'{task}-plan-review.md', f'{task} plan review', target,
+                              lambda reviewed: reviewed == target,
+                              lambda section, n: validate_review.validate(section, 'plan', n, target),
+                              approval=False)
     ticket = task_dir / f'{task}.md'
     ticket_branch = header(read(ticket), ticket).get('Branch', '') if ticket.exists() else ''
     summary = task_dir / f'{task}-impl-summary.md'

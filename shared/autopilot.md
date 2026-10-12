@@ -21,8 +21,10 @@ words>"` to the ticket's *Notes* (no wave record exists yet). At `wf wave start`
 record header as `Autopilot: <timestamp> — "<the human's words>"`. For `wf auto TASK-<N>` or `WAVE-<N>`,
 add the new authorization below the earlier ones in the ticket's *Notes* and, once the wave exists,
 replace the wave record's `Autopilot:` line with it. The policy reads the latest one in the ticket and
-the one in the wave record, and refuses a gate when it is missing, has no timestamp or words, is a
-generic request to continue (`wf next`, "continue"), or names another task or wave. A project turns the autopilot off with `- Autopilot: disabled` in its `wf` block; then `wf auto` stops at once and suggests `wf task` and `wf next`.
+the one in the wave record, and refuses a gate when it is missing, has no timestamp or words, is
+another `wf` command or a generic request to continue (`wf next`, "continue"), or names another task
+or wave. A project turns the autopilot off with `- Autopilot: disabled` in its `wf` block; then
+`wf auto` stops at once and suggests `wf task` and `wf next`.
 
 ## Scope
 
@@ -50,34 +52,36 @@ script's docstring is the full policy. In short:
   Sensitivity with a Tests line and no open decisions has a latest review that approved the current
   revision with no must-fix findings. A plan with `Sensitivity: high` gets its security review in
   `wf impl loop`, and Gate 2 requires that review approved.
-- **Gate 2:** the wave record carries the authorization and lists exactly one task; an approved wave
-  review of the current `HEAD` with no must-fix findings; the task's implementation review, and its
-  security review (required unless the plan says `Sensitivity: normal`), approved its Checkpoint, which
-  is the tip of its `task/TASK-<N>-<slug>` branch; the full checks have one result per check of the
+- **Gate 2:** the wave record carries the authorization and lists exactly one task; the task's plan is
+  still approved at its current revision (if the approval names revisions, the last one is the current
+  one) and has a valid plan review of that revision; an approved wave review of the current `HEAD` with
+  no must-fix findings; the task's implementation review, and its security review (required unless the
+  plan says `Sensitivity: normal`), approved its Checkpoint, which is the tip of the
+  `task/TASK-<N>-<slug>` branch its ticket records; the full checks have one result per check of the
   block, at least one PASS, and otherwise only `N/A (<reason>)` or `FAIL (pre-existing: <evidence>)`;
-  the task's plan is still approved at its current revision and its plan review covers that
-  revision, and its branch is the one its ticket records; the base is merged into `HEAD`; and the diff against it, renames counted on both sides, touches no
+  the base is merged into `HEAD`; and the diff against it, renames counted on both sides, touches no
   protected path. A `planned` check is `NOT RUN`, so it stops the autopilot until the check exists.
 - **Records must agree.** The last `## Round` of every review must pass the same validator as a
   delegated round (`validate-review.py`, `validate-wave-review.py`), and the review header must match
-  it. A repeated header field or round, or a round inside a code fence, cannot approve anything. A
-  commit counts only when its SHA names exactly that one commit.
+  it. A repeated header field or round, a round inside a code fence or an HTML comment, or a fence left
+  open cannot approve anything. A commit counts only when its SHA names exactly that one commit.
 - **Pre-existing failures.** A check that failed before the change may stay red when the integrator ran
   it on the base commit and recorded `FAIL (pre-existing: <base evidence>)` in the wave record: the same
   check fails on the base, and the wave adds no new failure (no new error, test, or file in its output).
   The result or its Evidence cell names the base commit's SHA and records what failed there, for
   example `FAIL (pre-existing: 190 errors on base 1a2b3c4, 190 on HEAD)`. The policy checks only the
-  SHA; the wave review verifies the output like any other evidence. A new failure, `NOT RUN`, or a pre-existing
-  failure without base evidence stops.
+  SHA; the wave review verifies the output like any other evidence. A new failure, `NOT RUN`, or a
+  pre-existing failure without base evidence stops.
 - **Protected paths** need a human: dependency manifests and lockfiles, migrations, CI, forge and
   repository files (`.gitignore`, `CODEOWNERS`, submodules), agent instructions and skill links, check,
   lint, type and scanner configuration and ignores, build and deploy files (`Makefile`, CMake, Docker),
-  environment files, every repository file a check command names on the base or `HEAD` (and the target
-  of such a symlink), any file whose name is a word of a check command and any link on the way to a
-  path a command names (a command may `cd` or go through a linked directory), and the globs a project adds with `- Autopilot paths: <glob>, <glob>`. Matching
-  ignores case. A project may add paths; it cannot remove the built-in ones. The block's `Autopilot`,
-  `Autopilot paths` and `Base branch` lines must each appear at most once, written as `- Key: value`
-  at the start of a line, and check names must be unique; otherwise the policy exits 2.
+  environment files, every file a check command may run on the base or `HEAD` (named by its path, by a
+  shell glob, or by its file name alone, since a command may `cd` or go through a linked directory,
+  and the target of such a symlink), any link on the way to a path a command names, and the globs a
+  project adds with `- Autopilot paths: <glob>, <glob>`. Matching ignores case. A project may add
+  paths; it cannot remove the built-in ones. The block's `Autopilot`, `Autopilot paths` and
+  `Base branch` lines must each appear at most once, written as `- Key: value` at the start of a line,
+  and check names must be unique; otherwise the policy exits 2.
 
 ## Recording an automatic approval
 

@@ -1466,7 +1466,7 @@ Read the target; ran the checks.
         for path, content in changed.items():
             target = self.repo / path
             if content is None:
-                self.git('rm', '-q', path)
+                self.git('rm', '-q', '--', path)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_symlink():
@@ -1475,7 +1475,7 @@ Read the target; ran the checks.
                 target.symlink_to(content)
             else:
                 target.write_text(content)
-            self.git('add', path)
+            self.git('add', '--', path)
         self.git('commit', '-q', '-m', message)
         return self.git('rev-parse', 'HEAD')
 
@@ -1927,7 +1927,67 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         plan.write_text(plan.read_text().replace('- Revision: 2', '- Revision: 3')
                         .replace('- Approved: revision 2 by autopilot (2026-10-01 10:00 UTC)',
                                  '- Approved: 2026-10-01 — "plan approved"'))
-        self.assert_refused('the plan review covers "plan revision 2", not the current plan revision 3')
+        self.assert_refused('TASK-7 plan review: reviewed "plan revision 2", not plan revision 3')
+
+    # Regressions from the fourth review round
+
+    def revise_plan_to_3(self, approved: str, reviewed: str = 'plan revision 3', **rounds):
+        self.write_plan(status='Approved', approved=approved, reviewed=reviewed, **rounds)
+        plan = self.task / 'TASK-7-plan.md'
+        plan.write_text(plan.read_text().replace('- Revision: 2', '- Revision: 3'))
+
+    def test_gate_2_validates_the_plan_review_it_relies_on(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.revise_plan_to_3('revision 3 by autopilot (x)', round_reviewed='plan revision 2')
+        self.assert_refused('TASK-7 plan review: round 2 says Reviewed "plan revision 2"')
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text().split('## Round 1')[0])
+        self.assert_refused('TASK-7 plan review: no numbered review round')
+        # A human may pass Gate 1 by accepting open findings, so Gate 2 needs a valid review, not an approval.
+        self.revise_plan_to_3('2026-10-01 — "plan approved with P2-1 accepted"', verdict='Changes requested',
+                              must_fix='1')
+        review.write_text(review.read_text() + '\n### Findings\n\n### [P2-1] Large exports are slow\n'
+                          '- Severity: Major\n')
+        r = self.wave_gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_the_last_revision_an_approval_names_must_be_current(self):
+        self.make_wave({'app.py': 'print(2)\n'})
+        self.revise_plan_to_3('2026-10-01 — "I approve revision 2"')
+        self.assert_refused('TASK-7: the plan is not approved at its current revision')
+        self.revise_plan_to_3('2026-10-02 — "revision 2 was wrong; I approve revision 3"')
+        self.assertEqual(self.wave_gate().returncode, 0)
+
+    def test_other_wf_commands_are_not_authorizations(self):
+        for words in ('wf next TASK-7', 'wf status', 'continue TASK-7', 'pokračuj WAVE-3'):
+            with self.subTest(words=words):
+                self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
+                self.assertIn('is a generic request', self.plan_gate().stdout)
+
+    def test_runners_named_by_a_glob_or_behind_a_named_link_are_protected(self):
+        cases = {
+            'glob': ('`bash scripts/check-*.sh`', {'scripts/check-unit.sh': 'exit 1\n'},
+                     'scripts/check-unit.sh'),
+            'glob after cd': ('`cd scripts && bash check-*.sh`', {'scripts/check-unit.sh': 'exit 1\n'},
+                              'scripts/check-unit.sh'),
+            'link reached by cd': ('`cd tools && bash check`',
+                                   {'runners/original': 'exit 1\n', 'tools/check': Path('../runners/original')},
+                                   'runners/original'),
+            'name after --': ('`python3 -- -check.py`', {'-check.py': 'raise SystemExit(1)\n'}, '-check.py'),
+        }
+        for name, (command, base_files, runner) in cases.items():
+            with self.subTest(case=name):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', command))
+                self.make_wave({'app.py': 'print(2)\n', runner: 'exit 0\n'}, base_files=base_files)
+                self.assert_refused(f'a file that a check command runs: {runner}')
+
+    def test_fence_markers_inside_comments_stay_comments(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        text = review.read_text().replace('## Round 1', '<!-- A finding may quote output:\n```\n-->\n\n## Round 1')
+        review.write_text(text + '\n### Findings\n\nNone.\n\n```text\n12 passed\n```\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_generic_requests_are_not_authorizations(self):
         for words in ('wf next', 'none', 'Continue.', 'pokračuj'):

@@ -98,11 +98,11 @@ authorization for Gate 1 and Gate 2 of one task in a wave of one. It stops at th
 with the PR prepared; that question, the push and the merge stay yours. Each gate passes only when
 `scripts/auto-gate.py` reports it eligible from the recorded facts: the authorization in the ticket and
 wave record, valid review rounds that match their headers, the checks, and the diff. Otherwise the run
-stops at the ordinary gate and shows the policy's reasons. The policy, the protected paths, and what is never automatic are in
-`shared/autopilot.md`. Approvals it records read `Approved: … by autopilot (<timestamp>)`. It never
-pushes, opens or merges a PR, force-pushes, deploys, accepts findings, or extends a round cap. Block
-keys: `Autopilot: allowed | disabled` and `Autopilot paths: <glob>, …` (more protected paths; the
-built-in ones always apply).
+stops at the ordinary gate and shows the policy's reasons. The policy, the protected paths, and what is
+never automatic are in `shared/autopilot.md`. Approvals it records read
+`Approved: … by autopilot (<timestamp>)`. It never pushes, opens or merges a PR, force-pushes, deploys,
+accepts findings, or extends a round cap. Block keys: `Autopilot: allowed | disabled` and
+`Autopilot paths: <glob>, …` (more protected paths; the built-in ones always apply).
 
 ## Records and recovery
 
