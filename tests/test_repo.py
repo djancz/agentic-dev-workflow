@@ -927,6 +927,20 @@ None.
         r = self.run_validator(text, '--kind', 'impl', '--round', '2', '--reviewed', 'commit abc123')
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_each_finding_has_exactly_one_severity(self):
+        text = ('## Round 1 — now\n- Verdict: Approved with comments\n- Must-fix open: 0\n'
+                '- Reviewed: commit abc123\n' + METHOD + '\n### [I1-1] Rows are lost\n'
+                '- Severity: Minor\n- Severity: Major\n')
+        r = self.run_validator(text, '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('one valid Severity', r.stderr)
+
+    def test_longer_fences_are_evidence_not_structure(self):
+        text = ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n- Reviewed: commit abc123\n'
+                + METHOD + '\n### Findings\n\nNone.\n\n````text\n```\n## Not a section\n```\n````\n')
+        r = self.run_validator(text, '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_doc_review_uses_d_findings(self):
         text = '''## Round 1 — now
 - Verdict: Changes requested
