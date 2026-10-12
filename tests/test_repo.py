@@ -940,6 +940,10 @@ None.
                 + METHOD + '\n### Findings\n\nNone.\n\n````text\n```\n## Not a section\n```\n````\n')
         r = self.run_validator(text, '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
         self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_validator(text.replace('````text\n```\n## Not a section\n```\n````\n',
+                                            '````\n## Not a section\n```\n'),
+                               '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
+        self.assertEqual(r.returncode, 2, 'a shorter fence must not close a longer one')
 
     def test_doc_review_uses_d_findings(self):
         text = '''## Round 1 — now

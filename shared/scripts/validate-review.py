@@ -10,8 +10,9 @@ from pathlib import Path
 
 VERDICTS = {'Approved', 'Approved with comments', 'Changes requested'}
 PREFIX = {'plan': 'P', 'impl': 'I', 'security': 'S', 'doc': 'D'}
-# A fenced block closes with at least as many of the same fence characters as it opened with.
-FENCE = re.compile(r'^[ \t]*((`|~)\2{2,}).*?^[ \t]*\1\2*[ \t]*$', flags=re.MULTILINE | re.DOTALL)
+# A fenced block closes with at least as many of the same fence characters as it opened with; the
+# lookahead keeps a longer opening fence from being read as a shorter one.
+FENCE = re.compile(r'^[ \t]*((`|~)\2{2,})(?!\2).*?^[ \t]*\1\2*[ \t]*$', flags=re.MULTILINE | re.DOTALL)
 SHA = re.compile(r'commit ([0-9a-f]{7,40})')
 
 
