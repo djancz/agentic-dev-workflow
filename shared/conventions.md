@@ -37,8 +37,8 @@ English**, even when the project's own conventions ask for another language.
 - Never pass `--no-verify`. If a hook fails or rewrites files, fix the cause, re-stage, and commit again.
 - **No AI attribution.** No `Co-Authored-By`, "Generated with", model names, session links or emoji
   signatures in commits or PR/MR text. This holds even if the agent's environment is configured to add them.
-- Push and PR creation happen only after the human has explicitly confirmed that specific action.
-  Never force-push as part of this workflow.
+- Push and PR creation happen only after the human has explicitly confirmed that specific action,
+  also after a `wf auto` run (`autopilot.md`). Never force-push as part of this workflow.
 
 ## Checks
 

@@ -10,7 +10,9 @@ from pathlib import Path
 
 VERDICTS = {'Approved', 'Approved with comments', 'Changes requested'}
 PREFIX = {'plan': 'P', 'impl': 'I', 'security': 'S', 'doc': 'D'}
-FENCE = re.compile(r'^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$', flags=re.MULTILINE | re.DOTALL)
+# A fenced block closes with at least as many of the same fence characters as it opened with; the
+# lookahead keeps a longer opening fence from being read as a shorter one.
+FENCE = re.compile(r'^[ \t]*((`|~)\2{2,})(?!\2).*?^[ \t]*\1\2*[ \t]*$', flags=re.MULTILINE | re.DOTALL)
 SHA = re.compile(r'commit ([0-9a-f]{7,40})')
 
 
@@ -72,10 +74,15 @@ def validate(text: str, kind: str, round_no: int, reviewed: str) -> tuple[str, i
         if actual_prefix != prefix or int(actual_round) != round_no:
             raise ValueError(f'finding IDs must use {prefix}{round_no}-<n>')
 
-    finding_severities = re.findall(
-        r'^### \[[PISHD]\d+-\d+\].*?^- Severity: (Blocker|Major|Minor|Nit)(?:\s|$)',
-        text, flags=re.MULTILINE | re.DOTALL,
-    )
+    # Each finding runs to the next heading and has exactly one Severity line, so a second one cannot hide.
+    findings = re.findall(r'^### \[[PISHD]\d+-\d+\].*?(?=^#{1,3} |\Z)', text, flags=re.MULTILINE | re.DOTALL)
+    finding_severities = []
+    for finding in findings:
+        lines = re.findall(r'^- Severity:(.*)$', finding, flags=re.MULTILINE)
+        severity = re.match(r' (Blocker|Major|Minor|Nit)(?:\s|$)', lines[0]) if len(lines) == 1 else None
+        if not severity:
+            raise ValueError('every finding heading must have one valid Severity')
+        finding_severities.append(severity[1])
     if len(finding_severities) != len(headings):
         raise ValueError('every finding heading must have one valid Severity')
     carried = len(re.findall(r'^\|\s*[PISHD]\d+-\d+\s*\|\s*not resolved\b[^|]*\|', text,

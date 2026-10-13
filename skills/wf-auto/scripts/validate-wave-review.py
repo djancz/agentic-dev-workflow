@@ -1,0 +1,1 @@
+../../../shared/scripts/validate-wave-review.py

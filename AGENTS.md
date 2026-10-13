@@ -5,9 +5,11 @@ human workflow and `docs/skills.md` for the command map. Source rules live in `s
 to them through relative symlinks. Keep a skill short and load only the references needed for its stage.
 Use `name` and `description` frontmatter only.
 
-Preserve these invariants: every approval is explicit; feature tests and reviews use a fresh context;
-checks report missing or skipped runs honestly; loops have finite caps and stop on stagnation; a wave
-PR is created only after its integrated diff is reviewed and the human approves it. Work records under
+Preserve these invariants: every approval is explicit (a `wf auto` authorization is explicit, scoped
+to one task, and passes a gate only through `scripts/auto-gate.py`); feature tests and reviews use a
+fresh context; checks report missing or skipped runs honestly; loops have finite caps and stop on
+stagnation; a wave PR is created only after its integrated diff is reviewed and the human approves the
+push and PR, also after a `wf auto` run. Work records under
 `development/` stay private. The repository must contain no personal or company material from the
 local references.
 

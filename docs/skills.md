@@ -32,6 +32,7 @@ more than one task or wave could match.
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
 | `wf status [ID]` | Read status and next action | None; read-only |
 | `wf next [ID]` | Run the next stages until a human gate, question, or failure | The gate it stops at |
+| `wf auto <goal>` | Autopilot: run every stage, pass Gate 1 and Gate 2 by policy, prepare the PR | Push and PR |
 
 Review loops also run internal stages you do not type: `wf wave fix` (fixes after a wave review),
 `wf spec rev` and `wf roadmap rev` (fresh reviews of the spec and roadmap).
@@ -86,8 +87,22 @@ finding IDs and is recorded in the PR. Silence is not approval.
 | Gate 1, each task | Scope, tests, security, plan review | Test author and implementation |
 | Gate 2, each wave | Combined diff, full checks, integration review | PR preparation |
 | Push and PR | Exact branch, commits, title, body | Push and PR creation |
+| `wf auto` request | Your own assignment; one task, wave of one | Policy-passed Gates 1 and 2 |
 | Maintenance | Updates, advisories, scan gaps | Dependency changes |
 | Deployment | Exact runbook, backups, checks | Deployment |
+
+## Autopilot
+
+`wf auto <goal>` (or `wf auto TASK-N` / `wf auto WAVE-N` to continue) is an explicit, up-front
+authorization for Gate 1 and Gate 2 of one task in a wave of one. It stops at the push-and-PR question
+with the PR prepared; that question, the push and the merge stay yours. Each gate passes only when
+`scripts/auto-gate.py` reports it eligible from the recorded facts: the authorization in the ticket and
+wave record, valid review rounds that match their headers, the checks, and the diff. Otherwise the run
+stops at the ordinary gate and shows the policy's reasons. The policy, the protected paths, and what is
+never automatic are in `shared/autopilot.md`. Approvals it records read
+`Approved: … by autopilot (<timestamp>)`. It never pushes, opens or merges a PR, force-pushes, deploys,
+accepts findings, or extends a round cap. Block keys: `Autopilot: allowed | disabled` and
+`Autopilot paths: <glob>, …` (more protected paths; the built-in ones always apply).
 
 ## Records and recovery
 
