@@ -22,22 +22,23 @@ is the tip of the `task/TASK-<N>-<slug>` branch that the ticket records; the ful
 exactly one result per check of the wf block, no check is planned, at least one PASS and otherwise only
 N/A or `FAIL (pre-existing: <evidence>)` whose result or Evidence cell names the base commit by SHA;
 --base is the wave's base branch, is merged into HEAD and contains none of the wave's own commits; every
-check command reads statically, without a change of directory or a shell glob where the shell reads it,
-a `..` segment, or a path through a symbolic link or into a submodule; and the wave diff (renames
-counted on both sides) touches no protected path: dependency manifests and lockfiles, migrations, CI and
-repository configuration, agent instructions, check, lint and scanner configuration, build and deploy
-files, symbolic links and submodules, files a check command names on the base or HEAD by path or by
-file name alone, and the globs of the block's `Autopilot paths`.
+check command reads statically, without `cd` or `pushd`, a shell glob outside single quotes (anywhere if
+it starts another shell), a `..` segment, a path built from a variable other than `$PWD`, or a path
+through a symbolic link or into a submodule; and the wave diff (renames counted on both sides) touches no
+protected path: dependency manifests and lockfiles, migrations, CI and repository configuration, agent
+instructions, check, lint and scanner configuration, build and deploy files, symbolic links and
+submodules, files a check command names on the base or HEAD by path or by file name alone, and the globs
+of the block's `Autopilot paths`.
 
 The latest round of every review must pass the validator of a delegated round, and the review header must
 agree with it. Code fences and HTML comments are read together, so neither hides the other; a comment
-opens only at the start of a line, one per line, and a `<!--` in inline code is text. A SHA counts only
-when it names exactly one commit.
+opens only at the start of a line, one per line, and a `<!--` in inline code on one line is text. A SHA
+counts only when it names exactly one commit.
 
 A block line `- Autopilot: disabled` refuses every gate. Any other value than allowed or disabled, an
 indented or repeated Autopilot, Autopilot paths or Base branch line, a repeated check name, a repeated
-record header field, a code fence or HTML comment left open or a comment that opens inside a line in a
-record, or a record that is not UTF-8 is invalid input.
+record header field, a code fence or HTML comment left open, a comment that opens inside a line, or a
+`<!--` in inline code that crosses a line in a record, or a record that is not UTF-8 is invalid input.
 
 Exit codes: 0 eligible, 1 not eligible (one reason per line), 2 invalid input.
 """
@@ -75,7 +76,7 @@ SAFETY_KEYS = ('Autopilot', 'Autopilot paths', 'Base branch')
 SHELL_SEPARATORS = re.compile(r'[\s;&|()<>`\'"=]+')
 # The human's words ask for the autopilot by name: `wf auto`, `/wf-auto`, autopilot (also inflected).
 ASKS_FOR_AUTOPILOT = re.compile(r'(?i)\bwf[ -]auto\b|\bautopilot')
-CODE_SPAN = re.compile(r'(`+)(?!`).*?(?<!`)\1(?!`)')
+SHELLS = {'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval'}
 PROTECTED = (
     # dependencies and toolchain pins
     'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
@@ -132,25 +133,47 @@ def uncomment(text: str) -> str:
     return re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
 
 
+def outside_code(line: str, run: str) -> tuple[str, str]:
+    """The text of `line` outside inline code spans, and the backtick run of a span still open at its end;
+    `run` is the run of a span already open at its start."""
+    outside, pos = [], 0
+    for match in re.finditer(r'`+', line):
+        if run:
+            if match[0] == run:
+                run, pos = '', match.end()
+            continue
+        outside.append(line[pos:match.start()])
+        run, pos = match[0], match.end()
+    if not run:
+        outside.append(line[pos:])
+    return ''.join(outside), run
+
+
 def scan(text: str) -> tuple[str, str]:
     """The text without fenced code blocks and HTML comments, and why it cannot be read, if it cannot.
 
-    One pass reads both, so a fence marker inside a comment and a `<!--` inside a fence or an inline code
-    span stay literal. A fence closes with at least as many of its own characters and nothing else on the
-    line. A comment opens only at the start of a line, as the templates write it, and nothing after it on
-    that line opens another; one that opens inside a line, or a fence or comment left open, could hide
-    part of the record."""
-    kept, fence, comment = [], '', False
+    One pass reads fences, comments and inline code, so a fence marker inside a comment and a `<!--`
+    inside a fence or an inline code span on one line stay literal. A fence closes with at least as many
+    of its own characters and nothing else on the line. A comment opens only at the start of a line, as
+    the templates write it, and nothing after it on that line opens another. A comment that opens inside
+    a line, a `<!--` in inline code that crosses a line, or a fence or comment left open could hide part
+    of the record."""
+    kept, fence, comment, run = [], '', False, ''
     for line in text.splitlines(keepends=True):
         if fence:
             if re.fullmatch(rf'[ \t]*{re.escape(fence)}{re.escape(fence[0])}*[ \t]*', line.rstrip('\r\n')):
                 fence = ''
             continue
+        if not line.strip():
+            run = ''
         if comment:
             end = line.find('-->')
             if end < 0:
                 continue
             line, comment = line[end + 3:], False
+        elif run:
+            if '<!--' in line:
+                return ''.join(kept), 'an HTML comment marker is inside inline code that crosses a line'
         elif opening := re.match(r'[ \t]*(`{3,}(?=[^`]*$)|~{3,})', line):
             fence = opening[1]
             continue
@@ -158,7 +181,8 @@ def scan(text: str) -> tuple[str, str]:
             start = line.index('<!--')
             end = line.find('-->', start + 4)
             line, comment = (line[:start] + '\n', True) if end < 0 else (line[:start] + line[end + 3:], False)
-        if '<!--' in CODE_SPAN.sub('', line):
+        outside, run = outside_code(line, run)
+        if '<!--' in outside or (run and '<!--' in line):
             return ''.join(kept), 'an HTML comment opens inside a line'
         kept.append(line)
     return ''.join(kept), ('a code fence is not closed' if fence else
@@ -413,23 +437,23 @@ def runnable(checks: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [(name, command) for name, command in checks if not re.match(r'(?i)(N/A|planned)\b', command)]
 
 
-def shell_parts(command: str, depth: int = 3) -> list[str]:
-    """What the shell itself reads in `command`: the text with quoted strings blanked out, and the quoted
-    script of an `sh -c`-style call read the same way, since that shell runs it."""
-    text, scripts = [], []
-    for match in re.finditer(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"|(.)", command, flags=re.DOTALL):
-        if match[3] is not None:
-            text.append(match[3])
-            continue
-        if depth and re.search(r'(?:^|\s)-c\s*$', ''.join(text)):
-            scripts.append(match[1] if match[1] is not None else match[2])
-        text.append(' ' * len(match[0]))
-    return [''.join(text)] + [part for script in scripts for part in shell_parts(script, depth - 1)]
+def repo_path(word: str) -> str:
+    """A command word as a repository path: `$PWD/`, `${PWD}/` and `$(pwd)/` mean the repository root."""
+    return posixpath.normpath(re.sub(r'^(?:\$PWD|\$\{PWD\})?/+', '', word.removeprefix('./')))
+
+
+def expanded_text(command: str, words: set[str]) -> str:
+    """The text the shell may expand: all of it when the command starts another shell, which reads quoted
+    strings as commands; otherwise everything but single-quoted strings."""
+    if {posixpath.basename(word) for word in words} & SHELLS:
+        return command
+    return ''.join(' ' * len(match[0]) if match[0].startswith("'") else match[0]
+                   for match in re.finditer(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|.", command, flags=re.DOTALL))
 
 
 def special_entries(words: set[str], trees: list[dict[str, tuple[str, str]]]) -> list[str]:
     """Symbolic links and submodules on the way to, or at, a path the words name."""
-    parts = [posixpath.normpath(word.removeprefix('./')).split('/') for word in words]
+    parts = [repo_path(word).split('/') for word in words]
     prefixes = {'/'.join(part[:i]) for part in parts for i in range(1, len(part) + 1)}
     return sorted(f'the {"symbolic link" if mode == "120000" else "submodule"} {prefix}'
                   for prefix in prefixes for entries in trees
@@ -439,20 +463,22 @@ def special_entries(words: set[str], trees: list[dict[str, tuple[str, str]]]) ->
 def command_reasons(checks: list[tuple[str, str]], trees: list[dict[str, tuple[str, str]]]) -> list[str]:
     """Reasons the policy cannot tell which files a check command runs.
 
-    It reads commands statically, so a change of directory or a shell glob where the shell reads it (not
-    in a quoted argument), a `..` segment, or a path through a symbolic link or into a submodule (on the
-    base or HEAD), also for a file the command names by file name alone, keeps Gate 2 with the human."""
+    It reads commands statically, so `cd` or `pushd` anywhere in the command, a shell glob outside single
+    quotes (anywhere if the command starts another shell), a `..` segment, a path built from a variable
+    other than `$PWD`, or a path through a symbolic link or into a submodule (on the base or HEAD), also
+    for a file the command names by file name alone, keeps Gate 2 with the human."""
     reasons = []
     for name, command in runnable(checks):
         words = {word for word in command_words(command) if word}
-        shell = shell_parts(command)
         found = []
-        if any(re.search(r'(?:^|[;&|(){}]|\b(?:then|do|else)\b)\s*(?:cd|pushd)\b', part) for part in shell):
+        if words & {'cd', 'pushd'}:
             found.append('a change of directory')
-        if any(re.search(r'[*?[]', part) for part in shell):
+        if re.search(r'[*?[]', expanded_text(command, words)):
             found.append('a shell glob')
         if any('..' in word.split('/') for word in words):
             found.append('a ".." path segment')
+        if any('$' in repo_path(word) and '/' in word for word in words):
+            found.append('a path built from a variable')
         named = command_files([(name, command)], trees)
         found += sorted(set(special_entries(words | named, trees)))[:1]
         if found:
@@ -464,8 +490,7 @@ def command_reasons(checks: list[tuple[str, str]], trees: list[dict[str, tuple[s
 def command_files(checks: list[tuple[str, str]], trees: list[dict[str, tuple[str, str]]]) -> set[str]:
     """Files in any of `trees` that a check command names by path, or by file name alone, since a command
     may reach a file in ways a policy cannot follow. This errs towards the human gate."""
-    words = {posixpath.normpath(word.removeprefix('./')) for _, command in runnable(checks)
-             for word in command_words(command) if word}
+    words = {repo_path(word) for _, command in runnable(checks) for word in command_words(command) if word}
     names = {posixpath.basename(word) for word in words if word.strip('.')}
     return {path for entries in trees for path in entries if path in words or posixpath.basename(path) in names}
 

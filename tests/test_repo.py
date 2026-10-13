@@ -2098,7 +2098,7 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         self.assertIn('the wave changes a submodule: vendor-checks', r.stdout)
 
     def test_quoted_arguments_and_options_are_not_shell_operations(self):
-        for command in ("cargo test --test '*'", 'python3 -m pytest -q -k cd', 'test -z "$(gofmt -l .)"'):
+        for command in ("cargo test --test '*'", 'test -z "$(gofmt -l .)"', 'bash cd/check.sh'):
             with self.subTest(command=command):
                 self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
                 self.make_wave({'app.py': 'print(2)\n'})
@@ -2107,6 +2107,52 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
         self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', "`sh -c 'cd tools && ls *.sh'`"))
         self.make_wave({'app.py': 'print(2)\n'})
         self.assert_refused('check test-unit: the command uses a change of directory, a shell glob')
+
+    # Regressions from the eighth review round
+
+    def test_shell_operations_however_they_are_written_keep_gate_2_with_the_human(self):
+        cases = {
+            'sh -ec "bash scripts/check-*.sh"': 'a shell glob',
+            'bash -lc "bash scripts/check-*.sh"': 'a shell glob',
+            'sh -c -- "bash scripts/check-*.sh"': 'a shell glob',
+            'output="$(bash scripts/check-*.sh)"': 'a shell glob',
+            'out=`ls scripts/*.sh`': 'a shell glob',
+            'command cd tools && bash check': 'a change of directory',
+            'X=1 cd tools && bash check': 'a change of directory',
+            '"cd" tools && bash check': 'a change of directory',
+            # A documented limit: cd counts wherever it appears, also as an argument.
+            'python3 -m pytest -q -k cd': 'a change of directory',
+            'bash "$HOME/checks/run.sh"': 'a path built from a variable',
+        }
+        for command, reason in cases.items():
+            with self.subTest(command=command):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f"`{command}`"))
+                self.make_wave({'app.py': 'print(2)\n'})
+                self.assert_refused(f'check test-unit: the command uses {reason}')
+
+    def test_the_repository_root_prefix_does_not_hide_links_or_submodules(self):
+        cases = {
+            'bash "$PWD/scripts/check-unit.sh"': ({'scripts': Path('runners')}, 'the symbolic link scripts'),
+            'bash ${PWD}/vendor-checks/check.sh': ({'vendor-checks': ('gitlink', '1' * 40)},
+                                                   'the submodule vendor-checks'),
+        }
+        for command, (base_files, reason) in cases.items():
+            with self.subTest(command=command):
+                self.write_block(rows=self.ROWS.replace('`python3 run_tests.py`', f'`{command}`'))
+                self.make_wave({'app.py': 'print(2)\n'},
+                               base_files={'runners/check-unit.sh': 'exit 1\n', **base_files})
+                self.assert_refused(f'check test-unit: the command uses {reason}')
+
+    def test_a_comment_marker_in_inline_code_across_lines_is_invalid_input(self):
+        self.write_plan()
+        review = self.task / 'TASK-7-plan-review.md'
+        review.write_text(review.read_text().replace(
+            'Read the target; ran the checks.', 'Read the plan; searched for `marker\n    <!--\nend`.')
+            + '\n### Findings\n\n### [P2-1] Export loses rows\n- Severity: Major\n\n'
+            '### Late observations\n\n<!-- Round 2+ only. Omit if none. -->\n')
+        r = self.plan_gate()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('an HTML comment marker is inside inline code that crosses a line', r.stderr)
 
     def test_runners_reached_through_cd_or_a_directory_symlink_are_protected(self):
         cases = {

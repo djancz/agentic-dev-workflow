@@ -122,11 +122,11 @@ the tip of its task branch, every check passed or is N/A or a failure proven to 
 already, and the diff leaves dependencies, migrations, CI, agent instructions, scanner ignores, build or
 deploy files, symbolic links, submodules, and the files the checks run untouched. Gate 2 also needs the
 plan approved as `Approved: revision <n> …` with an approving plan review of that revision, and check
-commands it can read statically (no `cd`, unquoted globs, `..`, symlinked paths, or submodules). A review
-counts only when its last round is valid and matches its header. Otherwise it stops at the usual gate
-with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model family
-(`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to turn it
-off, or `- Autopilot paths: <glob>, …` to protect more paths.
+commands it can read statically (no `cd`, shell globs, `..`, variable or symlinked paths, or submodules).
+A review counts only when its last round is valid and matches its header. Otherwise it stops at the usual
+gate with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model
+family (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to
+turn it off, or `- Autopilot paths: <glob>, …` to protect more paths.
 
 ## Start a new project
 
