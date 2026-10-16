@@ -37,6 +37,9 @@ Role: **author**. Paths are relative to this skill's directory. Read:
    browser check covered, repeat that part as `wf impl` describes, or mark it stale in the summary.
 6. **Checkpoint commit.** Stage explicit paths, then run `git commit -m "wip(TASK-<N>): fix round <n>"`.
    Hooks stay on.
+   If the commit fails because the sandbox keeps `.git` read-only (a delegated run), do not stop: leave
+   the changes unstaged, finish the remaining steps, write `Checkpoint: pending` and list the changed
+   paths in the summary. The delegating session commits them and sets `Checkpoint`.
 7. **Update the summary.**
    - Set `Checkpoint` to the new `HEAD` and keep `Status: Review requested`.
    - Refresh the Checks table and *Deviations*.

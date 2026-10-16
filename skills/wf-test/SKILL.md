@@ -15,6 +15,7 @@ Read `references/models.md` for non-default model or effort choices.
 For a headless run, write a short prompt under the task's `runs/` directory and call
 `scripts/run-agent.sh <agent> rw <prompt> <out>`. Wait for its exit status and inspect the committed
 tests and report before accepting the stage. A failed run is not completed test authoring.
+Follow `references/loop.md` → Delegated runs.
 
 The test author reads applicable PRD/spec sections when present, plus task acceptance criteria and the
 public interface. It must not
@@ -24,6 +25,7 @@ conventions and public APIs. Keep the tests focused and deterministic.
 
 Run the tests and record the expected red result for unimplemented behavior. A passing test is valid
 only if it verifies a behavior already present; say so. Commit tests on the task branch as a checkpoint,
-using explicit paths. Write `TASK-<N>-test-report.md` beside the task plan: agent/model/effort, contract
+using explicit paths. If the commit fails because the sandbox keeps `.git` read-only, leave the tests
+unstaged, list their paths in the report, and finish; the delegating session commits them. Write `TASK-<N>-test-report.md` beside the task plan: agent/model/effort, contract
 references, tests, command, result, and gaps. Next: `wf impl`. Do not implement the behavior or weaken
 an acceptance criterion to make the test pass.
