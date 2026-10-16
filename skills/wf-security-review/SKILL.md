@@ -16,7 +16,7 @@ directory. Read:
 - `references/review-rubric.md`
 - `references/conventions.md`: the section Checks
 - `templates/security-review.md`
-- `references/workflow.md`: the section Human gates (for the report, task mode)
+- `references/workflow.md`: the sections Next step and Human gates (for the report, task mode)
 
 For a standalone call, accept the `sec` role (`sec=agent[,model[,effort]]` or `sec-agent=`,
 `sec-model=`, `sec-effort=`) and `models=`, resolved with `scripts/resolve-roles.py --roles sec` as
@@ -79,8 +79,10 @@ Skip this section in delegated output mode. Report the verdict, the must-fix cou
 with its CWE, and the scanners that did not run. Then `Next`:
 - `Changes requested`: `wf impl fix` (or `wf impl loop`).
 - Task mode, `Approved*`: follow the implementation review of this checkpoint. If it is `Approved*`,
-  mark the task ready to integrate and report `Next: wf wave integrate WAVE-N`. If there is none
-  yet, `wf impl rev` in a new session; if it requested changes, `wf impl fix` (or `wf impl loop`).
+  mark the task ready to integrate and report the next step as `references/workflow.md` → Next step says:
+  `wf wave integrate WAVE-N` only when every task of the wave is ready, otherwise the tasks that are not.
+  If there is none yet, `wf impl rev` in a new session; if it requested changes, `wf impl fix` (or
+  `wf impl loop`).
 - Audit mode: propose `wf task`s for the must-fix findings, one per concern
   (`references/conventions.md` → Task scope).
 

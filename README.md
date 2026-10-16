@@ -97,7 +97,9 @@ you:   wf wave done        (after merging on your forge)
 Behind `wf next`, a change runs `wf plan` → `wf plan loop` → Gate 1 → `wf wave start` →
 `wf new-worktree` → `wf test` → `wf impl` → `wf impl loop` → `wf wave integrate` → Gate 2 →
 `wf finalize`. A new project first runs `wf prd` → `wf spec` → `wf roadmap` → `wf init` →
-`wf milestone`, each with its own approval. If a stage stops with findings or unavailable tooling, the
+`wf milestone`, each with its own approval. `wf wave integrate` is offered only once every task of the wave
+is ready to integrate; until then the agent lists the tasks that are not. If a stage stops with findings
+or unavailable tooling, the
 agent says why and what you can choose. Every stage also has its own command for manual control; see
 [commands and gates](docs/skills.md).
 
