@@ -40,6 +40,8 @@ and `git status --porcelain` is empty.
 ## Gate
 
 When every verdict is `Approved*` for the current `Checkpoint`, set the task and summary to
-`Ready to integrate`. Report `Next: wf wave integrate WAVE-N`. The combined wave review presents Gate 2.
+`Ready to integrate`. Report the next step as `references/workflow.md` → Next step says: `wf wave integrate
+WAVE-N` only when every task of the wave is ready, otherwise the tasks that are not. The combined wave
+review presents Gate 2.
 
 End with `— wf-impl-loop · <timestamp>`.

@@ -37,6 +37,13 @@ the plan is approved.
 For a non-feature change, the plan may say `Tests: N/A` with a reason, so `wf test` is skipped.
 `wf maintenance` and `wf deploy` retain their own explicit gates.
 
+**Ready is per task; integration is per wave.** `Ready to integrate` describes one task, but
+`wf wave integrate` needs every task of the wave. When a stage leaves a task ready, read `Tasks:` in the
+wave record and each ticket's `Status` before naming a next command. If every task that is not `Dropped`
+is `Ready to integrate` or `Done`, report `Next: wf wave integrate WAVE-N`. Otherwise report this task as
+ready, list each task that is not, with its status and the command that moves it on (`wf status` resolves
+it), and do not name `wf wave integrate`.
+
 ## Human gates
 
 Gate 1 shows the task goal, scope, acceptance tests, security level, approach, review verdict, and

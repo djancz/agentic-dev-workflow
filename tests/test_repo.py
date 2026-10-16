@@ -130,6 +130,20 @@ class SkillStructure(unittest.TestCase):
             with self.subTest(doc=doc.name):
                 self.assertIn('Delegated runs', doc.read_text())
 
+    def test_task_readiness_never_implies_wave_integration(self):
+        workflow = (SHARED / 'workflow.md').read_text()
+        self.assertIn('Ready is per task; integration is per wave.', workflow)
+        for doc in (LOOP, SKILLS / 'wf-impl-loop' / 'SKILL.md', SKILLS / 'wf-impl-review' / 'SKILL.md',
+                    SKILLS / 'wf-security-review' / 'SKILL.md'):
+            text = ' '.join(doc.read_text().split())
+            with self.subTest(doc=doc.parent.name + '/' + doc.name):
+                self.assertNotIn('Next: wf wave integrate', text)
+                self.assertIn('only when every task of the wave is ready', text)
+        for skill in ('wf-impl-review', 'wf-security-review'):
+            with self.subTest(skill=skill):
+                self.assertIn('sections Next step and Human gates',
+                              (SKILLS / skill / 'SKILL.md').read_text())
+
     def test_key_stages_and_user_guide_match(self):
         readme = (REPO / 'README.md').read_text()
         guide = (REPO / 'docs' / 'skills.md').read_text()

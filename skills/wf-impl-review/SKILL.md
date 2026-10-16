@@ -18,7 +18,7 @@ directory. Read:
 - `references/security.md`: sections Review checklist, Language pitfalls for this stack, Scanners and
   Severity mapping
 - `templates/impl-review.md`
-- `references/workflow.md`: the section Human gates (for the report)
+- `references/workflow.md`: the sections Next step and Human gates (for the report)
 - the plan, the summary, the ticket's acceptance criteria, the trusted `wf` block defined by
   `references/conventions.md`, and the review file (its **header and latest round only**)
 
@@ -95,6 +95,7 @@ finding. `Next`:
 - `Approved*`, `Sensitivity: high`, and no security review whose latest verdict is `Approved*`: `wf sec`,
   in a new session.
 - Otherwise `Approved*`: mark the task ready to integrate after any required security review, then
-  report `Next: wf wave integrate WAVE-N`. The wave owns Gate 2.
+  report the next step as `references/workflow.md` → Next step says: `wf wave integrate WAVE-N` only when
+  every task of the wave is ready, otherwise the tasks that are not. The wave owns Gate 2.
 
 End with `— wf-impl-review · <timestamp>`.

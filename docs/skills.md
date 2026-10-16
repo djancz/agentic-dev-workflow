@@ -34,6 +34,9 @@ more than one task or wave could match.
 | `wf next [ID]` | Run the next stages until a human gate, question, or failure | The gate it stops at |
 | `wf auto <goal>` | Autopilot: run every stage, pass Gate 1 and Gate 2 by policy, prepare the PR | Push and PR |
 
+`Ready to integrate` is per task. A stage names `wf wave integrate WAVE-N` as the next step only when every
+task of the wave (except dropped ones) is ready; otherwise it lists the tasks that are not.
+
 Review loops also run internal stages you do not type: `wf wave fix` (fixes after a wave review),
 `wf spec rev` and `wf roadmap rev` (fresh reviews of the spec and roadmap).
 
