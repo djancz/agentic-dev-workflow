@@ -24,6 +24,12 @@
 #                              gemini has none and refuses it). Default: the CLI's own setting
 #   WF_CLAUDE_PERMISSION_MODE  claude permission mode for rw (default acceptEdits)
 #   WF_GEMINI_SANDBOX=1        run gemini with --sandbox; required for headless rw yolo mode
+#   WF_AGENT_NETWORK=0|1       codex rw: network inside the sandbox. Default: the `Agent network: on|off`
+#                              line of the wf block in AGENTS.md, else off
+#
+# Codex rw runs also get the real path of development/ as a writable directory when it lies outside the
+# repository (a task worktree links it to the main worktree). Codex keeps .git read-only, so a delegated
+# Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #
 # Exit codes: 0 ok, 2 usage, 3 tree or records changed, 4 required executable not found,
@@ -31,7 +37,7 @@
 set -eu
 
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -51,6 +57,36 @@ abspath() {
 
 is_uint() {
     case ${1:-} in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
+# The real path of development/ when it lies outside the repository root; empty otherwise.
+records_outside_root() {
+    [ -e "$root/development" ] || return 0
+    real=$(cd -P "$root/development" && pwd) || return 1
+    case $real in
+        "$root"|"$root"/*) ;;
+        *) printf '%s\n' "$real" ;;
+    esac
+}
+
+# on or off: WF_AGENT_NETWORK, else the wf block's `- Agent network:` line, else off.
+agent_network() {
+    case ${WF_AGENT_NETWORK:-} in
+        1) echo on; return ;;
+        0) echo off; return ;;
+        '') ;;
+        *) die 2 "WF_AGENT_NETWORK must be 0 or 1: $WF_AGENT_NETWORK" ;;
+    esac
+    value=
+    if [ -f "$root/AGENTS.md" ]; then
+        value=$(sed -n '/<!-- wf:begin/,/<!-- wf:end -->/s/^- Agent network:[[:space:]]*\([a-z]*\).*/\1/p' \
+            "$root/AGENTS.md" | head -n 1)
+    fi
+    case $value in
+        on) echo on ;;
+        off|'') echo off ;;
+        *) die 2 "AGENTS.md: Agent network must be on or off: $value" ;;
+    esac
 }
 
 if [ "${1:-}" = "--wait" ]; then
@@ -131,6 +167,12 @@ case $agent in
         sandbox=read-only
         [ "$mode" = rw ] && sandbox=workspace-write
         set -- codex exec -s "$sandbox" --ephemeral -C "$root" -o "$out"
+        if [ "$mode" = rw ]; then
+            records_dir=$(records_outside_root) || die 2 "cannot resolve development/: $root/development"
+            [ -n "$records_dir" ] && set -- "$@" --add-dir "$records_dir"
+            network=$(agent_network) || exit 2
+            [ "$network" = on ] && set -- "$@" -c 'sandbox_workspace_write.network_access=true'
+        fi
         [ -n "$model" ] && set -- "$@" -m "$model"
         [ -n "$effort" ] && set -- "$@" -c "model_reasoning_effort=\"$effort\""
         set -- "$@" -

@@ -55,6 +55,9 @@ acceptance of its open findings.
    one, **stop and ask**.
 6. **Checkpoint commit.** Stage the files you changed by explicit path, then run
    `git commit -m "wip(TASK-<N>): implementation"`. Hooks stay on.
+   If the commit fails because the sandbox keeps `.git` read-only (a delegated run), do not stop: leave
+   the changes unstaged, finish the remaining steps, write `Checkpoint: pending` and list the changed
+   paths in the summary. The delegating session commits them and sets `Checkpoint`.
 7. **Full checks.** Run every row of the `wf` block and fill in the Checks table.
    - On a failure, fix it, re-run, and make another checkpoint commit.
    - A failure that is unrelated to your change is recorded only if you show that it also fails on the

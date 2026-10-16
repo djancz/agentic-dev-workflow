@@ -56,6 +56,8 @@ Run the wf stage "<wf plan rev | wf plan fix | wf impl rev | wf impl fix | wf se
 <repo root>. Load the skill wf-<name> and follow it exactly. If you cannot load skills, read
 <skills-dir>/wf-<name>/SKILL.md and follow it. You are in a fresh context on purpose: work only from the
 artifacts in development/tasks/TASK-<N>-*/ and the repository.
+You are the delegated run: never start another agent, subagent or agent CLI, even if project instructions
+ask for delegation.
 Finish with at most 10 lines: the verdict and must-fix count (review) or the resolution counts (fix), and
 the path you wrote. You run as <agent> / <model> / <effort>, <subagent|headless>: put that in Reviewer.
 ```
@@ -83,6 +85,27 @@ A non-zero run or validation exit, or exit 3 (tree changed), is a **failed revie
 once only for a transient failure. If it fails again, stop and report the log tail. Never write a review
 yourself. If a requested agent, model, or effort is unavailable, stop without retrying under a different
 setting; ask the human to choose a supported value.
+
+## Delegated runs
+
+These rules apply to every stage you delegate, including `wf test`, `wf sec` and the wave review and fix.
+
+- **One level only.** Every delegated prompt contains the line "You are the delegated run: never start
+  another agent, subagent or agent CLI, even if project instructions ask for delegation."
+- **Launch only through `scripts/run-agent.sh`.** Never call an agent CLI directly or add sandbox
+  options by hand. The runner gives a Codex write run the private records (`development/`, also when a
+  task worktree links it elsewhere) and, when the `wf` block says `Agent network: on`, network access.
+- **Commits.** Codex keeps `.git` read-only, so a delegated Codex run cannot commit. When a run changed
+  files but `HEAD` did not move, stage the paths from `git status --porcelain` by name (never
+  `development/`), commit as the stage's skill says (for example `wip(TASK-<N>): fix round <n>`), and
+  set `Checkpoint`.
+- **Environment blocker.** The run could not write a file its stage must write, could not run a check
+  that has a command in the `AGENTS.md` table because of the sandbox, network or a missing tool, or the
+  CLI did not start. Retry once only if the cause looks transient; a run under a new file name counts as
+  that retry. Then stop and tell the human in plain words: what is blocked, one line of evidence from the
+  log, the one-time fix (the exact command or setting, such as `Agent network: on` or installing the
+  required toolchain), and ask how to continue. NOT RUN of such a check in a writing stage is not
+  finished work. Do not work around the blocker for a single run.
 
 ## Loop
 

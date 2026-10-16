@@ -117,6 +117,19 @@ class SkillStructure(unittest.TestCase):
         self.assertIn('finite', (SHARED / 'project.md').read_text())
         self.assertIn('stagnation', (SHARED / 'loop.md').read_text())
 
+    def test_delegated_runs_never_nest_and_stop_on_environment_blockers(self):
+        loop = LOOP.read_text()
+        template = loop.split('The prompt:', 1)[1].split('```', 2)[1]
+        self.assertIn('You are the delegated run: never start another agent', template)
+        delegated = loop.split('## Delegated runs', 1)[1].split('\n## ', 1)[0]
+        for phrase in ('scripts/run-agent.sh', 'Environment blocker', 'stop and tell the human',
+                       'Codex keeps `.git` read-only'):
+            self.assertIn(phrase, delegated)
+        for doc in (SKILLS / 'wf-test' / 'SKILL.md', SKILLS / 'wf-security-review' / 'SKILL.md',
+                    SHARED / 'wave-review.md'):
+            with self.subTest(doc=doc.name):
+                self.assertIn('Delegated runs', doc.read_text())
+
     def test_key_stages_and_user_guide_match(self):
         readme = (REPO / 'README.md').read_text()
         guide = (REPO / 'docs' / 'skills.md').read_text()
@@ -711,6 +724,53 @@ class RunAgent(unittest.TestCase):
         self.assertIn('-m m1', args)
         self.assertIn('- Verdict:', self.out.read_text())
         self.assertIn('progress', Path(f'{self.out}.log').read_text())
+
+    def codex_dry_run(self, mode: str = 'rw', **env: str):
+        r = self.run_agent('codex', mode, str(self.prompt), str(self.out), WF_AGENT_DRY_RUN='1', **env)
+        return r
+
+    def write_wf_block(self, line: str):
+        (self.repo / 'AGENTS.md').write_text(
+            f'# Project\n\n<!-- wf:begin — managed -->\n- Base branch: main\n{line}\n<!-- wf:end -->\n')
+
+    def test_codex_write_run_gets_linked_records_directory(self):
+        records = self.tmp / 'main-clone-records'
+        records.mkdir()
+        (self.repo / 'development').symlink_to(records)
+        r = self.codex_dry_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'--add-dir {os.path.realpath(records)}', r.stdout)
+        r = self.codex_dry_run('ro')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('--add-dir', r.stdout)
+
+    def test_codex_records_inside_the_repository_need_no_extra_directory(self):
+        (self.repo / 'development').mkdir()
+        r = self.codex_dry_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('--add-dir', r.stdout)
+
+    def test_codex_network_follows_the_wf_block_and_environment(self):
+        network = 'sandbox_workspace_write.network_access=true'
+        r = self.codex_dry_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(network, r.stdout)
+        self.write_wf_block('- Agent network: on <!-- on | off -->')
+        self.assertIn(network, self.codex_dry_run().stdout)
+        self.assertNotIn(network, self.codex_dry_run('ro').stdout)
+        self.assertNotIn(network, self.codex_dry_run(WF_AGENT_NETWORK='0').stdout)
+        self.write_wf_block('- Agent network: off')
+        self.assertNotIn(network, self.codex_dry_run().stdout)
+        self.assertIn(network, self.codex_dry_run(WF_AGENT_NETWORK='1').stdout)
+
+    def test_codex_network_rejects_invalid_values(self):
+        r = self.codex_dry_run(WF_AGENT_NETWORK='yes')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('WF_AGENT_NETWORK must be 0 or 1', r.stderr)
+        self.write_wf_block('- Agent network: maybe')
+        r = self.codex_dry_run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('Agent network must be on or off', r.stderr)
 
     def test_gemini_plan_mode(self):
         r = self.run_agent('gemini', 'ro', str(self.prompt), str(self.out))

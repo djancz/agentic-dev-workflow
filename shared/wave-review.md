@@ -18,6 +18,7 @@ and includes `- Reviewed: commit <sha>`,
 what was read and run; each must-fix finding starts `- Major:` or `- Blocker:`. Validate with
 `python3 scripts/validate-wave-review.py --reviewed <HEAD> --round <n> <out>` before appending it.
 If invalid, retry once for a transient error, then stop.
+Every delegated run follows `loop.md` → Delegated runs.
 
 Round one reviews the full combined change and cross-task interactions. Later rounds review previous
 findings and the new diff.

@@ -24,6 +24,7 @@ For a standalone call, accept the `sec` role (`sec=agent[,model[,effort]]` or `s
 native subagent or headless run when the requesting context authored the change. Record the actual
 agent/model/effort. For headless mode, use `scripts/run-agent.sh --expect-clean <agent> rw <prompt>
 <out>` and validate its round with `scripts/validate-review.py --kind security` before appending it.
+Follow `references/loop.md` → Delegated runs.
 Stop if a requested setting cannot be applied or validation fails.
 
 For task mode, this must be a fresh context. If this context implemented or fixed the checkpoint, do not review

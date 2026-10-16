@@ -44,6 +44,18 @@ checkout's `.claude/settings.local.json`:
 
 The parent `<repo>-worktrees` entry covers future worktrees too. `/add-dir` does the same for one session.
 
+## A headless Codex run cannot write records, commit or reach the network
+
+`scripts/run-agent.sh` starts Codex with `workspace-write`, which writes only inside the directory it
+starts in and keeps `.git` read-only. For a write run the runner therefore adds the real path of
+`development/` with `--add-dir` when a task worktree links it to the main clone. Codex still cannot
+commit; the delegating session commits the run's changes (`loop.md` → Delegated runs).
+
+The sandbox has no network by default. If a check in the `AGENTS.md` table needs it (a module proxy,
+a vulnerability database, a secret-scanner download), set `- Agent network: on` in the `wf` block, or
+`WF_AGENT_NETWORK=1` for one run. A Codex run that is told to delegate again fails with
+`Read-only file system (os error 30)`; every delegated prompt forbids starting another agent.
+
 ## Records disappeared after git clean
 
 `development/` in the main clone is ignored, so `git clean -x` or `-X` deletes it with every record.
