@@ -68,7 +68,7 @@ Paths are relative to this skill's directory. Read `references/stacks.md`, `refe
 ## Development workflow (wf)
 
 Work records are private in `development/`, shared among this clone's worktrees. New project:
-`wf prd` → `wf spec` → `wf roadmap` → `wf milestone`. Each task:
+`wf prd` → `wf spec` → `wf prototype` (optional) → `wf roadmap` → `wf milestone`. Each task:
 `wf task` → `wf plan` → `wf plan loop` → Gate 1 → `wf wave start` → `wf new-worktree` →
 `wf test` → `wf impl` → `wf impl loop` → `wf wave integrate` → Gate 2 → `wf finalize`.
 Use `wf status` to resume. `wf maintenance` and `wf deploy` are optional.

@@ -19,7 +19,7 @@ Follow `references/loop.md` → Delegated runs.
 
 The test author reads applicable PRD/spec sections when present, plus task acceptance criteria and the
 public interface. It must not
-read the implementation diff or the implementation author's conversation. Create tests for observable
+read the implementation diff, a prototype branch, or the implementation author's conversation. Create tests for observable
 behavior, including a relevant failure case. Existing code may be inspected only to discover test
 conventions and public APIs. Keep the tests focused and deterministic.
 

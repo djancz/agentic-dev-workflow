@@ -144,11 +144,45 @@ class SkillStructure(unittest.TestCase):
                 self.assertIn('sections Next step and Human gates',
                               (SKILLS / skill / 'SKILL.md').read_text())
 
+    def test_prototype_reaches_the_base_only_through_a_task(self):
+        skill = ' '.join((SKILLS / 'wf-prototype' / 'SKILL.md').read_text().split())
+        for phrase in ('`development/project/prd.md` and `spec.md` both have `Status: Approved`',
+                       'wait for an explicit yes', 'Silence or a generic "continue" is not a yes',
+                       'branch `prototype/<slug>`', '`<repo>-worktrees/prototype-<slug>`',
+                       'never inside the repository', 'at most 3 times', '`NOT VERIFIED`, never `Works`',
+                       'Never push the prototype branch', 'merge it into the base or a wave branch',
+                       'only after an explicit yes', '`wf next` never starts it'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        self.assertIn('development/project/prototype.md', skill)
+        for link in ('project.md', 'conventions.md', 'engineering.md', 'security.md'):
+            with self.subTest(link=link):
+                path = SKILLS / 'wf-prototype' / 'references' / link
+                self.assertTrue(path.is_symlink())
+                self.assertEqual(path.resolve(), SHARED / link)
+        template = (SKILLS / 'wf-prototype' / 'templates' / 'prototype.md').read_text()
+        for field in ('Status: Scoping', 'Scope approved: none', 'Decision: none', '## Coverage',
+                      'Works | Simulated | Not built | Broken | NOT VERIFIED', 'Never pushed or merged'):
+            with self.subTest(field=field):
+                self.assertIn(field, template)
+        project = ' '.join((SHARED / 'project.md').read_text().split('## Prototype', 1)[1]
+                           .split('\n## ', 1)[0].split())
+        for phrase in ('never reaches the base branch directly', 'never pushed, merged or deployed',
+                       'ordinary task path', 'The test author never reads the prototype code'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, project)
+        self.assertIn('a prototype branch', (SKILLS / 'wf-test' / 'SKILL.md').read_text())
+        nxt = ' '.join((SKILLS / 'wf-next' / 'SKILL.md').read_text().split())
+        self.assertIn('prototype scope', nxt)
+        self.assertIn('It never starts `wf prototype`', nxt)
+        self.assertIn('never pushed or merged', (REPO / 'AGENTS.md').read_text())
+
     def test_key_stages_and_user_guide_match(self):
         readme = (REPO / 'README.md').read_text()
         guide = (REPO / 'docs' / 'skills.md').read_text()
-        for command in ('wf prd', 'wf spec', 'wf roadmap', 'wf new-worktree',
-                        'wf test', 'wf wave integrate', 'wf finalize', 'wf next', 'wf wave done'):
+        for command in ('wf prd', 'wf spec', 'wf prototype', 'wf prototype done', 'wf roadmap',
+                        'wf new-worktree', 'wf test', 'wf wave integrate', 'wf finalize', 'wf next',
+                        'wf wave done'):
             self.assertIn(command, readme)
             self.assertIn(command, guide)
         for option in ('rev=', 'fix=', 'sec=', 'test=', 'rev-agent=', 'rev-effort='):

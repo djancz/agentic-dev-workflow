@@ -15,16 +15,18 @@ English**, even when the project's own conventions ask for another language.
 
 - Task directory: `TASK-<N>-<slug>`. The slug is lowercase and hyphenated, at most 5 words, and names the
   outcome: `TASK-7-csv-export`, not `TASK-7-fix`.
-- Task branch: `task/TASK-<N>-<slug>`; wave branch: `wave/WAVE-<N>-<slug>`.
+- Task branch: `task/TASK-<N>-<slug>`; wave branch: `wave/WAVE-<N>-<slug>`; prototype branch:
+  `prototype/<slug>`.
 - Timestamps come from `date -u '+%Y-%m-%d %H:%M UTC'`.
 
 ## Git
 
 - Never implement on the base branch. `wf wave start` creates a wave branch;
   `wf new-worktree` creates task branches and worktrees from it.
-- **Checkpoint commits** (`wip(TASK-<N>): <stage>`) are allowed on task branches only. They make delta
-  reviews exact (`git diff <reviewed-sha>..HEAD`). Integration squash-merges each reviewed task onto
-  the wave branch as related final commits. Checkpoint branches are never pushed.
+- **Checkpoint commits** (`wip(TASK-<N>): <stage>`) are allowed on task branches only, and
+  `wip(prototype): <area>` on the prototype branch, which is never merged (`project.md` → Prototype).
+  They make delta reviews exact (`git diff <reviewed-sha>..HEAD`). Integration squash-merges each
+  reviewed task onto the wave branch as related final commits. Checkpoint branches are never pushed.
 - Final commits, PR/MR titles and merge commit titles use Conventional Commits:
   `<type>(<scope>): <imperative subject>`, at most 72 characters, in English. The body says why, with
   bullets where they help. This holds even when the project's `AGENTS.md` asks for another format or

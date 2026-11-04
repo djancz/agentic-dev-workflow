@@ -7,6 +7,8 @@ This file governs project planning and wave execution. The task review rules rem
 
 - New project or major initiative: `wf prd` → human approval → `wf spec` → human approval →
   `wf roadmap` → human approval → `wf init` → `wf milestone` → task plans.
+- Optional, after the spec is approved: `wf prototype` builds a runnable prototype on its own branch for
+  the human to try before the roadmap (Prototype). It never reaches the base branch directly.
 - Small existing-project feature or bug: `wf init` if needed → `wf task` → task plan.
 - A task plan has its own independent review and Gate 1 before any implementation.
 - In a feature or behavioral bug task, `wf test` authors tests in a fresh context from the approved spec, public contract,
@@ -32,7 +34,8 @@ for a teammate to understand the delivered behavior, tests, and accepted finding
 later (architecture, public contracts, significant trade-offs) go into a tracked English document that
 the spec names, through each task's *Docs to update*; never copy the PRD, private input, or logs there.
 
-Project records: `development/project/prd.md`, `spec.md`, and `roadmap.md`.
+Project records: `development/project/prd.md`, `spec.md`, `roadmap.md`, and `prototype.md` when one
+was built.
 Wave records: `development/waves/WAVE-<N>.md` and `WAVE-<N>-review.md`.
 Task records keep the `development/tasks/TASK-<N>-<slug>/` layout defined in `workflow.md`.
 Records use a `Status`, `Revision`, and explicit `Approved` line; a revised document loses approval.
@@ -77,6 +80,30 @@ structure). The author fixes the must-fix findings in its own context: a new `Re
 rubric's resolution table under the document's decision history. Stop on the rubric's stop conditions;
 the gate shows the verdict and any open finding.
 
+## Prototype
+
+`wf prototype` is optional. Once the PRD and spec are approved, it builds a runnable prototype so the
+human can try the product before the roadmap and the first tasks. Its record is
+`development/project/prototype.md`, with `Status: Scoping | Building | Ready for feedback | Adopted |
+Reference | Discarded`, the PRD and spec revisions it follows, and its branch, worktree, base and commit.
+The branch is `prototype/<slug>`, started from the base branch in the sibling worktree
+`<repo>-worktrees/prototype-<slug>`. The human approves its scope explicitly before the build; feedback
+makes a new revision.
+
+A prototype has no plan review, independent tests or code review, so its code never reaches the base
+branch directly: its branch is never pushed, merged or deployed. After trying it, the human decides:
+- **adopt**: the roadmap's first wave is one task, `Adopt the prototype as the project baseline`, whose
+  ticket names the prototype branch and commit. It follows the ordinary task path: plan and Gate 1,
+  `wf test` from the spec, `wf impl` brings the prototype code in and fixes it to the spec, the
+  implementation review, `wf wave integrate`, Gate 2, and the push and PR on the human's yes. Its plan
+  says which simulations stay behind their interfaces and which later tasks replace them.
+- **reference**: task plans may name prototype files at the recorded commit as a starting point; each
+  task keeps all its gates.
+- **discard**: only the learnings are used.
+
+The test author never reads the prototype code, as for any implementation. The roadmap, and any spec
+revision, take the record's *Learnings for the spec and roadmap* into account.
+
 ## Agent selection
 
 The roles `test`, `rev`, `sec` and `fix` each have an agent, a model and an effort. The managed
@@ -93,7 +120,8 @@ explicitly request another bounded run after escalation. No stage extends its ow
 ## Human gates
 
 The human approves the PRD, spec, roadmap, each task plan, the integrated wave, and deployment when
-applicable. Present the document or diff, risks, checks, and exact next action before recording approval.
+applicable, and a prototype's scope and outcome when one is built. Present the document or diff,
+risks, checks, and exact next action before recording approval.
 Feedback creates a new revision and returns to review. Explicit acceptance of unresolved findings
 lists their IDs and severities in the record and PR. No approval is inferred from silence or a prior gate.
 Commit and local worktree actions follow the task's authorization. Push and PR creation require explicit

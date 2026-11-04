@@ -9,7 +9,8 @@ Preserve these invariants: every approval is explicit (a `wf auto` authorization
 to one task, and passes a gate only through `scripts/auto-gate.py`); feature tests and reviews use a
 fresh context; checks report missing or skipped runs honestly; loops have finite caps and stop on
 stagnation; a wave PR is created only after its integrated diff is reviewed and the human approves the
-push and PR, also after a `wf auto` run. Work records under
+push and PR, also after a `wf auto` run. A prototype branch is never pushed or merged; its code reaches
+the base only through an ordinary task. Work records under
 `development/` stay private. The repository must contain no personal or company material from the
 local references.
 
