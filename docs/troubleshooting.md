@@ -32,11 +32,11 @@ command again; it continues where it stopped. Run it in each clone that uses the
 
 ## Claude prompts for edits in task worktrees
 
-Task worktrees live in `<repo>-worktrees/`, outside the main clone, and their `development/` links back
-to the main clone. A session started in the main clone prompts for writes to a task worktree; a session
-started in a task worktree prompts for record writes, because they resolve to the main clone. List both
-directories in `permissions.additionalDirectories`, for example in `~/.claude/settings.json` or each
-checkout's `.claude/settings.local.json`:
+Task worktrees, and the `wf prototype` worktree, live in `<repo>-worktrees/`, outside the main clone,
+and their `development/` links back to the main clone. A session started in the main clone prompts for
+writes to a task worktree; a session started in a task worktree prompts for record writes, because they
+resolve to the main clone. List both directories in `permissions.additionalDirectories`, for example in
+`~/.claude/settings.json` or each checkout's `.claude/settings.local.json`:
 
 ```json
 { "permissions": { "additionalDirectories": ["/path/to/repo", "/path/to/repo-worktrees"] } }

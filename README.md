@@ -13,7 +13,7 @@ rounds. The workflow keeps working records private to your local clone.
 
 ```text
 New project or major initiative
-  PRD → approve → spec → approve → roadmap and task waves → approve
+  PRD → approve → spec → approve → [optional prototype → try it] → roadmap and task waves → approve
                                   ↓
 Existing project, small change → task → plan → independent review → approve
                                   ↓
@@ -97,10 +97,10 @@ you:   wf wave done        (after merging on your forge)
 Behind `wf next`, a change runs `wf plan` → `wf plan loop` → Gate 1 → `wf wave start` →
 `wf new-worktree` → `wf test` → `wf impl` → `wf impl loop` → `wf wave integrate` → Gate 2 →
 `wf finalize`. A new project first runs `wf prd` → `wf spec` → `wf roadmap` → `wf init` →
-`wf milestone`, each with its own approval. `wf wave integrate` is offered only once every task of the wave
-is ready to integrate; until then the agent lists the tasks that are not. If a stage stops with findings
-or unavailable tooling, the
-agent says why and what you can choose. Every stage also has its own command for manual control; see
+`wf milestone`, each with its own approval; `wf prototype` after the spec is optional.
+`wf wave integrate` is offered only once every task of the wave is ready to integrate; until then the
+agent lists the tasks that are not. If a stage stops with findings or unavailable tooling, the agent
+says why and what you can choose. Every stage also has its own command for manual control; see
 [commands and gates](docs/skills.md).
 
 ## Autopilot: from assignment to a prepared PR
@@ -136,7 +136,27 @@ Create an empty Git repository, install the skills, and type `wf prd <idea>`. Th
 product decisions and writes a PRD for your approval. `wf next` then proposes an architecture spec and a
 roadmap of milestones and waves, each reviewed in a fresh context before you approve it, configures the
 project checks (`wf init`), and creates the first milestone's tasks. From there, each task follows the
-same path as a small change.
+same path as a small change. To try the product before the roadmap, run `wf prototype` after the spec.
+
+## Try a prototype early
+
+The full route takes a while before there is anything to click. Once the spec is approved,
+`wf prototype` builds a runnable prototype from the PRD and spec so you can try the product first. It
+is optional. The agent first shows the scope for your yes: by default the happy path of every Must
+requirement, with storage, sign-in and external services simulated, and the dependencies it will
+install. It then builds on its own branch, `prototype/<slug>` in a sibling worktree, checks each covered
+requirement, and tells you how to run it. Reply with `wf prototype <feedback>` for a new revision. When
+you have seen enough, `wf prototype done` asks you to choose:
+
+- **adopt**: the prototype becomes the starting code. It reaches the base branch only through one
+  ordinary task at the start of the roadmap: plan review and Gate 1, independently written tests,
+  implementation and security review, wave integration and Gate 2, and your yes for the PR.
+- **reference**: later tasks may start from its files.
+- **discard**: only its learnings stay.
+
+The prototype gets no plan or code review of its own; the adoption task reviews all of it. Its branch is
+never pushed or merged, and `wf next` never starts a prototype. Its learnings feed the roadmap and,
+when needed, a PRD or spec revision. Simulated sign-in never reaches the base branch as it is.
 
 ## Work in an existing project
 

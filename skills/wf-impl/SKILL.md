@@ -44,6 +44,8 @@ acceptance of its open findings.
    - Implement against the contract tests and plan. If tests need correction, record why and get an
      independent test-author review; do not silently weaken acceptance.
    - For a bug fix, ensure the regression test failed before the fix.
+   - For a task that adopts or starts from a prototype, bring its files in as `references/project.md`
+     → Prototype says (*Bringing code in*).
    - After each step, run the fast checks that are relevant (format, lint, the unit tests of the touched
      area), keeping only the summary of the output.
 3. **Red test evidence.** Verify the independent test report recorded a failing test for new behavior

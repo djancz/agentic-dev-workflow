@@ -57,7 +57,8 @@ class SkillStructure(unittest.TestCase):
                 self.assertEqual(install.validate_skill(skill), skill.name)
                 frontmatter = install.parse_frontmatter((skill / 'SKILL.md').read_text())
                 self.assertEqual(set(frontmatter), {'name', 'description'})
-                self.assertLessEqual(len((skill / 'SKILL.md').read_text().splitlines()), 130)
+                self.assertLessEqual(len((skill / 'SKILL.md').read_text().splitlines()),
+                                     SKILL_MD_MAX_LINES)
                 for link in (skill / 'references').glob('*.md'):
                     self.assertTrue(link.exists(), f'{link} is dangling')
 
@@ -144,11 +145,71 @@ class SkillStructure(unittest.TestCase):
                 self.assertIn('sections Next step and Human gates',
                               (SKILLS / skill / 'SKILL.md').read_text())
 
+    def test_prototype_reaches_the_base_only_through_a_task(self):
+        def flat(path: Path) -> str:
+            return ' '.join(path.read_text().split())
+
+        skill = flat(SKILLS / 'wf-prototype' / 'SKILL.md')
+        project = ' '.join((SHARED / 'project.md').read_text().split('## Prototype', 1)[1]
+                           .split('\n## ', 1)[0].split())
+        template = (SKILLS / 'wf-prototype' / 'templates' / 'prototype.md').read_text()
+        # One status set, the same in the template, the shared rules, the skill and wf-status.
+        statuses = re.search(r'^Status: Scoping <!-- (.*) -->$', template, flags=re.MULTILINE)[1].split(' | ')
+        self.assertEqual(statuses, ['Scoping', 'Building', 'Ready for feedback', 'Adopted', 'Reference',
+                                    'Discarded'])
+        self.assertIn('`Status: ' + ' | '.join(statuses) + '`', project)
+        status = flat(SKILLS / 'wf-status' / 'SKILL.md')
+        for name in statuses:
+            with self.subTest(status=name):
+                self.assertIn(f'`{name}`', skill)
+        for name in ('Scoping', 'Building', 'Ready for feedback', 'Adopted', 'Reference'):
+            with self.subTest(next_action=name):
+                self.assertIn(f'`{name}`', status)
+        # One branch, worktree and record location everywhere they are named.
+        guide = flat(REPO / 'docs' / 'skills.md')
+        for doc, text in (('SKILL.md', skill), ('project.md', project), ('docs/skills.md', guide)):
+            with self.subTest(doc=doc):
+                self.assertIn('`<repo>-worktrees/prototype-<slug>`', text)
+                self.assertIn('development/project/prototype.md', text)
+                self.assertIn('prototype/<slug>', text)
+        # Approvals are explicit, loops are capped, results are honest, nothing is pushed or merged.
+        for phrase in ('`development/project/prd.md` and `spec.md` both have `Status: Approved`',
+                       'wait for an explicit yes', 'Silence or a generic "continue" is not a yes',
+                       'never inside the repository', 'at most 3 times', '`NOT VERIFIED`, never `Works`',
+                       'report every row', 'Never push the prototype branch',
+                       'merge it into the base or a wave branch', 'only after an explicit yes',
+                       '`wf next` never starts it'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        self.assertIn('Never pushed or merged', template)
+        for phrase in ('never reaches the base branch directly', 'never pushed, merged or deployed',
+                       'ordinary task path', 'never `--force`', 'equals the recorded `Commit`',
+                       'The test author never reads a prototype', 'never reaches the base as it is',
+                       '`wf auto` never passes its gates', '`Sensitivity: high`'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, project)
+        # The rest of the workflow honours the same rules.
+        self.assertIn("a prototype's branch, worktree or record", flat(SKILLS / 'wf-test' / 'SKILL.md'))
+        self.assertIn('Adopting a prototype (`project.md` → Prototype) is one concern',
+                      flat(SHARED / 'conventions.md'))
+        self.assertIn('the task adopts a prototype', flat(SHARED / 'autopilot.md'))
+        self.assertIn("git grep -n 'PROTOTYPE:'", flat(SKILLS / 'wf-deploy' / 'SKILL.md'))
+        nxt = flat(SKILLS / 'wf-next' / 'SKILL.md')
+        self.assertIn('prototype scope', nxt)
+        self.assertIn('It never starts `wf prototype`', nxt)
+        self.assertIn('never pushed or merged', (REPO / 'AGENTS.md').read_text())
+
+    def test_shared_rules_stay_short(self):
+        for doc in SHARED.glob('*.md'):
+            with self.subTest(doc=doc.name):
+                self.assertLessEqual(len(doc.read_text().splitlines()), SHARED_MAX_LINES)
+
     def test_key_stages_and_user_guide_match(self):
         readme = (REPO / 'README.md').read_text()
         guide = (REPO / 'docs' / 'skills.md').read_text()
-        for command in ('wf prd', 'wf spec', 'wf roadmap', 'wf new-worktree',
-                        'wf test', 'wf wave integrate', 'wf finalize', 'wf next', 'wf wave done'):
+        for command in ('wf prd', 'wf spec', 'wf prototype', 'wf prototype done', 'wf roadmap',
+                        'wf new-worktree', 'wf test', 'wf wave integrate', 'wf finalize', 'wf next',
+                        'wf wave done'):
             self.assertIn(command, readme)
             self.assertIn(command, guide)
         for option in ('rev=', 'fix=', 'sec=', 'test=', 'rev-agent=', 'rev-effort='):

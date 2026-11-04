@@ -31,7 +31,8 @@ Role: **author**. Paths are relative to this skill's directory. Read:
    sessions see only what is on disk.
 1. **Ground the plan in the code.** Find what the change touches: the modules involved, their callers, the
    existing tests, and the conventions in use. Look for existing utilities to reuse before planning new
-   ones. Keep the search targeted. If your agent has a search subagent, use it for broad sweeps so the raw
+   ones. Read a prototype's files at its recorded commit (`references/project.md` → Prototype). Keep
+   the search targeted. If your agent has a search subagent, use it for broad sweeps so the raw
    file dumps stay out of your context.
 2. **Size the task.**
    - `S`: a few files, one concern. Keep the plan short.

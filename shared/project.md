@@ -7,6 +7,8 @@ This file governs project planning and wave execution. The task review rules rem
 
 - New project or major initiative: `wf prd` → human approval → `wf spec` → human approval →
   `wf roadmap` → human approval → `wf init` → `wf milestone` → task plans.
+- Optional, after the spec is approved: `wf prototype` builds a runnable prototype on its own branch for
+  the human to try before the roadmap (Prototype). It never reaches the base branch directly.
 - Small existing-project feature or bug: `wf init` if needed → `wf task` → task plan.
 - A task plan has its own independent review and Gate 1 before any implementation.
 - In a feature or behavioral bug task, `wf test` authors tests in a fresh context from the approved spec, public contract,
@@ -32,7 +34,8 @@ for a teammate to understand the delivered behavior, tests, and accepted finding
 later (architecture, public contracts, significant trade-offs) go into a tracked English document that
 the spec names, through each task's *Docs to update*; never copy the PRD, private input, or logs there.
 
-Project records: `development/project/prd.md`, `spec.md`, and `roadmap.md`.
+Project records: `development/project/prd.md`, `spec.md`, `roadmap.md`, and `prototype.md` when one
+was built.
 Wave records: `development/waves/WAVE-<N>.md` and `WAVE-<N>-review.md`.
 Task records keep the `development/tasks/TASK-<N>-<slug>/` layout defined in `workflow.md`.
 Records use a `Status`, `Revision`, and explicit `Approved` line; a revised document loses approval.
@@ -77,6 +80,50 @@ structure). The author fixes the must-fix findings in its own context: a new `Re
 rubric's resolution table under the document's decision history. Stop on the rubric's stop conditions;
 the gate shows the verdict and any open finding.
 
+## Prototype
+
+`wf prototype` is optional. Once the PRD and spec are approved, it builds a runnable prototype so the
+human can try the product before the roadmap and the first tasks. Its record is
+`development/project/prototype.md`, with `Status: Scoping | Building | Ready for feedback | Adopted |
+Reference | Discarded`, the PRD and spec revisions it follows, and its branch, worktree, base commit and
+commit. The branch is `prototype/<slug>`, started from the base branch in the sibling worktree
+`<repo>-worktrees/prototype-<slug>`. The human approves its scope explicitly before the build; that
+approval holds for later revisions within the scope, and a scope change needs a new one.
+
+A prototype gets no plan review, independent tests or code review of its own, so its code never
+reaches the base branch directly: its branch is never pushed, merged or deployed. After trying it, the
+human decides:
+- **adopt**: the first roadmap wave not yet started is one task, `Adopt the prototype as the project
+  baseline`, and every later wave depends on it. It follows the ordinary task path: plan and Gate 1,
+  `wf test` from the spec, `wf impl`, the implementation and security reviews, `wf wave integrate`,
+  Gate 2, and the push and PR on the human's yes. It is one concern (`conventions.md` → Task scope)
+  with `Sensitivity: high`. Its plan lists the files of `git diff --name-status <Base commit>..<Commit>`
+  and also sets up the planned checks and the tracked architecture document the spec names; `wf init`
+  never takes commands from the prototype branch. `wf auto` never passes its gates.
+- **reference**: a task plan may name prototype files at the recorded `Commit` as a starting point; the
+  task keeps all its gates.
+- **discard**: only the learnings are used.
+
+**Bringing code in.** Planners, implementers and reviewers read prototype files with
+`git show <Commit>:<path>`, never from the prototype worktree, which may have changed since. `wf impl`
+takes the files the plan lists with `git restore --source=<Commit> -- <path>…` and merges by hand any
+file that already exists on the task branch: it never replaces an independently written test or a file
+that `wf init` set up, and records each such merge as a deviation. The test author never reads a
+prototype's branch, worktree or record, as for any implementation.
+
+**Simulations.** A simulated sign-in, authorization or secret store never reaches the base as it is:
+the adoption task replaces it, or keeps it only behind a local development mode that is off by default
+and fails closed. The roadmap plans a later task for each other simulation that must become real. The
+implementation summary lists the remaining markers (`git grep -n 'PROTOTYPE:'`), and `wf deploy` stops
+while one remains unless the human accepts it by name.
+
+**Cleanup.** Stop the prototype's dev server first. Remove the worktree with `git worktree remove`,
+never `--force`; report a dirty worktree instead of removing it. Delete the branch with `git branch -D`
+only when its `HEAD` equals the recorded `Commit`; otherwise list the other commits and keep it.
+
+The roadmap, and any PRD or spec revision, take the record's *Learnings for the spec and roadmap* into
+account.
+
 ## Agent selection
 
 The roles `test`, `rev`, `sec` and `fix` each have an agent, a model and an effort. The managed
@@ -93,7 +140,8 @@ explicitly request another bounded run after escalation. No stage extends its ow
 ## Human gates
 
 The human approves the PRD, spec, roadmap, each task plan, the integrated wave, and deployment when
-applicable. Present the document or diff, risks, checks, and exact next action before recording approval.
+applicable, and a prototype's scope and outcome when one is built. Present the document or diff,
+risks, checks, and exact next action before recording approval.
 Feedback creates a new revision and returns to review. Explicit acceptance of unresolved findings
 lists their IDs and severities in the record and PR. No approval is inferred from silence or a prior gate.
 Commit and local worktree actions follow the task's authorization. Push and PR creation require explicit

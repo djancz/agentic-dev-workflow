@@ -36,7 +36,8 @@ names the plan's current `Revision`, stop: that revision has already been review
 
 - **Solves the ticket?** Every acceptance criterion is covered and nothing is quietly dropped. Anything
   the ticket did not ask for is scope creep.
-- **Grounded?** Open the files the plan names. Do the functions and signatures exist as the plan assumes?
+- **Grounded?** Open the files the plan names; read a file it names at a prototype commit with
+  `git show <commit>:<path>`. Do the functions and signatures exist as the plan assumes?
   Is there existing code the plan should reuse? Check with a targeted search. Verify claims cheaply, with
   a file read or a one-line command. Do not prototype the implementation.
 - **Cause, not symptom.** For a bug fix, is the reproduction real and does the approach remove the
