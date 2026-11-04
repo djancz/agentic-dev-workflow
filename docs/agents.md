@@ -23,11 +23,12 @@ It never replaces a file or link it does not own. It keeps the private records i
 would be overwritten. `--migrate-state` moves records from the legacy `.git/wf-state` location.
 
 Claude Code never auto-approves a write into `.git`, even through a symlink, and Codex keeps `.git`
-read-only in its sandbox; that is why the records no longer live there. A session started in a task
-worktree, or one that edits a sibling task worktree, works outside its working directory. Claude Code
-then prompts unless `permissions.additionalDirectories` lists the main clone and the `<repo>-worktrees`
-directory; OpenCode asks through its `external_directory` permission; the Codex and Gemini sandboxes
-write only inside the directory they start in. See [troubleshooting](troubleshooting.md).
+read-only in its sandbox; that is why the records no longer live there. A session started in a task or
+prototype worktree, or one that edits a sibling worktree, works outside its working directory. Claude
+Code then prompts unless `permissions.additionalDirectories` lists the main clone and the
+`<repo>-worktrees` directory; OpenCode asks through its `external_directory` permission; the Codex and
+Gemini sandboxes write only inside the directory they start in. See
+[troubleshooting](troubleshooting.md).
 
 The review runner is `shared/scripts/run-agent.sh`. It uses the selected CLI, a timeout, and output
 validation. For a review it checks that neither the working tree nor the private `development/` records

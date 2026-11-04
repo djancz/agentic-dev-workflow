@@ -5,19 +5,21 @@ Revision: 1
 PRD revision: <n>
 Spec revision: <n>
 Scope approved: none
-Branch: —
+Branch: prototype/<slug>
 Worktree: —
-Base: —
+Base branch: —
+Base commit: —
 Commit: —
-Decision: none
+Decision: none <!-- adopt | reference | discard (<timestamp>) — "<the human's words>" -->
 
-Not reviewed and not tested beyond the smoke evidence below. Never pushed or merged; its code reaches
-the base branch only through an ordinary task.
+No plan or code review of its own, and tested only by the smoke evidence below. Never pushed or merged;
+its code reaches the base branch only through an ordinary task.
 
 ## Scope
 
-<Covered PRD IDs and the user path for each; the stack and layout taken from the spec; what is out of
-scope (error handling beyond the happy path, non-Must requirements, performance, deployment).>
+<Covered PRD IDs and the user path for each; the stack and layout taken from the spec; what is simulated;
+what is out of scope (error handling beyond the happy path, lower priorities, performance, deployment).
+A scope change adds its delta here with the date.>
 
 ## Simulations and shortcuts
 
@@ -43,7 +45,7 @@ this session: a command and its output, or a browser step and what it showed. --
 
 ## Checks
 
-<The project's checks in the conventions format, or "No project checks configured yet".>
+<Every row of the project's checks in the conventions format, or "No project checks configured yet".>
 
 ## Learnings for the spec and roadmap
 
@@ -53,7 +55,3 @@ spec assumed. Each with the PRD or spec section it concerns.>
 ## Feedback and revisions
 
 <!-- One entry per revision: the human's feedback quoted, and what changed. -->
-
-## Decision
-
-<!-- adopt | reference | discard, with the human's words and date. -->

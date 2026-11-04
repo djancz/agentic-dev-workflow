@@ -148,13 +148,15 @@ install. It then builds on its own branch, `prototype/<slug>` in a sibling workt
 requirement, and tells you how to run it. Reply with `wf prototype <feedback>` for a new revision. When
 you have seen enough, `wf prototype done` asks you to choose:
 
-- **adopt**: the prototype becomes the starting code. It reaches the base branch only through the
-  roadmap's first task, with independent tests and review, Gate 2, and your yes for the PR.
+- **adopt**: the prototype becomes the starting code. It reaches the base branch only through one
+  ordinary task at the start of the roadmap: plan review and Gate 1, independently written tests,
+  implementation and security review, wave integration and Gate 2, and your yes for the PR.
 - **reference**: later tasks may start from its files.
 - **discard**: only its learnings stay.
 
-The prototype itself is never reviewed, pushed or merged, and `wf next` never starts one. Its learnings
-feed the roadmap and, when needed, a spec revision.
+The prototype gets no plan or code review of its own; the adoption task reviews all of it. Its branch is
+never pushed or merged, and `wf next` never starts a prototype. Its learnings feed the roadmap and,
+when needed, a PRD or spec revision. Simulated sign-in never reaches the base branch as it is.
 
 ## Work in an existing project
 

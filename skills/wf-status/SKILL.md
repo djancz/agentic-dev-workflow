@@ -15,10 +15,13 @@ to clarify an ambiguous next step.
 This skill is strictly read-only: do not fetch, switch branches, or write files.
 
 Show PRD, spec, and roadmap revision/status when they exist. For a prototype record, show its status,
-revision, branch, worktree and decision; its next action is the scope yes for `Scoping`, `wf prototype`
-for `Building`, and the human trying it, then `wf prototype <feedback>` or `wf prototype done`, for
-`Ready for feedback`. Never name `wf prototype` as the next command when no record exists; mention it
-only as optional after an approved spec. Show the current milestone and each wave's
+revision, branch, worktree and decision. It sets the next action only while no roadmap exists:
+`Scoping` waits for the human's scope answer to `wf prototype`, `Building` resumes with `wf prototype`,
+and `Ready for feedback` waits for the human to try it, then `wf prototype <feedback>` or
+`wf prototype done`. When it is `Adopted` or `Reference` and the roadmap's `Prototype` line does not
+name that revision and decision, the next command is `wf roadmap`. Otherwise it is information only.
+Never name `wf prototype` as the next command when no record exists; mention it only as optional
+after an approved spec. Show the current milestone and each wave's
 status, branch, task counts, latest integration review verdict, and next command. For each active task,
 show ID, concern, wave, plan status, test report status, implementation checkpoint, latest review
 verdict, and the next action. Mark approvals recorded `by autopilot` and waves with an `Autopilot:`

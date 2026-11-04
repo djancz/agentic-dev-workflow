@@ -13,6 +13,8 @@ Approved: none
 | ID | User-visible behavior | Acceptance evidence | Priority |
 |---|---|---|---|
 
+<!-- Priority: Must | Should | Could. Must is the usable first version. -->
+
 ## Exclusions and constraints
 
 ## Data, privacy, security, and accessibility needs

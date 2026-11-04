@@ -10,7 +10,7 @@ more than one task or wave could match.
 | `wf prd` | Define product users, behavior, and success | Human approves PRD |
 | `wf spec` | Design boundaries and public contracts; bounded fresh review | Human approves spec |
 | `wf prototype [focus]` | Optional, after the spec: build a runnable prototype on its own branch; feedback revises it | Human confirms scope, then tries it |
-| `wf prototype done` | Adopt the prototype as the baseline, keep it as a reference, or discard it | `wf roadmap` |
+| `wf prototype done` | Adopt the prototype as the baseline, keep it as a reference, or discard it; later, clean it up | `wf roadmap`, or `wf prd` / `wf spec` when its learnings change them |
 | `wf roadmap` | Plan milestones, tasks, and waves; bounded fresh review | Human approves roadmap |
 | `wf init` | Detect and configure project checks | Review managed project instructions |
 | `wf milestone M1` | Create milestone tasks; `done` verifies exit criteria | Task plans |
@@ -100,15 +100,22 @@ finding IDs and is recorded in the PR. Silence is not approval.
 
 ## Prototype
 
-`wf prototype [focus]` is optional and needs an approved PRD and spec. It shows a scope for your yes,
-then builds on branch `prototype/<slug>` in the sibling worktree `<repo>-worktrees/prototype-<slug>`,
-smoke-checks each covered requirement, and records how to run it in `development/project/prototype.md`.
-The default scope is the happy path of every Must requirement, with storage, sign-in and external
-services simulated behind the spec's interfaces. A failing smoke step gets at most 3 fixes before it is
-reported as `Broken`. `wf prototype <feedback>` makes a new revision; feedback that adds a requirement, a
-dependency or another stack needs a new yes. `wf prototype done adopt|reference|discard` records your
-decision, and `wf roadmap` then plans the adoption task or the reference use. The prototype branch is
-never pushed or merged, the test author never reads it, and `wf next` never starts a prototype.
+`wf prototype [focus]` is optional and needs an approved PRD and spec. It shows a scope for your yes
+(covered requirements, simulations, dependencies and install scripts, branch), then builds on
+`prototype/<slug>` in the sibling worktree `<repo>-worktrees/prototype-<slug>`, smoke-checks each
+covered requirement, and records how to run it in `development/project/prototype.md`. The default scope
+is the happy path of every Must requirement, with storage, sign-in and external services simulated
+behind the spec's interfaces. A failing smoke step gets at most 3 fixes before it is reported as
+`Broken`. `wf prototype <feedback>` makes a new revision; feedback that adds a requirement, a dependency
+or another stack needs a new yes.
+
+`wf prototype done adopt|reference|discard` records your decision; `wf roadmap` then plans the use.
+Adopting needs a finished revision and puts one task, alone, in the first wave not yet started. That
+task copies the listed files from the recorded commit, has `Sensitivity: high`, sets up the planned
+checks, replaces or locks away simulated sign-in, and keeps human Gates 1 and 2 even under `wf auto`.
+`wf deploy` stops while a `PROTOTYPE:` marker remains, unless you accept it by name. The prototype
+branch is never pushed or merged, the test author never reads it, and `wf next` never starts a
+prototype. Later, `wf prototype done` offers to remove the worktree and branch.
 
 ## Autopilot
 

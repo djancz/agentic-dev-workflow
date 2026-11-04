@@ -85,24 +85,44 @@ the gate shows the verdict and any open finding.
 `wf prototype` is optional. Once the PRD and spec are approved, it builds a runnable prototype so the
 human can try the product before the roadmap and the first tasks. Its record is
 `development/project/prototype.md`, with `Status: Scoping | Building | Ready for feedback | Adopted |
-Reference | Discarded`, the PRD and spec revisions it follows, and its branch, worktree, base and commit.
-The branch is `prototype/<slug>`, started from the base branch in the sibling worktree
-`<repo>-worktrees/prototype-<slug>`. The human approves its scope explicitly before the build; feedback
-makes a new revision.
+Reference | Discarded`, the PRD and spec revisions it follows, and its branch, worktree, base commit and
+commit. The branch is `prototype/<slug>`, started from the base branch in the sibling worktree
+`<repo>-worktrees/prototype-<slug>`. The human approves its scope explicitly before the build; that
+approval holds for later revisions within the scope, and a scope change needs a new one.
 
-A prototype has no plan review, independent tests or code review, so its code never reaches the base
-branch directly: its branch is never pushed, merged or deployed. After trying it, the human decides:
-- **adopt**: the roadmap's first wave is one task, `Adopt the prototype as the project baseline`, whose
-  ticket names the prototype branch and commit. It follows the ordinary task path: plan and Gate 1,
-  `wf test` from the spec, `wf impl` brings the prototype code in and fixes it to the spec, the
-  implementation review, `wf wave integrate`, Gate 2, and the push and PR on the human's yes. Its plan
-  says which simulations stay behind their interfaces and which later tasks replace them.
-- **reference**: task plans may name prototype files at the recorded commit as a starting point; each
+A prototype gets no plan review, independent tests or code review of its own, so its code never
+reaches the base branch directly: its branch is never pushed, merged or deployed. After trying it, the
+human decides:
+- **adopt**: the first roadmap wave not yet started is one task, `Adopt the prototype as the project
+  baseline`, and every later wave depends on it. It follows the ordinary task path: plan and Gate 1,
+  `wf test` from the spec, `wf impl`, the implementation and security reviews, `wf wave integrate`,
+  Gate 2, and the push and PR on the human's yes. It is one concern (`conventions.md` → Task scope)
+  with `Sensitivity: high`. Its plan lists the files of `git diff --name-status <Base commit>..<Commit>`
+  and also sets up the planned checks and the tracked architecture document the spec names; `wf init`
+  never takes commands from the prototype branch. `wf auto` never passes its gates.
+- **reference**: a task plan may name prototype files at the recorded `Commit` as a starting point; the
   task keeps all its gates.
 - **discard**: only the learnings are used.
 
-The test author never reads the prototype code, as for any implementation. The roadmap, and any spec
-revision, take the record's *Learnings for the spec and roadmap* into account.
+**Bringing code in.** Planners, implementers and reviewers read prototype files with
+`git show <Commit>:<path>`, never from the prototype worktree, which may have changed since. `wf impl`
+takes the files the plan lists with `git restore --source=<Commit> -- <path>…` and merges by hand any
+file that already exists on the task branch: it never replaces an independently written test or a file
+that `wf init` set up, and records each such merge as a deviation. The test author never reads a
+prototype's branch, worktree or record, as for any implementation.
+
+**Simulations.** A simulated sign-in, authorization or secret store never reaches the base as it is:
+the adoption task replaces it, or keeps it only behind a local development mode that is off by default
+and fails closed. The roadmap plans a later task for each other simulation that must become real. The
+implementation summary lists the remaining markers (`git grep -n 'PROTOTYPE:'`), and `wf deploy` stops
+while one remains unless the human accepts it by name.
+
+**Cleanup.** Stop the prototype's dev server first. Remove the worktree with `git worktree remove`,
+never `--force`; report a dirty worktree instead of removing it. Delete the branch with `git branch -D`
+only when its `HEAD` equals the recorded `Commit`; otherwise list the other commits and keep it.
+
+The roadmap, and any PRD or spec revision, take the record's *Learnings for the spec and roadmap* into
+account.
 
 ## Agent selection
 

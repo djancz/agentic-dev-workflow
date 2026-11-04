@@ -17,8 +17,8 @@ arguments the human gave. When it finishes, resolve again and continue with the 
 and report where things stand and the exact next action, when:
 - a human gate or approval is next: PRD, spec, prototype scope, roadmap, Gate 1, Gate 2, push and PR,
   maintenance, deployment, or worktree cleanup;
-- a prototype is `Ready for feedback`: the human tries it, then answers with `wf prototype <feedback>`
-  or `wf prototype done`;
+- the resolved next action is the human trying a prototype that is `Ready for feedback`, then
+  `wf prototype <feedback>` or `wf prototype done`;
 - a stage asks the human a question, fails, escalates, or reports `NOT RUN` for a required stage;
 - a stage ends without changing the recorded state, so the same command would run again;
 - more than one task or wave could continue and no ID was given: list them and ask;

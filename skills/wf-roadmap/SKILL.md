@@ -11,10 +11,12 @@ project or major initiative, require approved `development/project/prd.md` and `
 existing-project task, use `wf task` instead.
 
 Inspect the approved requirements, contracts, existing code where relevant, and previous milestone
-learnings. If `development/project/prototype.md` exists, read its header, *Learnings for the spec and
-roadmap* and *Decision* (`references/project.md` → Prototype). Without a decision, ask whether to wait
-for `wf prototype done`. For `adopt`, the first wave is the one task that adopts the prototype; for
-`reference`, name the prototype files a task may start from. Record it in the `Prototype` header line.
+learnings. If `development/project/prototype.md` exists, read its header and *Learnings for the spec
+and roadmap* (`references/project.md` → Prototype). Without a `Decision`, ask whether to wait for
+`wf prototype done`; if not, record `Prototype: revision <n>, undecided`. For `adopt`, the first wave
+not yet started is the one adoption task, every later wave depends on it, and a later task makes each
+remaining simulation real. For `reference`, name the prototype files a task may start from. Record the
+decision in the `Prototype` header line.
 Write `development/project/roadmap.md`. Make each milestone a working state with checkable
 exit criteria. The first milestone establishes project layout, quality checks, and the tracked architecture document
 the spec names; the next delivers a
@@ -37,7 +39,7 @@ Work only from the PRD, spec, roadmap, and repository, following `references/rev
 `D<round>-<n>` finding IDs. Round 1 checks that no task in a wave needs another task of the same wave or
 shares its mutable files, that dependencies point only to earlier waves, that every milestone leaves a
 working state with checkable exit criteria, that each task is one concern, and that an adopted
-prototype's adoption task is the only task of the first wave. Later rounds are delta
-reviews of the latest revision. Do not edit the roadmap. The round has the review
-header fields, a `### Method` section with what was read and run, and the findings. In delegated output
+prototype's adoption task is alone in the first wave not yet started and every later wave depends on
+it. Later rounds are delta reviews of the latest revision. Do not edit the roadmap. The round has the
+review header fields, a `### Method` section with what was read and run, and the findings. In delegated output
 mode, write nothing and return only the round.

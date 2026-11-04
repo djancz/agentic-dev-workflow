@@ -91,7 +91,8 @@ code, the tests and the review. Split only when:
 - one concern is a complete rework (a backend rewritten in another language or framework, a data model
   replaced). Split it into stages that each leave the project working.
 
-A large diff is not a reason to split; separate commits keep it reviewable. When unsure, keep one task and
+A large diff is not a reason to split; separate commits keep it reviewable. Adopting a prototype
+(`project.md` → Prototype) is one concern: one task, never split by area. When unsure, keep one task and
 do not ask.
 
 ## Scope

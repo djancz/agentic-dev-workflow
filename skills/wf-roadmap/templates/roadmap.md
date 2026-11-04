@@ -5,7 +5,7 @@ Revision: 1
 Approved: none
 PRD revision: 1
 Spec revision: 1
-Prototype: none <!-- none | revision <n>, <adopt | reference | discard> -->
+Prototype: none <!-- none | revision <n>, <adopt | reference | discard | undecided> -->
 Current milestone: M0
 
 ## Milestones

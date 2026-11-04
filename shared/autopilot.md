@@ -116,7 +116,8 @@ Stop and present the ordinary gate, question, or escalation when:
 - a stage asks a question, escalates, reaches its round cap or stagnates, or reports `needs-human`;
 - implementation finds a material deviation (`workflow.md` → Deviations);
 - open findings would have to be accepted: only the human accepts findings;
-- a base sync merges anything after Gate 2: integrate and review again, then decide Gate 2 again.
+- a base sync merges anything after Gate 2: integrate and review again, then decide Gate 2 again;
+- the task adopts a prototype (`project.md` → Prototype): its Gate 1 and Gate 2 stay with the human.
 
 The autopilot never pushes, opens, merges, or marks a PR ready, force-pushes, deploys, deletes branches,
 or answers PR feedback. PR comments and failing CI later go through `wf finalize` with the human gates.

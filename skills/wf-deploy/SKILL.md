@@ -68,6 +68,8 @@ timestamp per deploy (`date -u +%Y%m%d-%H%M%S`), `{backup_dir}` the runbook's Ba
   `references/conventions.md` → Checks, in `git worktree add --detach <tmp> {sha}`; then
   `git worktree remove <tmp>`. A FAIL stops the deploy. NOT RUN goes into the digest and is never a pass.
 - Run the Preflight rows and compare each with its Expect.
+- Prototype markers: `git grep -n 'PROTOTYPE:' {sha}`. A hit stops the deploy unless the human accepts
+  that marker by name (`references/project.md` → Prototype).
 - Compare `sha256sum` of the runbook with `Runbook sha256` in the newest `Deployed` log; flag a change.
 
 ### 2. Gate 3

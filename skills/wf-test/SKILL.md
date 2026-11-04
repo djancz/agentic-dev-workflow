@@ -18,9 +18,9 @@ tests and report before accepting the stage. A failed run is not completed test 
 Follow `references/loop.md` → Delegated runs.
 
 The test author reads applicable PRD/spec sections when present, plus task acceptance criteria and the
-public interface. It must not
-read the implementation diff, a prototype branch, or the implementation author's conversation. Create tests for observable
-behavior, including a relevant failure case. Existing code may be inspected only to discover test
+public interface. It must not read the implementation diff, a prototype's branch, worktree or record
+(`development/project/prototype.md`), or the implementation author's conversation. Create tests for
+observable behavior, including a relevant failure case. Existing code may be inspected only to discover test
 conventions and public APIs. Keep the tests focused and deterministic.
 
 Run the tests and record the expected red result for unimplemented behavior. A passing test is valid
