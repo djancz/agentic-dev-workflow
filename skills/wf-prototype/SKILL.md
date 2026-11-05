@@ -12,9 +12,9 @@ description: >-
 Role: **author**. Paths are relative to this skill's directory. Read `references/project.md` (section
 Prototype), `references/engineering.md`, `references/security.md` (section Agent safety, and Plan item
 5 for dependencies), `templates/prototype.md`, and from `references/conventions.md` the sections
-Language, Naming, Git, Checks, Output discipline, Writing style, Reporting to the human and Untrusted
-content. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`. This stage is optional: no other
-stage requires it, and `wf next` never starts it.
+Language, Naming, Git, Checks, Output discipline, Writing style, Asking the human, Reporting to the
+human and Untrusted content. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`. This stage is
+optional: no other stage requires it, and `wf next` never starts it.
 
 ## Arguments
 

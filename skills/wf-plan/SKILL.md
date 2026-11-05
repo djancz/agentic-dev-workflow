@@ -43,11 +43,15 @@ Role: **author**. Paths are relative to this skill's directory. Read:
      (`references/conventions.md` → Task scope), do not write the full plan. Write only *Goal*, *Context*
      and, under *Open decisions*, a proposed split. Then stop and ask the human; `wf task split` performs
      it. Size alone never leads to a split.
-3. **Write** `TASK-<N>-plan.md` from the template:
+3. **Ask early.** A choice that belongs to the human and changes a contract, an acceptance criterion,
+   a test or a dependency: ask it now, before writing, as `references/conventions.md` → Asking the human
+   says. Add the answer to the ticket, quoted, under *Constraints*, and plan with it. Under `wf auto`,
+   ask every human choice now.
+4. **Write** `TASK-<N>-plan.md` from the template:
    - **Bug fix: reproduce first.** For `Type: fix`, reproduce the bug and find its cause before the
      approach; fill *Reproduction and cause*. If it does not reproduce, say so and ask.
-   - **Decide; do not list options.** Where there is a real choice, pick one, name the rejected
-     alternative in one line, and say why.
+   - **Decide engineering choices.** Where there is a real technical choice, pick one, name the
+     rejected alternative in one line, and say why. Choices that belong to the human follow step 3.
    - **Be concrete.** Name files, functions and data structures. "Add validation" is not a step.
    - **Test strategy is the contract.** Every new behaviour and every acceptance criterion of the ticket
      gets a row: the level (unit, integration or e2e), the test, and a checkable acceptance. Plan an
@@ -69,17 +73,20 @@ Role: **author**. Paths are relative to this skill's directory. Read:
    - **Commits.** Group the steps into commits by concern, in English and in Conventional Commits form
      even if the project's conventions say otherwise (`references/conventions.md` → Git).
    - **Out of scope** binds the whole task. Adjacent ideas go under *Follow-ups*.
-   - **Open decisions** are only for choices that are genuinely the human's, each with a recommendation.
-     If one question would unblock a design choice right now, ask it now instead.
+   - **Open decisions** keep only the human's choices that can wait for Gate 1: either option leaves
+     every contract, acceptance criterion, test and dependency unchanged. Give each its options with a
+     one-line trade-off and a recommendation, and write the plan with the recommendation applied
+     everywhere it matters; Gate 1 asks them.
    - **Length follows size.** Aim for roughly 40–70 lines for `S`, 80–150 for `M` and up to about 250 for
      `L`. Write the decisions and the facts a reviewer could disagree with, not explanations of how
      libraries behave. Do not pad, and do not plan for hypothetical future requirements.
-4. **Header.** Set `Status: Draft` and `Revision: 1`. In the ticket, set `Status: In progress`.
+5. **Header.** Set `Status: Draft` and `Revision: 1`. In the ticket, set `Status: In progress`.
 
 Do not write code, and do not commit.
 
 ## Report
 
-Report the plan path, the size and sensitivity, one line on the approach, and the open decisions. Then:
+Report the plan path, the size and sensitivity, one line on the approach, the questions you asked with
+their answers, and the open decisions left for Gate 1. Then:
 `Next: wf plan loop` (automatic review ⇄ fix, recommended) or `wf plan rev` (one round, ideally in a new
 session). End with `— wf-plan · <timestamp>`.

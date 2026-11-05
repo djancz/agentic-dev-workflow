@@ -15,7 +15,7 @@ milestone. If no roadmap exists, suggest `wf roadmap`.
 Read only this milestone's rows in the roadmap. For each row without a task ID, propose one task ticket
 per concern with its acceptance criteria, wave, dependencies, and frozen interface references. If the
 rows bundle unrelated changes, ask for a roadmap revision. Show the proposed tasks and ask the human to
-approve creating them. On approval, use `wf task` to create tickets; copy the chosen wave and dependency
+approve creating them (`references/conventions.md` → Asking the human). On approval, use `wf task` to create tickets; copy the chosen wave and dependency
 IDs into their headers and fill the roadmap's Task column. The ticket of a task that adopts or starts
 from a prototype names the prototype branch and its recorded commit under *Problem*. Set the milestone
 to `In progress`. Plan ready tasks with `wf plan TASK-N`; independent tasks may then use separate worktrees.

@@ -75,14 +75,14 @@ The fixer answers every open must-fix ID:
 | P1-1 | fixed | Step 3 now validates before writing |
 | P1-2 | disputed | The cache is per-process by design (plan § Approach); a race cannot happen |
 | P1-4 | deferred | Minor; moved to Follow-ups |
-| P1-5 | needs-human | Retention period is a product decision: 30 or 90 days? Recommend 30 |
+| P1-5 | needs-human | Retention period is a product decision: 30 days (recommended) / 90 days |
 
 - `deferred` is allowed only for Minor and Nit findings.
 - `disputed` needs a reason the reviewer can check. The reviewer then either accepts the dispute or
   maintains the finding. A maintained dispute goes to the human; the two sides do not argue for another
   round.
-- `needs-human` is for a decision that is not the agent's to make. State the question and your
-  recommendation.
+- `needs-human` is for a decision that is not the agent's to make. State the question with 2–4
+  options, your recommendation first; the orchestrator asks it (`conventions.md` → Asking the human).
 
 ## Stop conditions
 

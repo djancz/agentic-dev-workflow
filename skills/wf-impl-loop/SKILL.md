@@ -12,7 +12,8 @@ description: >-
 
 Paths are relative to this skill's directory. Read `references/loop.md` and follow it for the
 implementation. Also read `references/workflow.md` (sections Next step, Human gates and Resolving the
-task) and `references/review-rubric.md` (section Stop conditions).
+task), `references/review-rubric.md` (section Stop conditions) and `references/conventions.md` (section
+Asking the human, for escalations).
 
 ## Preconditions
 

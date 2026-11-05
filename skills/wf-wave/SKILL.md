@@ -57,8 +57,8 @@ Without an ID, use the only wave in `PR opened`; if there are several, ask. Run
 a forge CLI, ask the human to confirm the merge explicitly. Otherwise stop: nothing is closed early.
 
 Set the wave `Merged` with the merge commit and date, set its tasks `Done`, and fill their rows in the
-roadmap. Then list the task worktrees and the local task and wave branches, and ask once whether to
-remove them. On a yes, use `git worktree remove` (never `--force`) and `git branch -d`; report a dirty
+roadmap. Then list the task worktrees and the local task and wave branches, and ask once
+(`references/conventions.md` → Asking the human) whether to remove them. On a yes, use `git worktree remove` (never `--force`) and `git branch -d`; report a dirty
 worktree instead of removing it. After a squash merge `-d` refuses. Use `git branch -D` only for a listed
 branch whose `HEAD` equals the recorded commit that went into the merge: a task branch its integrated
 `Checkpoint`, the wave branch its recorded `Pushed` commit. Keep and report any branch with other
