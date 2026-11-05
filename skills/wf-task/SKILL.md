@@ -19,10 +19,12 @@ To list tasks or see where one stands, use `wf status` instead.
 
 1. **Check the setup.** Run `git check-ignore -q development`. If `development/` is not ignored, stop and
    suggest `wf init`, because task files must never be committed.
-2. **Number it.** Reserve the directory with `python3 scripts/new-id.py --kind task --slug <slug>
+2. **Ask first.** Before reserving anything, ask the questions whose answer changes what gets built, with
+   options, as `references/conventions.md` → Asking the human says.
+3. **Number it.** Reserve the directory with `python3 scripts/new-id.py --kind task --slug <slug>
    development`; it prints `development/tasks/TASK-<N>-<slug>`. Never pick the number yourself: parallel
    sessions share `development/`.
-3. **Write it.** Create `TASK-<N>.md` in that directory from `templates/task.md`, filled
+4. **Write it.** Create `TASK-<N>.md` in that directory from `templates/task.md`, filled
    from what the user said:
    - The ticket says *what* and *why*, not *how*. Look at the code only to name things correctly, not to
      design the solution.
@@ -33,10 +35,8 @@ To list tasks or see where one stands, use `wf status` instead.
      *Problem*, so every later stage and reviewer can read them.
    - Use the roadmap's wave ID when present. For a standalone existing-project task, reserve a one-task
      wave with `python3 scripts/new-id.py --kind wave development` and record its ID in the ticket.
-   - Before writing, ask the questions whose answer changes what gets built, with options, as
-     `references/conventions.md` → Asking the human says. Record the answers under *Constraints* and
-     everything else you assumed under *Notes*.
-4. **One concern, one task.** Several requests about the same concern go into one ticket, each with its
+   - Record the answers, quoted, under *Constraints*, and everything else you assumed under *Notes*.
+5. **One concern, one task.** Several requests about the same concern go into one ticket, each with its
    own acceptance criteria. Propose separate tasks only when `references/conventions.md` → Task scope
    calls for a split: unrelated requests, or a complete rework. Otherwise write one ticket without
    asking.

@@ -16,7 +16,8 @@ feature boundaries, entry points, data ownership, public interfaces and contract
 tasks, security boundaries, quality checks, deployment assumptions if relevant, and test strategy.
 Where the human has not chosen a stack, a paid or external service, or a data store and the choice is
 material, ask it before writing, with options (`references/conventions.md` → Asking the human); explain
-material tradeoffs. Use diagrams only when they clarify a boundary. Keep later details flexible until the related milestone is planned.
+material tradeoffs. Use diagrams only when they clarify a boundary. Keep later details flexible until the
+related milestone is planned.
 Name the tracked document (for example `docs/architecture.md`) that will carry the decisions others need
 (`references/project.md` → Private state).
 

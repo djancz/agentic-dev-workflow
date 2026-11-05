@@ -46,7 +46,8 @@ stage print one line: stage, outcome, artifact.
    the authorization to *Notes*:
    `Autopilot authorization: <timestamp> — "<the human's words>"`. If the stage proposes a split or a new
    project, stop.
-2. **Plan.** `wf plan`, then `wf plan loop`. At Gate 1 run `scripts/auto-gate.py plan` as
+2. **Plan.** `wf plan`, which asks every human choice now and leaves no open decision for Gate 1, then
+   `wf plan loop`. At Gate 1 run `scripts/auto-gate.py plan` as
    `references/autopilot.md` → Policy shows. Eligible: record the approval as *Recording an automatic
    approval* says and continue. Not eligible: present the ordinary Gate 1 digest, add the policy's
    reasons, and stop.
@@ -65,8 +66,10 @@ stage print one line: stage, outcome, artifact.
 
 Before each gate decision, re-read the headers from disk; never decide from memory of an earlier stage.
 The policy refuses a gate when the ticket or wave record lacks the authorization, so record it first.
-A human reply at a stopped gate is an ordinary gate answer: record it as the stage's skill says. The
-autopilot continues only after a new `wf auto TASK-<N>` or `wf auto WAVE-<N>`.
+A question a stage asks is not a gate: when the human answers it, record the answer as the stage's skill
+says and continue; an unanswered question stops the run. A human reply at a stopped gate is an ordinary
+gate answer: record it as the stage's skill says. The autopilot continues only after a new
+`wf auto TASK-<N>` or `wf auto WAVE-<N>`.
 
 ## Never
 

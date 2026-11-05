@@ -137,9 +137,11 @@ Human change requests return to the relevant review loop.
 ## Escalate (stop here)
 
 Following the rubric, list the open findings at full severity and why each survived. Then ask, as
-`conventions.md` → Asking the human says, each `needs-human` question and how to go on, your
-recommendation first, each option with its exact reply: accept the open findings (`workflow.md` → Human
-gates), one more round (`wf <plan|impl> loop rounds=<n>`), a new approach, or `wf task split`.
+`conventions.md` → Asking the human says, each `needs-human` question and how to go on, each option with
+its exact reply: one more round (`wf <plan|impl> loop rounds=<n>`), a new approach, `wf task split`, or
+accepting the open findings (`workflow.md` → Human gates), which needs the human's rationale and is never
+the recommended option. Record each answer in the ticket's *Constraints*; the choice of how to go on is
+the new request that another bounded run needs.
 
 ## Report
 
