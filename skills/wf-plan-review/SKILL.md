@@ -74,8 +74,10 @@ and updates the header.
 ## Report
 
 Skip this section in delegated output mode. Report the verdict, the must-fix count, and one line per
-finding (`[P2-1] Major — title`). Then `Next`:
-- `Changes requested`: `wf plan fix` (or `wf plan loop`).
+finding (`[P2-1] Major — title`). Then:
+- `Changes requested`: report the next step (`references/conventions.md` → Reporting to the human). For
+  findings on the current revision it is the human's choice: `wf plan fix`, a bounded `wf plan loop`,
+  accepting them, or a new approach.
 - `Approved*`: Gate 1. Present the Gate 1 digest from `references/workflow.md` → Human gates, including
   how to answer, and stop.
 

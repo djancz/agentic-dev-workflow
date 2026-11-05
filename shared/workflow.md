@@ -15,7 +15,8 @@ with `scripts/new-id.py`, never chosen by hand. The agent records branch, wave, 
 ## Resolving the task
 
 An explicit task ID wins. Otherwise use the current branch's task ID, then the sole task awaiting this
-stage. If several match, ask which one. `wf status` reads records and reports the next valid command.
+stage. If several match, ask which one. `scripts/next-step.py` reads the records and reports the next
+valid command.
 A one-off small change in an existing project gets a wave of one; `wf wave start` creates it after
 the plan is approved.
 
@@ -37,12 +38,19 @@ the plan is approved.
 For a non-feature change, the plan may say `Tests: N/A` with a reason, so `wf test` is skipped.
 `wf maintenance` and `wf deploy` retain their own explicit gates.
 
+**The records name the next step.** `scripts/next-step.py` reads the record headers in `development/`
+and names one next action: a `wf` command, or a `human:` answer such as a gate, a decision on open
+findings, or a merge. When several tasks or waves could continue, it lists them and exits 1. Every stage
+report, `wf status`, `wf next` and `wf auto` take the next step from it (`conventions.md` → Reporting to
+the human); its docstring is the full resolution. A review that requests changes on the current revision
+or commit waits for the human's decision; a stopped loop never restarts itself. A follow-up is never the
+next step while a task or wave is open.
+
 **Ready is per task; integration is per wave.** `Ready to integrate` describes one task, but
-`wf wave integrate` needs every task of the wave. When a stage leaves a task ready, read `Tasks:` in the
-wave record and each ticket's `Status` before naming a next command. If every task that is not `Dropped`
-is `Ready to integrate` or `Done`, report `Next: wf wave integrate WAVE-N`. Otherwise report this task as
-ready, list each task that is not, with its status and the command that moves it on (`wf status` resolves
-it), and do not name `wf wave integrate`.
+`wf wave integrate` needs every task of the wave. The resolver reads `Tasks:` in the wave record and each
+task's records: only when every task that is not `Dropped` is ready to integrate or `Done` does it report
+`Next: wf wave integrate WAVE-N`. Otherwise it reports this task as waiting, lists each task that is not
+ready with the command that moves it on, and does not name `wf wave integrate`.
 
 ## Human gates
 

@@ -30,6 +30,7 @@ VALIDATE_REVIEW = SHARED / 'scripts' / 'validate-review.py'
 NEW_ID = SHARED / 'scripts' / 'new-id.py'
 RESOLVE_ROLES = SHARED / 'scripts' / 'resolve-roles.py'
 AUTO_GATE = SHARED / 'scripts' / 'auto-gate.py'
+NEXT_STEP = SHARED / 'scripts' / 'next-step.py'
 LOOP = SHARED / 'loop.md'
 LOOP_SKILLS = ('wf-plan-loop', 'wf-impl-loop')
 CORE_DOCS = ('workflow.md', 'conventions.md', 'review-rubric.md', 'security.md')
@@ -158,13 +159,13 @@ class SkillStructure(unittest.TestCase):
         self.assertEqual(statuses, ['Scoping', 'Building', 'Ready for feedback', 'Adopted', 'Reference',
                                     'Discarded'])
         self.assertIn('`Status: ' + ' | '.join(statuses) + '`', project)
-        status = flat(SKILLS / 'wf-status' / 'SKILL.md')
+        resolver = flat(NEXT_STEP)  # NextStep tests its behaviour for each status
         for name in statuses:
             with self.subTest(status=name):
                 self.assertIn(f'`{name}`', skill)
         for name in ('Scoping', 'Building', 'Ready for feedback', 'Adopted', 'Reference'):
             with self.subTest(next_action=name):
-                self.assertIn(f'`{name}`', status)
+                self.assertIn(f'`{name}`', resolver)
         # One branch, worktree and record location everywhere they are named.
         guide = flat(REPO / 'docs' / 'skills.md')
         for doc, text in (('SKILL.md', skill), ('project.md', project), ('docs/skills.md', guide)):
@@ -2460,6 +2461,389 @@ def _env(**values):
 
 def mock_env(**values):
     return _env(**values)
+
+
+class NextStep(unittest.TestCase):
+    """Behaviour of the next-step resolver in shared/scripts/next-step.py."""
+
+    SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+    WAVE_SHA = 'f0e1d2c3b4a5968778695a4b3c2d1e0f12345678'
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.dev = self.tmp / 'development'
+        (self.dev / 'tasks').mkdir(parents=True)
+        (self.dev / 'waves').mkdir()
+        (self.tmp / 'AGENTS.md').write_text('# Project\n<!-- wf:begin -->\n- Base branch: main\n<!-- wf:end -->\n')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def run_next(self, *args: str) -> tuple[int, str, str]:
+        result = subprocess.run([sys.executable, str(NEXT_STEP), *args, str(self.dev)], capture_output=True,
+                                text=True)
+        return result.returncode, result.stdout, result.stderr
+
+    def next_line(self, *args: str, code: int = 0) -> str:
+        returncode, out, err = self.run_next(*args)
+        self.assertEqual(returncode, code, out + err)
+        self.assertTrue(out.splitlines()[-1].startswith('Next: '), out)
+        return out.splitlines()[-1][len('Next: '):]
+
+    # records
+
+    def directory(self, n: int) -> Path:
+        path = self.dev / 'tasks' / f'TASK-{n}-csv-export'
+        path.mkdir(exist_ok=True)
+        return path
+
+    def ticket(self, n: int = 7, status: str = 'Open', wave: str = 'WAVE-3', branch: str = '—'):
+        (self.directory(n) / f'TASK-{n}.md').write_text(
+            f'# TASK-{n}: CSV export\n\n- Status: {status}\n- Type: fix\n- Wave: {wave}\n- Branch: {branch}\n'
+            f'- Commit: —\n\n## Goal\n\nExport rows.\n')
+
+    def plan(self, n: int = 7, status: str = 'Draft', revision: int = 1, approved: str = '—',
+             tests: str = 'required', sensitivity: str = 'normal', follow_ups: str = 'None.'):
+        (self.directory(n) / f'TASK-{n}-plan.md').write_text(
+            f'# TASK-{n} — Plan: CSV export\n\n- Status: {status}\n- Revision: {revision}\n- Size: S\n'
+            f'- Sensitivity: {sensitivity}\n- Approved: {approved}\n- Wave: WAVE-3\n- Tests: {tests}\n\n'
+            f'## Goal\n\nExport rows.\n\n## Follow-ups\n\n{follow_ups}\n')
+
+    def approve_plan(self, n: int = 7, **kwargs):
+        self.plan(n, status='Approved', revision=2, approved='revision 2 (2026-10-01 10:00 UTC) — "ok"', **kwargs)
+
+    def review(self, path: Path, verdict: str, reviewed: str, round_no: int = 2):
+        must_fix = 1 if verdict == 'Changes requested' else 0
+        path.write_text(f'# Review\n\n- Latest verdict: {verdict}\n- Round: {round_no}\n- Must-fix open: {must_fix}\n'
+                        f'- Reviewed: {reviewed}\n\n## Round {round_no} — 2026-10-01 10:00 UTC\n\n'
+                        f'- Verdict: {verdict}\n')
+
+    def task_review(self, kind: str, verdict: str, reviewed: str, n: int = 7):
+        self.review(self.directory(n) / f'TASK-{n}-{kind}.md', verdict, reviewed)
+
+    def summary(self, n: int = 7, status: str = 'Review requested', checkpoint: str = SHA,
+                follow_ups: str = 'None.'):
+        (self.directory(n) / f'TASK-{n}-impl-summary.md').write_text(
+            f'# TASK-{n} — Implementation summary\n\n- Status: {status}\n- Branch: task/TASK-{n}-csv-export\n'
+            f'- Checkpoint: {checkpoint}\n\n## What was built\n\nRows.\n\n## Follow-ups\n\n{follow_ups}\n')
+
+    def wave(self, n: int = 3, status: str = 'In progress', tasks: str = 'TASK-7', reviewed: str = 'pending',
+             pr: str = 'none'):
+        (self.dev / 'waves' / f'WAVE-{n}.md').write_text(
+            f'# Wave WAVE-{n}: CSV\n\nStatus: {status}\nBase branch: main\nBranch: wave/WAVE-{n}-csv\n'
+            f'Reviewed commit: {reviewed}\nTasks: {tasks}\nPR: {pr}\n\n## Goal and acceptance\n')
+
+    def started_task(self, n: int = 7, **plan):
+        """A task with an approved plan in a started wave, on its own branch, with tests written."""
+        self.ticket(n, status='In progress', branch=f'task/TASK-{n}-csv-export')
+        self.approve_plan(n, **plan)
+        (self.directory(n) / f'TASK-{n}-test-report.md').write_text('# Test report\n')
+
+    def ready_task(self, n: int = 7):
+        self.started_task(n)
+        self.summary(n, status='Ready to integrate')
+        self.task_review('impl-review', 'Approved', f'commit {self.SHA[:7]}', n)
+        self.ticket(n, status='Ready to integrate', branch=f'task/TASK-{n}-csv-export')
+
+    def project_doc(self, name: str, status: str = 'Approved', revision: int = 1, extra: str = ''):
+        project = self.dev / 'project'
+        project.mkdir(exist_ok=True)
+        (project / f'{name}.md').write_text(f'# {name}\n\nStatus: {status}\nRevision: {revision}\nApproved: none\n'
+                                            f'{extra}\n## Body\n')
+
+    # the task and wave route, stage by stage
+
+    def test_no_records_suggest_starting_work(self):
+        self.assertTrue(self.next_line().startswith('human: start new work with wf task <goal>'))
+
+    def test_task_route_follows_the_records(self):
+        self.ticket()
+        self.wave(status='Planned')
+        self.assertEqual(self.next_line(), 'wf plan TASK-7')
+        self.plan()
+        self.assertEqual(self.next_line(), 'wf plan loop TASK-7')
+        self.task_review('plan-review', 'Approved', 'plan revision 1')
+        self.assertTrue(self.next_line().startswith('human: Gate 1 — approve the TASK-7 plan revision 1'))
+        self.plan(revision=2)
+        self.assertEqual(self.next_line(), 'wf plan loop TASK-7', 'a review of revision 1 no longer counts')
+        self.approve_plan()
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-3')
+        self.wave(status='In progress')
+        self.assertEqual(self.next_line(), 'wf new-worktree TASK-7')
+        self.ticket(status='In progress', branch='task/TASK-7-csv-export')
+        self.assertEqual(self.next_line(), 'wf test TASK-7')
+        (self.directory(7) / 'TASK-7-test-report.md').write_text('# Test report\n')
+        self.assertEqual(self.next_line(), 'wf impl TASK-7')
+        self.summary(status='In progress')
+        self.assertEqual(self.next_line(), 'wf impl TASK-7')
+        self.summary()
+        self.assertEqual(self.next_line(), 'wf impl loop TASK-7')
+        self.task_review('impl-review', 'Approved', 'commit 9999999')
+        self.assertEqual(self.next_line(), 'wf impl loop TASK-7', 'a review of another commit does not count')
+        self.task_review('impl-review', 'Approved', f'commit {self.SHA[:7]}')
+        self.assertEqual(self.next_line(), 'wf impl loop TASK-7', 'the loop still has to mark the task ready')
+        self.summary(status='Ready to integrate')
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3')
+        self.wave(status='Review requested', reviewed=self.WAVE_SHA)
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3')
+        self.review(self.dev / 'waves' / 'WAVE-3-review.md', 'Approved', f'commit {self.WAVE_SHA}')
+        self.assertTrue(self.next_line().startswith('human: Gate 2 — approve WAVE-3 at commit f0e1d2c'))
+        self.wave(status='Approved', reviewed=self.WAVE_SHA)
+        self.assertEqual(self.next_line(), 'wf finalize WAVE-3')
+        self.wave(status='PR opened', reviewed=self.WAVE_SHA, pr='https://example.test/pr/1')
+        self.assertEqual(self.next_line(),
+                         'human: merge the PR of WAVE-3 (https://example.test/pr/1), then wf wave done WAVE-3')
+        self.wave(status='Merged', reviewed=self.WAVE_SHA)
+        self.ticket(status='Done', branch='task/TASK-7-csv-export')
+        self.assertTrue(self.next_line().startswith('human: start new work'))
+
+    def test_tests_na_skip_the_test_author(self):
+        self.started_task(tests='N/A — documentation only')
+        (self.directory(7) / 'TASK-7-test-report.md').unlink()
+        self.wave()
+        self.assertEqual(self.next_line(), 'wf impl TASK-7')
+
+    def test_high_sensitivity_needs_an_approved_security_review(self):
+        self.started_task(sensitivity='high')
+        self.wave()
+        self.summary()
+        self.task_review('impl-review', 'Approved', f'commit {self.SHA}')
+        self.assertEqual(self.next_line(), 'wf impl loop TASK-7')
+        self.task_review('security-review', 'Changes requested', f'commit {self.SHA[:10]}')
+        self.assertTrue(self.next_line().startswith('human: decide on the open security findings of TASK-7'))
+
+    def test_a_stopped_loop_waits_for_the_human(self):
+        self.ticket()
+        self.plan()
+        self.task_review('plan-review', 'Changes requested', 'plan revision 1')
+        action = self.next_line()
+        self.assertTrue(action.startswith('human: decide on the open plan findings of TASK-7'), action)
+        self.assertIn('wf plan loop TASK-7 rounds=<n>', action)
+        self.started_task()
+        self.wave()
+        self.summary()
+        self.task_review('impl-review', 'Changes requested', f'commit {self.SHA}')
+        self.assertTrue(self.next_line().startswith('human: decide on the open implementation findings of TASK-7'))
+        self.ready_task()
+        self.wave(status='Review requested', reviewed=self.WAVE_SHA)
+        self.review(self.dev / 'waves' / 'WAVE-3-review.md', 'Changes requested', f'commit {self.WAVE_SHA[:7]}')
+        self.assertTrue(self.next_line().startswith('human: decide on the open findings of the WAVE-3 review'))
+
+    def test_an_approval_of_another_revision_does_not_count(self):
+        self.ticket()
+        self.plan(status='Approved', revision=3, approved='revision 2 (2026-10-01 10:00 UTC) — "ok"')
+        self.task_review('plan-review', 'Approved', 'plan revision 2')
+        returncode, out, _ = self.run_next()
+        self.assertEqual(out.splitlines()[-1], 'Next: wf plan loop TASK-7')
+        self.assertIn('its approval names another revision', out)
+
+    # follow-ups
+
+    def test_follow_ups_are_never_next_while_a_task_is_open(self):
+        self.started_task(follow_ups='- Add an XLSX export (wf task).')
+        self.wave()
+        self.summary(status='In progress', follow_ups='- Stream large exports.')
+        # An earlier wave merged with its own follow-ups.
+        self.ticket(5, status='Done', wave='WAVE-2', branch='task/TASK-5-csv-export')
+        self.summary(5, status='Ready to integrate', follow_ups='- Cache the export.')
+        self.wave(2, status='Merged', tasks='TASK-5')
+        returncode, out, err = self.run_next()
+        self.assertEqual(returncode, 0, err)
+        self.assertEqual(out.splitlines()[-1], 'Next: wf impl TASK-7')
+        self.assertNotIn('Follow-ups', out)
+        self.assertNotIn('wf task', out)
+
+    def test_follow_ups_are_listed_only_when_nothing_is_open(self):
+        self.ready_task()
+        self.summary(status='Ready to integrate', follow_ups='- Stream large exports.')
+        self.ticket(status='Done', branch='task/TASK-7-csv-export')
+        self.wave(status='Merged', reviewed=self.WAVE_SHA)
+        returncode, out, _ = self.run_next()
+        self.assertEqual(returncode, 0)
+        self.assertIn('Follow-ups: TASK-7 (', out)
+        self.assertIn('TASK-7-impl-summary.md', out)
+        self.assertNotIn('TASK-7-plan.md', out, 'a plan whose Follow-ups say None is not listed')
+        self.assertTrue(out.splitlines()[-1].startswith('Next: human: start new work'))
+
+    # waves of several tasks and choosing
+
+    def test_wave_integration_waits_for_every_task(self):
+        self.ready_task(7)
+        self.started_task(8)
+        self.wave(tasks='TASK-7, TASK-8')
+        returncode, out, _ = self.run_next()
+        self.assertIn('WAVE-3: waiting: TASK-8 (In progress)', out)
+        self.assertEqual(out.splitlines()[-1], 'Next: wf impl TASK-8')
+        self.assertEqual(self.next_line('--id', 'TASK-7'), 'wf impl TASK-8', 'a ready task stands for its wave')
+        self.assertNotIn('wf wave integrate', self.next_line('--branch', 'wave/WAVE-3-csv'))
+        self.ticket(8, status='Dropped')
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3')
+
+    def test_several_open_items_ask_which(self):
+        self.ticket(7)
+        self.ticket(8)
+        returncode, out, _ = self.run_next()
+        self.assertEqual(returncode, 1)
+        self.assertEqual(out.splitlines()[-1], 'Next: choose one of TASK-7, TASK-8')
+        self.assertEqual(self.next_line('--id', 'TASK-8'), 'wf plan TASK-8')
+        self.assertEqual(self.next_line('--branch', 'task/TASK-7-csv-export'), 'wf plan TASK-7')
+        self.assertEqual(self.next_line('--branch', 'main', code=1), 'choose one of TASK-7, TASK-8')
+
+    def test_identical_actions_count_once(self):
+        for n in (7, 8):
+            self.ticket(n)
+            self.approve_plan(n)
+        self.wave(status='Planned', tasks='TASK-7, TASK-8')
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-3')
+
+    def test_a_closed_selection_falls_back_to_every_item(self):
+        self.ticket(7, status='Done')
+        self.ticket(8)
+        returncode, out, _ = self.run_next('--id', 'TASK-7')
+        self.assertEqual(returncode, 0)
+        self.assertIn('TASK-7: nothing left to do', out)
+        self.assertEqual(out.splitlines()[-1], 'Next: wf plan TASK-8')
+
+    def test_a_wave_waits_for_the_wave_it_depends_on(self):
+        self.project_doc('prd')
+        self.project_doc('spec')
+        self.project_doc('roadmap', extra='Current milestone: M1\n\n## Milestones\n\n| ID | Working outcome | Exit '
+                         'evidence | Status |\n|---|---|---|---|\n| M1 | CSV | export | In progress |\n\n'
+                         '## Waves and tasks\n\n| Wave | Milestone | Task | Concern and acceptance | Depends on | '
+                         'Parallel boundary |\n|---|---|---|---|---|---|\n| WAVE-1 | M1 | TASK-7 | a | — | x |\n'
+                         '| WAVE-2 | M1 | TASK-8 | b | WAVE-1 | y |\n')
+        self.ready_task(7)
+        self.ticket(7, status='Ready to integrate', wave='WAVE-1', branch='task/TASK-7-csv-export')
+        self.wave(1, status='PR opened', tasks='TASK-7', reviewed=self.WAVE_SHA)
+        self.ticket(8, wave='WAVE-2')
+        self.approve_plan(8)
+        self.wave(2, status='Planned', tasks='TASK-8')
+        returncode, out, _ = self.run_next()
+        self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first', out)
+        self.assertEqual(out.splitlines()[-1], 'Next: human: merge the PR of WAVE-1, then wf wave done WAVE-1')
+        self.wave(1, status='Merged', tasks='TASK-7', reviewed=self.WAVE_SHA)
+        self.ticket(7, status='Done', wave='WAVE-1', branch='task/TASK-7-csv-export')
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-2')
+
+    # the project route
+
+    def test_project_route_follows_the_records(self):
+        project = self.dev / 'project'
+        self.project_doc('prd', status='Draft', revision=2)
+        self.assertEqual(self.next_line(), 'human: approve the PRD revision 2 or ask for changes')
+        self.project_doc('prd')
+        self.assertEqual(self.next_line(), 'wf spec')
+        self.project_doc('spec', status='Draft')
+        self.assertEqual(self.next_line(), 'wf spec')
+        self.review(project / 'spec-review.md', 'Changes requested', 'spec revision 1')
+        self.assertTrue(self.next_line().startswith('human: decide on the open findings of the spec review'))
+        self.review(project / 'spec-review.md', 'Approved', 'spec revision 1')
+        self.assertEqual(self.next_line(), 'human: approve the spec revision 1 or ask for changes')
+        self.project_doc('spec')
+        returncode, out, _ = self.run_next()
+        self.assertEqual(out.splitlines()[-1], 'Next: wf roadmap')
+        self.assertNotIn('Next: wf prototype', out, 'a prototype is optional and never started')
+        prototype = 'Status: {} <!-- Scoping | Building | Ready for feedback -->\nRevision: 2\n'
+        for state, action in (('Scoping', 'human: answer the prototype scope question of wf prototype'),
+                              ('Building', 'wf prototype'),
+                              ('Ready for feedback',
+                               'human: try the prototype, then wf prototype <feedback> or wf prototype done'),
+                              ('Adopted', 'wf roadmap'), ('Discarded', 'wf roadmap')):
+            with self.subTest(prototype=state):
+                (project / 'prototype.md').write_text('# Prototype\n\n' + prototype.format(state))
+                self.assertEqual(self.next_line(), action)
+        self.project_doc('roadmap', status='Draft')
+        self.review(project / 'roadmap-review.md', 'Approved', 'roadmap revision 1')
+        self.assertEqual(self.next_line(), 'human: approve the roadmap revision 1 or ask for changes')
+        rows = ('Current milestone: M1\n\n## Milestones\n\n| ID | Working outcome | Exit evidence | Status |\n'
+                '|---|---|---|---|\n| M1 | CSV | export | {status} |\n\n## Waves and tasks\n\n| Wave | Milestone | '
+                'Task | Concern and acceptance | Depends on | Parallel boundary |\n|---|---|---|---|---|---|\n'
+                '| WAVE-1 | M1 | {task} | a | — | x |\n')
+        (project / 'prototype.md').write_text('# Prototype\n\n' + prototype.format('Adopted'))
+        self.project_doc('roadmap', extra='Prototype: revision 1, adopt\n' + rows.format(status='Planned', task='—'))
+        self.assertEqual(self.next_line(), 'wf roadmap', 'the roadmap plans an older prototype revision')
+        self.project_doc('roadmap', extra='Prototype: revision 2, adopt\n' + rows.format(status='Planned', task='—'))
+        (self.tmp / 'AGENTS.md').write_text('# Project\n')
+        self.assertEqual(self.next_line(), 'wf init')
+        self.assertEqual(self.next_line('--agents-md', str(self.tmp / 'missing.md')), 'wf init')
+        (self.tmp / 'AGENTS.md').write_text('<!-- wf:begin -->\n<!-- wf:end -->\n')
+        self.assertEqual(self.next_line(), 'wf milestone M1')
+        self.project_doc('roadmap', extra='Prototype: revision 2, adopt\n' +
+                         rows.format(status='In progress', task='TASK-7'))
+        self.ticket(7, wave='WAVE-1')
+        self.assertEqual(self.next_line(), 'wf plan TASK-7')
+        self.ticket(7, status='Done', wave='WAVE-1')
+        self.assertEqual(self.next_line(), 'wf milestone done M1')
+        self.project_doc('roadmap', extra='Prototype: revision 2, adopt\n' + rows.format(status='Done', task='TASK-7'))
+        self.assertTrue(self.next_line().startswith('human: start new work'))
+
+    # invalid input and read-only behaviour
+
+    def test_invalid_records_and_arguments_exit_2(self):
+        self.ticket()
+        path = self.directory(7) / 'TASK-7.md'
+        for text in ('- Status: Open\n- Status: Done\n', '- Status: Doing\n', '- Wave: WAVE-3\n'):
+            with self.subTest(ticket=text):
+                path.write_text('# TASK-7: x\n\n' + text)
+                returncode, _, err = self.run_next()
+                self.assertEqual(returncode, 2)
+                self.assertIn('TASK-7.md', err)
+        path.write_bytes(b'- Status: Open\n\xff\n')
+        self.assertEqual(self.run_next()[0], 2)
+        self.ticket()
+        self.plan(sensitivity='medium')
+        self.assertEqual(self.run_next()[0], 2)
+        self.plan()
+        for args in (('--id', 'TASK-9'), ('--id', 'task-7'), ('--id', 'WAVE-1')):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_next(*args)[0], 2)
+        self.wave(tasks='TASK-7, TASK-9')
+        self.assertIn('TASK-9', self.run_next()[2])
+        shutil.rmtree(self.dev)
+        self.assertEqual(self.run_next()[0], 2)
+
+    def test_an_empty_wave_record_is_a_reservation_and_comments_are_not_facts(self):
+        self.ticket(wave='WAVE-3 (reserved by wf task)')
+        self.approve_plan()
+        (self.dev / 'waves' / 'WAVE-3.md').write_text('')
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-3')
+        self.plan(status='Draft', revision=1)
+        (self.directory(7) / 'TASK-7-plan-review.md').write_text(
+            '# Review\n\n<!--\n- Latest verdict: Approved\n- Reviewed: plan revision 1\n-->\n'
+            '```\n- Latest verdict: Approved\n```\n- Latest verdict: Changes requested\n- Round: 1\n'
+            '- Reviewed: plan revision 1\n')
+        self.assertTrue(self.next_line().startswith('human: decide on the open plan findings'))
+
+    def test_resolving_changes_nothing(self):
+        self.started_task()
+        self.wave()
+        self.summary(follow_ups='- More.')
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.tmp.rglob('*') if path.is_file()}
+        self.run_next()
+        self.run_next('--id', 'TASK-7')
+        after = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.tmp.rglob('*') if path.is_file()}
+        self.assertEqual(before, after)
+
+    def test_skills_that_report_a_next_step_link_the_resolver(self):
+        own_gates = {'wf-maintenance', 'wf-deploy'}
+        for skill in skill_dirs():
+            text = ' '.join((skill / 'SKILL.md').read_text().split())
+            with self.subTest(skill=skill.name):
+                if skill.name not in own_gates:
+                    link = skill / 'scripts' / 'next-step.py'
+                    self.assertTrue(link.is_symlink(), f'{link} is missing')
+                    self.assertEqual(link.resolve(), NEXT_STEP)
+                    self.assertIsNone(re.search(r'Next: `?wf ', text), 'a hard-coded next step')
+                    self.assertIn('Reporting to the human', text)
+        conventions = ' '.join((SHARED / 'conventions.md').read_text().split())
+        reporting = conventions.split('## Reporting to the human', 1)[1].split(' ## ', 1)[0]
+        for phrase in ('scripts/next-step.py', 'report its `Next:` line as it is',
+                       'A follow-up is never the next step while a task or wave is open'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, reporting)
+        for name in ('wf-status', 'wf-next', 'wf-auto'):
+            with self.subTest(skill=name):
+                self.assertIn('scripts/next-step.py', (SKILLS / name / 'SKILL.md').read_text())
 
 
 if __name__ == '__main__':

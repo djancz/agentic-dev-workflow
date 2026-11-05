@@ -40,12 +40,13 @@ To list tasks or see where one stands, use `wf status` instead.
    calls for a split: unrelated requests, or a complete rework. Otherwise write one ticket without
    asking.
 
-Report: the path, the title, the acceptance criteria, and `Next: wf plan TASK-<N>`.
+Report: the path, the title, the acceptance criteria, and the next step (`references/conventions.md` →
+Reporting to the human).
 
 ## Drop
 
 Set `Status: Dropped` and add one line under *Notes* with the date and the reason. Do not delete anything
-and do not touch the branch; tell the human the branch name if one exists. Then `Next: nothing`.
+and do not touch the branch; tell the human the branch name if one exists. Then report the next step.
 
 ## Split
 
@@ -54,6 +55,7 @@ Use this when the human asks for a split, or accepts one that a plan proposed:
    `Split from TASK-<N>`.
 2. Mark the original `Dropped`, with the note `Split into TASK-a, TASK-b`.
 
-Report the new ids and the order in which to do them, then `Next: wf plan TASK-<first>`.
+Report the new ids and the order in which to do them, then the next step for the first one
+(`--id TASK-<first>`).
 
 End with `— wf-task · <timestamp>`.

@@ -38,7 +38,7 @@ acceptance of its open findings.
    - Require the recorded `task/TASK-<N>-<slug>` branch created by `wf new-worktree`. Do not branch
      directly from the project base.
    - For `Tests: required`, require `TASK-<N>-test-report.md` from a separate fresh agent session and
-     its test checkpoint. If absent, stop with `Next: wf test TASK-<N>`.
+     its test checkpoint. If absent, stop: the test author has not run (`wf test TASK-<N>`).
    - Record the `Branch` in the ticket.
 2. **Work through the plan's steps in order.**
    - Implement against the contract tests and plan. If tests need correction, record why and get an
@@ -84,5 +84,5 @@ Never push. Never use `--no-verify`.
 ## Report
 
 Report what was built in two lines, the checks outcome (counts of PASS, FAIL and NOT RUN), and the
-deviations. Then `Next: wf impl loop` (recommended) or `wf impl rev` (one round, in a new session). End
+deviations, then the next step (`references/conventions.md` → Reporting to the human). End
 with `— wf-impl · <timestamp>`.

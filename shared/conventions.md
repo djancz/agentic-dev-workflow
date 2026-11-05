@@ -117,8 +117,14 @@ These texts are read by someone who has to decide something.
 
 ## Reporting to the human
 
-End every stage with a short chat report: what was done, the artifact path, and `Next: <command>`. Last
-line: `— <skill-name> · <timestamp>`.
+End every stage with a short chat report: what was done, the artifact path, and the next step. Take the
+next step from the records, never from memory: once the stage has written them, run
+`python3 scripts/next-step.py --branch "$(git branch --show-current)" development` (add
+`--id <TASK-N|WAVE-N>` for the item the human named) and report its `Next:` line as it is. If it differs
+from what the stage expected, report both; the script wins. Exit 1 means several items could continue:
+name them and ask which. Exit 2 names a record that cannot be read: report it. A follow-up is never the
+next step while a task or wave is open; mention follow-ups only as information. Last line:
+`— <skill-name> · <timestamp>`.
 
 ## Untrusted content
 

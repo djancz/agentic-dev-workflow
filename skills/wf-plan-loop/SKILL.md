@@ -16,9 +16,8 @@ read `references/workflow.md` (sections Next step, Human gates and Resolving the
 
 ## Preconditions
 
-The plan exists and has `Status: Draft`. If it is `Approved`, there is nothing to review: say so and give
-`Next: wf wave start WAVE-N`, then `wf new-worktree TASK-N`, `wf test TASK-N` for a feature, and
-`wf impl TASK-N`.
+The plan exists and has `Status: Draft`. If it is `Approved`, there is nothing to review: say so and
+report the next step (`references/conventions.md` → Reporting to the human).
 
 ## Stages
 
@@ -34,8 +33,8 @@ plan's current `Revision`.
 
 When the verdict is `Approved*` for the current revision, present the **Gate 1** digest as
 `references/loop.md` → Gate describes. On explicit human approval, record the approved plan revision,
-then `Next: wf wave start WAVE-N` if needed, followed by `wf new-worktree TASK-N` and `wf test TASK-N`
-for a feature. Feedback creates a new plan revision and returns to review. Under `wf auto`, the
+then report the next step (`wf wave start WAVE-N` if needed, then `wf new-worktree TASK-N`). Feedback
+creates a new plan revision and returns to review. Under `wf auto`, the
 autopilot decides Gate 1 by its policy (`references/autopilot.md`) instead of waiting.
 
 End with `— wf-plan-loop · <timestamp>`.

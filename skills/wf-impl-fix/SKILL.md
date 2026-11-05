@@ -55,5 +55,6 @@ Never push.
 ## Report
 
 Report the counts of fixed, disputed, deferred and needs-human findings, quote any `needs-human` question,
-and give the checks outcome. Then `Next: wf impl rev` in a new session (or let `wf impl loop` continue).
+and give the checks outcome, then the next step (`references/conventions.md` → Reporting to the human);
+in a delegated run the loop continues.
 End with `— wf-impl-fix · <timestamp>`.

@@ -31,7 +31,7 @@ return to Draft, preserve already started tasks, and describe the change. Show m
 dependencies, risks, review result, and proposed first task to the human. Before that gate, run the
 review loop in `references/project.md` → Spec and roadmap review (`references/loop.md` for running a
 fresh stage). Record explicit approval, then
-`Next: wf init` for a new project or `wf milestone M<N>` for an existing one.
+report the next step (`references/conventions.md` → Reporting to the human).
 
 ## Review (`wf roadmap rev`, run by the review loop)
 

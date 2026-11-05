@@ -32,9 +32,16 @@ more than one task or wave could match.
 | `wf wave done [WAVE-N]` | After the merge: mark wave and tasks done, offer local cleanup | `wf milestone done` or next task |
 | `wf maintenance` | Scan dependencies and apply approved updates | Maintenance gate |
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
-| `wf status [ID]` | Read status and next action | None; read-only |
-| `wf next [ID]` | Run the next stages until a human gate, question, or failure | The gate it stops at |
+| `wf status [ID]` | Read status and the next action that `next-step.py` resolves | None; read-only |
+| `wf next [ID]` | Run the stages `next-step.py` resolves until a human gate, question, or failure | The gate it stops at |
 | `wf auto <goal>` | Autopilot: run every stage, pass Gate 1 and Gate 2 by policy, prepare the PR | Push and PR |
+
+The next step comes from the records. `shared/scripts/next-step.py` reads the headers in `development/`
+and names one action: a `wf` command, a `human:` answer (a gate, a decision on open findings, a merge, or
+trying a prototype), or, with exit 1, the tasks and waves that could continue. Every stage reports its
+`Next:` line, and `wf status`, `wf next` and `wf auto` use it. A review that requests changes on the
+current plan revision or commit waits for your decision; a stopped loop never starts another run by
+itself. Follow-ups are listed only when no task or wave is open, and are never the next step.
 
 `Ready to integrate` is per task. A stage names `wf wave integrate WAVE-N` as the next step only when every
 task of the wave (except dropped ones) is ready; otherwise it lists the tasks that are not.

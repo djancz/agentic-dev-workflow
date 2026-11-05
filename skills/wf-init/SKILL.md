@@ -57,7 +57,7 @@ Paths are relative to this skill's directory. Read `references/stacks.md`, `refe
    the base, and their checks are read from the base's `AGENTS.md`. If the base branch has no commit yet,
    this commit is
    required: offer to make it, and after the human's yes stage the files by name and commit.
-   Then `Next: wf task <what to build>`, or `wf milestone M0` when an approved roadmap exists. If checks
+   Then report the next step (`references/conventions.md` → Reporting to the human). If checks
    are `planned`, the first task should set up the toolchain and those checks. Add `wf deploy setup` if
    the project is deployed to a server.
 

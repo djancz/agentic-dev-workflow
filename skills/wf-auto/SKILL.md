@@ -18,8 +18,9 @@ the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
 ## Arguments
 
 `wf auto <assignment> [rev=…] [fix=…] [sec=…] [test=…] [models=…] [rounds=<n>]` starts a new task.
-`wf auto TASK-<N>` or `wf auto WAVE-<N>` continues an existing one: resolve its next stage exactly as
-`<skills-dir>/wf-status/SKILL.md` → Status does, record the new authorization, and continue from there.
+`wf auto TASK-<N>` or `wf auto WAVE-<N>` continues an existing one: resolve its next stage with
+`python3 scripts/next-step.py --id <TASK-N|WAVE-N> development`, record the new authorization, and
+continue from there.
 The human's words must name `wf auto` or the autopilot; when they only describe the outcome ("dotáhni
 to až do PR"), ask once whether to run the autopilot and record the reply that names it as the
 authorization (`references/autopilot.md` → Authorization).
@@ -30,7 +31,7 @@ the PR.
 ## Before the first stage
 
 1. Run `git check-ignore -q development` and read the trusted `wf` block, from the base as
-   `references/autopilot.md` → Policy shows. Without the block, stop with `Next: wf init`. With
+   `references/autopilot.md` → Policy shows. Without the block, stop and name `wf init`. With
    `- Autopilot: disabled`, stop as `references/autopilot.md` → Authorization says.
 2. Print one line: the authorization you are acting on, quoted, and its scope (Gate 1 and Gate 2 of one
    task in a wave of one; push and PR stay with the human).

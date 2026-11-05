@@ -24,8 +24,8 @@ correct the scope digest; in `Ready for feedback` they are feedback for a new re
 
 ## Preconditions
 
-- `development/project/prd.md` and `spec.md` both have `Status: Approved`. Otherwise stop with
-  `Next: wf prd` or `Next: wf spec`.
+- `development/project/prd.md` and `spec.md` both have `Status: Approved`. Otherwise stop and report
+  the next step (`references/conventions.md` → Reporting to the human).
 - `git check-ignore -q development` succeeds. Otherwise stop and name the installer command,
   `python3 <workflow-repo>/install.py --project <main clone> --agents <agents>`, where `<workflow-repo>`
   is `dirname "<skills-dir>"`.
@@ -93,7 +93,7 @@ change the digest and ask again. Silence or a generic "continue" is not a yes.
    to `git -C <Worktree> rev-parse HEAD` and `Status: Ready for feedback`.
 
 Report the exact run commands and URL, what to try, what is simulated, and what is `Broken` or
-`NOT VERIFIED`. Then `Next: try it, then wf prototype <feedback> or wf prototype done`.
+`NOT VERIFIED`. Then the next step: try it, then `wf prototype <feedback>` or `wf prototype done`.
 
 ## Feedback
 
@@ -119,8 +119,8 @@ On a closed record, `wf prototype done` offers only the cleanup: for `Adopted` o
 worktree and branch, and follow `references/project.md` → Prototype (*Cleanup*) only after an explicit
 yes.
 
-Then `Next: wf prd` or `wf spec` when the learnings change them (a new revision loses its approval);
-otherwise `Next: wf roadmap`, also to revise an existing roadmap for an adopted prototype.
+Then report the next step (`wf roadmap`, also to revise a roadmap for an adopted prototype). When the
+learnings change the PRD or spec, ask first whether to revise it (a new revision loses its approval).
 
 ## Never
 

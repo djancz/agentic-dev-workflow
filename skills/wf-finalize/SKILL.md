@@ -37,7 +37,8 @@ A wave approved `by autopilot` (`references/autopilot.md`) asks the same questio
 After creating a PR, read its body back and remove anything a host appended that
 `references/conventions.md` → Git forbids.
 Prepare the optional merge commit text from its template for a forge that preserves wave commits;
-do not require squashing the entire wave into one commit. Next: after the merge, `wf wave done WAVE-<N>`.
+do not require squashing the entire wave into one commit. Then report the next step
+(`references/conventions.md` → Reporting to the human): after the merge, `wf wave done WAVE-<N>`.
 
 ## PR feedback
 

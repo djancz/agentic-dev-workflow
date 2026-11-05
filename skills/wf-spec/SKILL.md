@@ -22,8 +22,9 @@ Before the gate, run the review loop in `references/project.md` → Spec and roa
 `references/loop.md` for running a fresh stage, and `references/models.md` for non-default model or
 effort choices). If a setting is unsupported or a review fails, stop without an approval verdict.
 Show the human the decisions, contracts, risks, and review result. Explicit approval records their
-words and date; feedback returns it to Draft. Next: `wf roadmap`, or first `wf prototype` (optional) to
-try a runnable prototype. Do not scaffold code.
+words and date; feedback returns it to Draft. Then report the next step (`references/conventions.md` →
+Reporting to the human) and mention `wf prototype` as an optional runnable prototype before the roadmap.
+Do not scaffold code.
 
 ## Review (`wf spec rev`, run by the review loop)
 

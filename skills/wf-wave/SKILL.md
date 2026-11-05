@@ -22,7 +22,8 @@ otherwise stop and name it. Create the wave branch from the configured base bran
 record the base commit. Fill `development/waves/WAVE-<N>.md` from the template; an empty file is a
 reservation from `wf task`. If a branch or a filled record already exists, inspect and resume it rather
 than creating a duplicate. Do not pull or overwrite
-existing branches. Next: `wf new-worktree TASK-<N>` for each ready task.
+existing branches. Then report the next step (`references/conventions.md` → Reporting to the human):
+`wf new-worktree TASK-<N>` for each task with an approved plan.
 
 ## Integrate
 
@@ -40,7 +41,7 @@ timeouts, and stop conditions. The bounded review takes `rev=`, `fix=` (or their
 and `rounds=` (default 3), as `references/loop.md` → Arguments says. Write `WAVE-<N>-review.md`; never
 self-approve a failed or missing review. When approved, show Gate 2: combined behavior, commits, checks,
 gaps, and open findings. Record only explicit human approval, or under `wf auto` the autopilot's
-decision (`references/autopilot.md`). Next: `wf finalize WAVE-<N>`.
+decision (`references/autopilot.md`), then report the next step.
 
 ## Fix (`wf wave fix WAVE-N`, run by the review loop)
 
@@ -63,4 +64,4 @@ worktree instead of removing it. After a squash merge `-d` refuses. Use `git bra
 branch whose `HEAD` equals the recorded commit that went into the merge: a task branch its integrated
 `Checkpoint`, the wave branch its recorded `Pushed` commit. Keep and report any branch with other
 commits. Never delete remote branches or private records.
-If this closed the milestone's last wave, suggest `wf milestone done`; otherwise `wf status`.
+Then report the next step; after the milestone's last wave it is `wf milestone done`.

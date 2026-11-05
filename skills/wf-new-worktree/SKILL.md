@@ -19,4 +19,4 @@ Run `python3 <workflow-repo>/install.py --project <worktree> --agents <installed
 and `development/` to the main worktree's records, where `<workflow-repo>` is
 `dirname "$(dirname "$(realpath <this skill dir>)")"`, the clone that holds `install.py`.
 If installation fails, report the branch and worktree so the user can recover; do not delete work. Record branch, path, and base commit in the
-task ticket. Report the next `wf test TASK-<N>` command.
+task ticket. Report the next step (`references/conventions.md` → Reporting to the human).

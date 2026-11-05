@@ -76,13 +76,13 @@ Your final message must be exactly the new round section, starting at `## Round 
 ## Report
 
 Skip this section in delegated output mode. Report the verdict, the must-fix count, one line per finding
-with its CWE, and the scanners that did not run. Then `Next`:
-- `Changes requested`: `wf impl fix` (or `wf impl loop`).
-- Task mode, `Approved*`: follow the implementation review of this checkpoint. If it is `Approved*`,
-  mark the task ready to integrate and report the next step as `references/workflow.md` → Next step says:
-  `wf wave integrate WAVE-N` only when every task of the wave is ready, otherwise the tasks that are not.
-  If there is none yet, `wf impl rev` in a new session; if it requested changes, `wf impl fix` (or
-  `wf impl loop`).
+with its CWE, and the scanners that did not run. Then:
+- Task mode, `Approved*`, and the implementation review of this checkpoint is `Approved*`: mark the task
+  ready to integrate.
+- Task mode: report the next step (`references/conventions.md` → Reporting to the human). As
+  `references/workflow.md` → Next step says, it is `wf wave integrate WAVE-N` only when every task of the
+  wave is ready, otherwise the tasks that are not; findings on the current checkpoint wait for the
+  human's choice (`wf impl fix`, a bounded `wf impl loop`, accepting them, or a new approach).
 - Audit mode: propose `wf task`s for the must-fix findings, one per concern
   (`references/conventions.md` → Task scope).
 
