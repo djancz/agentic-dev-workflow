@@ -133,5 +133,6 @@ the run does not need to continue for it.
 ## Report
 
 End with the gates the autopilot passed and any it stopped at, the checks outcome, the prepared branch,
-commits, PR title and body, and `Next: answer the push-and-PR question, then wf wave done WAVE-<N>` after
-the merge. When it stops early, name the gate or question and the exact reply that lets it continue.
+commits, PR title and body, and the next step (`conventions.md` → Reporting to the human): the answer to
+the push-and-PR question of `wf finalize WAVE-<N>`, then `wf wave done WAVE-<N>` after the merge. When it
+stops early, name the gate or question and the exact reply that lets it continue.

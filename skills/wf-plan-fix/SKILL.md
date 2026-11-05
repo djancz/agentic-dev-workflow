@@ -48,5 +48,6 @@ Do not write code, and do not commit.
 ## Report
 
 Report the counts of fixed, disputed, deferred and needs-human findings, and quote any `needs-human`
-question. Then `Next: wf plan rev` in a new session (or let `wf plan loop` continue). End with
+question. Run standalone, also give the next step (`references/conventions.md` → Reporting to the human);
+for manual control, `wf plan rev` reviews the revision in a new session. End with
 `— wf-plan-fix · <timestamp>`.

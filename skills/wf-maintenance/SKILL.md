@@ -89,7 +89,8 @@ Present one screen:
   change the plan (`Revision + 1`) before the gate is shown again
 
 Wait. **Never record an approval the human did not give** (`references/workflow.md` → Human gates). On
-approval, record `Approved: <date> — "<their words>"` in the plan and set `Status: Approved`. This gate
+approval, record `Approved: revision <n> (<timestamp>) — "<their words>"` in the plan and set
+`Status: Approved`. This gate
 takes the place of a plan review: the plan changes versions only, and the implementation review and
 `wf sec` still review the result. Create the chosen proposed tasks as `wf task` does, each with the note
 `From maintenance <YYYY-MM-DD>`.

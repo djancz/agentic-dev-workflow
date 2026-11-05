@@ -84,7 +84,12 @@ and waits for your answer. You can always answer in your own words. A question t
 authorizes `wf auto`, accepts findings, or allows a push, deployment or deletion recommends no option.
 When you answer while `wf next` or `wf auto` runs, the agent records your answer and goes on.
 
-`wf status` shows where everything stands without changing anything. A typical small change:
+`wf status` shows where everything stands without changing anything. The next step always comes from
+the records, not from the agent's memory: a script (`shared/scripts/next-step.py`) reads the headers in
+`development/` and names one next command, a question for you, or the tasks to choose between, plus the
+branch whose worktree that command runs in. Every stage ends with its `Next:` line, and `wf status`,
+`wf next` and `wf auto` use it. A follow-up recorded during a task is never offered as the next step
+while a task or wave is still open. A typical small change:
 
 ```text
 you:   wf task CSV export drops rows with empty names; export them with an empty cell

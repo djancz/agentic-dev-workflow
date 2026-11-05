@@ -18,7 +18,8 @@ rows bundle unrelated changes, ask for a roadmap revision. Show the proposed tas
 approve creating them (`references/conventions.md` → Asking the human). On approval, use `wf task` to create tickets; copy the chosen wave and dependency
 IDs into their headers and fill the roadmap's Task column. The ticket of a task that adopts or starts
 from a prototype names the prototype branch and its recorded commit under *Problem*. Set the milestone
-to `In progress`. Plan ready tasks with `wf plan TASK-N`; independent tasks may then use separate worktrees.
+to `In progress`, then report the next step (`references/conventions.md` → Reporting to the human):
+each new task goes on with `wf plan TASK-N`, and independent tasks may then use separate worktrees.
 
 ## Done
 

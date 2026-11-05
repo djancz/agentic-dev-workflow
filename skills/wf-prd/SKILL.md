@@ -21,4 +21,5 @@ decisions. For a revision, retain a short decision history, increment `Revision`
 to Draft.
 
 Show a compact digest of goal, users, first-version requirements, exclusions, risks, and open decisions.
-Wait for explicit human approval, then record their words and date. Next: `wf spec`. Do not write code.
+Wait for explicit human approval, then record their words and date and report the next step
+(`references/conventions.md` → Reporting to the human). Do not write code.

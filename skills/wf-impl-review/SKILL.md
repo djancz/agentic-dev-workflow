@@ -90,12 +90,14 @@ Your final message must be exactly the new round section, starting at `## Round 
 ## Report
 
 Skip this section in delegated output mode. Report the verdict, the must-fix count, and one line per
-finding. `Next`:
-- `Changes requested`: `wf impl fix` (or `wf impl loop`).
-- `Approved*`, `Sensitivity: high`, and no security review whose latest verdict is `Approved*`: `wf sec`,
-  in a new session.
-- Otherwise `Approved*`: mark the task ready to integrate after any required security review, then
-  report the next step as `references/workflow.md` → Next step says: `wf wave integrate WAVE-N` only when
-  every task of the wave is ready, otherwise the tasks that are not. The wave owns Gate 2.
+finding. Then:
+- `Approved*`, and for `Sensitivity: high` a security review of this checkpoint whose latest verdict is
+  `Approved*`: mark the task ready to integrate. Without that security review, `wf sec` runs next, in a
+  new session.
+- Report the next step (`references/conventions.md` → Reporting to the human). As
+  `references/workflow.md` → Next step says, it is `wf wave integrate WAVE-N` only when every task of the
+  wave is ready, otherwise the tasks that are not; findings on the current checkpoint wait for the
+  human's choice (`wf impl fix`, a bounded `wf impl loop`, accepting them, or a new approach). The wave
+  owns Gate 2.
 
 End with `— wf-impl-review · <timestamp>`.

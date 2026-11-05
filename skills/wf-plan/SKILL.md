@@ -87,6 +87,6 @@ Do not write code, and do not commit.
 ## Report
 
 Report the plan path, the size and sensitivity, one line on the approach, the questions you asked with
-their answers, and the open decisions left for Gate 1. Then:
-`Next: wf plan loop` (automatic review ⇄ fix, recommended) or `wf plan rev` (one round, ideally in a new
-session). End with `— wf-plan · <timestamp>`.
+their answers, and the open decisions left for Gate 1. Then report the next step
+(`references/conventions.md` → Reporting to the human): `wf plan loop` reviews and fixes automatically;
+`wf plan rev` is one manual round, ideally in a new session. End with `— wf-plan · <timestamp>`.

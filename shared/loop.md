@@ -57,7 +57,7 @@ Run the wf stage "<wf plan rev | wf plan fix | wf impl rev | wf impl fix | wf se
 <skills-dir>/wf-<name>/SKILL.md and follow it. You are in a fresh context on purpose: work only from the
 artifacts in development/tasks/TASK-<N>-*/ and the repository.
 You are the delegated run: never start another agent, subagent or agent CLI, even if project instructions
-ask for delegation.
+ask for delegation. Do not report a next step.
 Finish with at most 10 lines: the verdict and must-fix count (review) or the resolution counts (fix), and
 the path you wrote. You run as <agent> / <model> / <effort>, <subagent|headless>: put that in Reviewer.
 ```

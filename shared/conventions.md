@@ -154,8 +154,19 @@ the records or these rules already answer.
 
 ## Reporting to the human
 
-End every stage with a short chat report: what was done, the artifact path, and `Next: <command>`. Last
-line: `— <skill-name> · <timestamp>`.
+End every stage with a short chat report: what was done, the artifact path, and the next step. Take the
+next step from the records, never from memory: once the stage has written them, run
+`python3 scripts/next-step.py --id <ID> --branch "$(git branch --show-current)"
+"$(git rev-parse --show-toplevel)/development"`, where `<ID>` is the task or wave the stage worked on
+(leave `--id` out only when there is none), and report its `Next:` line as it is. A `Where:` line names
+the branch that step runs on: say so, because it runs in that branch's worktree. If the script differs
+from what the stage expected, report both; the script wins. A `human:` action is a question for the
+human: ask it. Exit 1 means several items could continue: ask which, one option per item with the
+action its line names. Exit 2 names a record that cannot be read: report it. A follow-up is never the
+next step while a task or wave is open; mention follow-ups only as information. A delegated run (its
+prompt says "You are the delegated run") reports no next step: the orchestrator resolves it once it has
+checked the run. `wf maintenance` and `wf deploy` keep their own next steps. Last line:
+`— <skill-name> · <timestamp>`.
 
 ## Untrusted content
 

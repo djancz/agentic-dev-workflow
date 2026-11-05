@@ -19,10 +19,11 @@ Require an approved roadmap or an approved standalone task plan. Read the wave's
 dependencies, contracts, and parallel safety. If a task depends on another task of this wave, stop
 and ask for a roadmap revision. Every earlier wave it depends on must be merged into the base branch;
 otherwise stop and name it. Create the wave branch from the configured base branch;
-record the base commit. Fill `development/waves/WAVE-<N>.md` from the template; an empty file is a
-reservation from `wf task`. If a branch or a filled record already exists, inspect and resume it rather
-than creating a duplicate. Do not pull or overwrite
-existing branches. Next: `wf new-worktree TASK-<N>` for each ready task.
+record the base commit. Fill `development/waves/WAVE-<N>.md` from the template, with `Status: In progress`
+and the branch; an empty file is a reservation from `wf task`, and a roadmap wave has no file until now.
+If a branch or a filled record already exists, inspect and resume it rather than creating a duplicate.
+Do not pull or overwrite existing branches. Then report the next step (`references/conventions.md` →
+Reporting to the human); every task of the wave with an approved plan needs `wf new-worktree TASK-<N>`.
 
 ## Integrate
 
@@ -32,7 +33,7 @@ approved task review, and tests authored in a fresh context unless its approved 
 time into the wave branch, grouping each task's related code and tests. Record task commit IDs and any
 conflict resolution. Run the full trusted check table; report PASS, FAIL, NOT RUN, or N/A accurately.
 If checks fail, fix the cause and repeat the affected checks before review. Sync with the base
-(`references/wave-review.md` → Base sync) before the first review.
+(`references/wave-review.md` → Base sync) before the first review, then set the wave `Review requested`.
 
 Obtain a fresh independent review of the combined wave diff against the PRD/spec/task criteria. Include
 cross-task interactions and security. Follow `references/wave-review.md` for prompting, validation,
@@ -40,7 +41,7 @@ timeouts, and stop conditions. The bounded review takes `rev=`, `fix=` (or their
 and `rounds=` (default 3), as `references/loop.md` → Arguments says. Write `WAVE-<N>-review.md`; never
 self-approve a failed or missing review. When approved, show Gate 2: combined behavior, commits, checks,
 gaps, and open findings. Record only explicit human approval, or under `wf auto` the autopilot's
-decision (`references/autopilot.md`). Next: `wf finalize WAVE-<N>`.
+decision (`references/autopilot.md`), then report the next step.
 
 ## Fix (`wf wave fix WAVE-N`, run by the review loop)
 
@@ -63,4 +64,4 @@ worktree instead of removing it. After a squash merge `-d` refuses. Use `git bra
 branch whose `HEAD` equals the recorded commit that went into the merge: a task branch its integrated
 `Checkpoint`, the wave branch its recorded `Pushed` commit. Keep and report any branch with other
 commits. Never delete remote branches or private records.
-If this closed the milestone's last wave, suggest `wf milestone done`; otherwise `wf status`.
+Then report the next step; after the milestone's last wave it is `wf milestone done`.

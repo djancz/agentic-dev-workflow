@@ -6,7 +6,9 @@ description: >-
 
 # wf-test
 
-Read `references/project.md`, `references/engineering.md`, and the approved task plan. Accept the
+Read `references/project.md`, `references/engineering.md`, and the approved task plan. Work on the
+task's recorded branch, `task/TASK-<N>-<slug>`, in its worktree; if another branch is checked out, stop
+and name the worktree. Accept the
 `test` role (`test=agent[,model[,effort]]` or `test-agent=`, `test-model=`, `test-effort=`) and
 `models=`, resolved with `scripts/resolve-roles.py --roles test` as `references/loop.md` → Arguments
 says. Start a fresh native subagent or headless CLI run. Record the actual selection. If a
@@ -27,5 +29,6 @@ Run the tests and record the expected red result for unimplemented behavior. A p
 only if it verifies a behavior already present; say so. Commit tests on the task branch as a checkpoint,
 using explicit paths. If the commit fails because the sandbox keeps `.git` read-only, leave the tests
 unstaged, list their paths in the report, and finish; the delegating session commits them. Write `TASK-<N>-test-report.md` beside the task plan: agent/model/effort, contract
-references, tests, command, result, and gaps. Next: `wf impl`. Do not implement the behavior or weaken
-an acceptance criterion to make the test pass.
+references, tests, command, result, and gaps, and report the next step (`references/conventions.md` →
+Reporting to the human). Do not implement the behavior or weaken an acceptance criterion to make the
+test pass.
