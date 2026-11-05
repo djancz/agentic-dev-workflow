@@ -11,8 +11,9 @@ description: >-
 # wf-plan-loop — plan review ⇄ fix until approved or escalated
 
 Paths are relative to this skill's directory. Read `references/loop.md` and follow it for the plan. Also
-read `references/workflow.md` (sections Next step, Human gates and Resolving the task) and
-`references/review-rubric.md` (section Stop conditions).
+read `references/workflow.md` (sections Next step, Human gates and Resolving the task),
+`references/review-rubric.md` (section Stop conditions) and `references/conventions.md` (section Asking
+the human).
 
 ## Preconditions
 
@@ -33,7 +34,8 @@ plan's current `Revision`.
 ## Gate
 
 When the verdict is `Approved*` for the current revision, present the **Gate 1** digest as
-`references/loop.md` → Gate describes. On explicit human approval, record the approved plan revision,
+`references/loop.md` → Gate describes, and ask the approval together with the plan's open decisions
+(`references/workflow.md` → Human gates). On explicit human approval, record the approved plan revision,
 then `Next: wf wave start WAVE-N` if needed, followed by `wf new-worktree TASK-N` and `wf test TASK-N`
 for a feature. Feedback creates a new plan revision and returns to review. Under `wf auto`, the
 autopilot decides Gate 1 by its policy (`references/autopilot.md`) instead of waiting.

@@ -6,14 +6,14 @@ description: >-
 
 # wf-roadmap
 
-Read `references/project.md`, `references/engineering.md`, and `templates/roadmap.md`. For a new
-project or major initiative, require approved `development/project/prd.md` and `spec.md`. For a small
-existing-project task, use `wf task` instead.
+Read `references/project.md`, `references/engineering.md`, `references/conventions.md` (section Asking
+the human), and `templates/roadmap.md`. For a new project or major initiative, require approved
+`development/project/prd.md` and `spec.md`. For a small existing-project task, use `wf task` instead.
 
 Inspect the approved requirements, contracts, existing code where relevant, and previous milestone
 learnings. If `development/project/prototype.md` exists, read its header and *Learnings for the spec
-and roadmap* (`references/project.md` → Prototype). Without a `Decision`, ask whether to wait for
-`wf prototype done`; if not, record `Prototype: revision <n>, undecided`. For `adopt`, the first wave
+and roadmap* (`references/project.md` → Prototype). Without a `Decision`, ask with options whether to
+wait for `wf prototype done`; if not, record `Prototype: revision <n>, undecided`. For `adopt`, the first wave
 not yet started is the one adoption task, every later wave depends on it, and a later task makes each
 remaining simulation real. For `reference`, name the prototype files a task may start from. Record the
 decision in the `Prototype` header line.

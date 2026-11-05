@@ -145,6 +145,46 @@ class SkillStructure(unittest.TestCase):
                 self.assertIn('sections Next step and Human gates',
                               (SKILLS / skill / 'SKILL.md').read_text())
 
+    def test_questions_are_asked_early_with_options(self):
+        def flat(path: Path) -> str:
+            return ' '.join(path.read_text().split())
+
+        conventions = flat(SHARED / 'conventions.md')
+        rule = conventions.split('## Asking the human', 1)[1].split(' ## ', 1)[0]
+        for phrase in ('Ask as soon as a question comes up', 'Do not leave it in a file for a later gate',
+                       'at most 4 questions at a time', '2–4 distinct options', 'the recommended option first',
+                       "the host's structured question tool", 'numbered list and stop until the human answers',
+                       'Assume** only when the answer would not change what gets built',
+                       'a `needs-human` finding or an *Open decision*', 'The orchestrator asks it',
+                       'without marking either as recommended', 'Only an explicit approval approves'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, rule)
+        self.assertNotIn('do not ask', conventions.lower())
+        # Every skill that asks the human loads the rule.
+        for name in ('wf-task', 'wf-prd', 'wf-spec', 'wf-roadmap', 'wf-plan', 'wf-plan-loop', 'wf-plan-fix',
+                     'wf-next', 'wf-auto', 'wf-impl', 'wf-impl-fix', 'wf-prototype', 'wf-deploy',
+                     'wf-maintenance'):
+            with self.subTest(skill=name):
+                self.assertIn('Asking the human', flat(SKILLS / name / 'SKILL.md'))
+                self.assertTrue((SKILLS / name / 'references' / 'conventions.md').is_file())
+        for name in ('wf-milestone', 'wf-wave'):  # they read the whole conventions file
+            with self.subTest(skill=name):
+                self.assertIn('`references/conventions.md`,', flat(SKILLS / name / 'SKILL.md'))
+        # Plan decisions that shape the plan are asked before it; the rest are asked with Gate 1.
+        plan = flat(SKILLS / 'wf-plan' / 'SKILL.md')
+        self.assertIn('ask it now, before writing the plan', plan)
+        self.assertIn('Write the plan with the recommendation applied; Gate 1 asks them', plan)
+        gates = flat(SHARED / 'workflow.md').split('## Human gates', 1)[1]
+        self.assertIn("Ask the approval and the plan's open decisions together", gates)
+        self.assertIn('choosing the recommended options keeps the revision', gates)
+        rubric = flat(SHARED / 'review-rubric.md')
+        self.assertIn('`needs-human` is for a decision that is not the agent\'s to make. State the question '
+                      'with 2–4 options, your recommendation first', rubric)
+        escalate = flat(LOOP).split('## Escalate', 1)[1]
+        self.assertIn('Asking the human', escalate)
+        self.assertIn('before the unattended stages', rule)
+        self.assertIn('Ask its questions now', flat(SKILLS / 'wf-auto' / 'SKILL.md'))
+
     def test_prototype_reaches_the_base_only_through_a_task(self):
         def flat(path: Path) -> str:
             return ' '.join(path.read_text().split())

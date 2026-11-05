@@ -84,6 +84,13 @@ language with clear approval or corrections; no fixed English phrase is required
 new revision or reviewed commit and return to review. Explicit acceptance of open findings names the
 finding IDs and is recorded in the PR. Silence is not approval.
 
+Questions come early. A stage asks a decision that changes what gets built as soon as it comes up: at
+most four questions at a time, each with 2–4 options, the recommended one first, through the host's
+question tool or as a numbered list in chat (`shared/conventions.md` → Asking the human). `wf plan` asks
+the decisions that shape the plan before writing it; the rest stay as the plan's open decisions, written
+with the recommendation applied, and Gate 1 asks them with the approval. Choosing a recommendation keeps
+the revision; another choice is a correction. A gate itself recommends neither approval nor changes.
+
 | Gate | Examine | Approval enables |
 |---|---|---|
 | PRD | Users, behavior, exclusions, success | Architecture spec |

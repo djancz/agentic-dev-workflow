@@ -54,7 +54,7 @@ acceptance of its open findings.
    its ability to catch the intended behavior.
 4. **Docs.** Update what the plan lists under *Docs to update*.
 5. **Deviations.** Follow the rules in `references/workflow.md`: record small deviations; for a material
-   one, **stop and ask**.
+   one, **stop and ask**, with options, as `references/conventions.md` → Asking the human says.
 6. **Checkpoint commit.** Stage the files you changed by explicit path, then run
    `git commit -m "wip(TASK-<N>): implementation"`. Hooks stay on.
    If the commit fails because the sandbox keeps `.git` read-only (a delegated run), do not stop: leave

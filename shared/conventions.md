@@ -92,8 +92,8 @@ code, the tests and the review. Split only when:
   replaced). Split it into stages that each leave the project working.
 
 A large diff is not a reason to split; separate commits keep it reviewable. Adopting a prototype
-(`project.md` → Prototype) is one concern: one task, never split by area. When unsure, keep one task and
-do not ask.
+(`project.md` → Prototype) is one concern: one task, never split by area. When unsure, recommend one
+task; ask (Asking the human) only when the split would change what gets delivered.
 
 ## Scope
 
@@ -114,6 +114,31 @@ These texts are read by someone who has to decide something.
 - Use bullets and tables where they carry structure, and prose where reasoning needs connecting.
 - Test: could a colleague who has not seen the conversation act on this text? Would it mislead them about
   how finished or how tested the work is?
+
+## Asking the human
+
+Ask as soon as a question comes up whose answer changes what gets built: scope, behaviour, a contract,
+security, a dependency or stack, or which of several tasks or waves to continue. Do not leave it in a
+file for a later gate. Never ask what the repository, the records or these rules already answer.
+- **Choices.** Ask at most 4 questions at a time; ask again only when the answers raise new ones or the
+  stage is an interview (`wf prd`). Each question offers 2–4 distinct options, each with a one-line
+  trade-off, the recommended option first and marked as recommended. The human may answer in their own
+  words instead. A question about a fact only the human knows (a host name, a directory) needs no
+  options.
+- **Tool.** Use the host's structured question tool when it has one (for example `AskUserQuestion` in
+  Claude Code). Otherwise ask in chat as a numbered list and stop until the human answers. Silence or a
+  request to continue does not answer a question.
+- **Record** each answer, quoted, where later stages and fresh contexts read it: the ticket's
+  *Constraints*, the plan, or the document's decision history.
+- **Assume** only when the answer would not change what gets built, and record the assumption (ticket
+  *Notes*, PRD *Assumptions and open decisions*).
+- **Delegated runs** cannot reach the human: write the question as a `needs-human` finding or an *Open
+  decision*, with its options and your recommendation. The orchestrator asks it.
+- **Gates** are questions too: show the digest, then offer approval of the exact revision or commit and a
+  change request, without marking either as recommended. Ask the plan's remaining open decisions with
+  Gate 1 (`workflow.md` → Human gates). Only an explicit approval approves.
+- `wf auto` asks its questions while it creates the task, before the unattended stages; a later question
+  stops it (`autopilot.md` → Stop, never pass). `wf next` stops at a question and asks it this way.
 
 ## Reporting to the human
 

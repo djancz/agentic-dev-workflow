@@ -12,8 +12,8 @@ description: >-
 
 Paths are relative to this skill's directory. Read `references/autopilot.md` and follow it; it overrides
 the human-gate steps of the stages it runs and nothing else. Also read `references/workflow.md`,
-`references/project.md`, and from `references/conventions.md` the sections Git, Checks, and Reporting to
-the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
+`references/project.md`, and from `references/conventions.md` the sections Git, Checks, Asking the
+human, and Reporting to the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
 
 ## Arguments
 
@@ -41,8 +41,9 @@ Load each stage's skill from `<skills-dir>/wf-<stage>/SKILL.md` and follow it, a
 that need a fresh context delegate exactly as their skills say; never write a review yourself. After each
 stage print one line: stage, outcome, artifact.
 
-1. **Task.** `wf task <assignment>`. Ask a question only when no reasonable assumption exists; record
-   every assumption under *Notes*. Add the authorization to *Notes*:
+1. **Task.** `wf task <assignment>`. Ask its questions now, with options, while the human is still
+   here (`references/conventions.md` → Asking the human); record every assumption under *Notes*. Add
+   the authorization to *Notes*:
    `Autopilot authorization: <timestamp> — "<the human's words>"`. If the stage proposes a split or a new
    project, stop.
 2. **Plan.** `wf plan`, then `wf plan loop`. At Gate 1 run `scripts/auto-gate.py plan` as

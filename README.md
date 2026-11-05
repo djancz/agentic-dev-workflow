@@ -77,6 +77,12 @@ slash commands, `/wf-next` and similar names work too. You need four things:
    by silence, and nothing is pushed or deployed without your explicit yes.
 4. **After you merge the PR:** `wf wave done`. It closes the wave and offers to clean up worktrees.
 
+When the agent needs a decision from you, it asks as soon as the question comes up, not only at the
+next gate: at most four questions at a time, each with two to four options and the recommended one
+first. It uses your agent's question picker when there is one, and otherwise a numbered list in chat,
+and waits for your answer. You can always answer in your own words. A gate offers approval or changes
+and recommends neither.
+
 `wf status` shows where everything stands without changing anything. A typical small change:
 
 ```text

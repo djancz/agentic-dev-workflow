@@ -9,7 +9,8 @@ description: >-
 # wf-next
 
 Read `references/project.md`, `references/workflow.md`, and from `references/conventions.md` the
-section Reporting to the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
+sections Asking the human and Reporting to the human. `<skills-dir>` is
+`dirname "$(realpath <this skill dir>)"`.
 
 Resolve the next command exactly as `<skills-dir>/wf-status/SKILL.md` → Status does, say it in one
 line, then load that stage's skill from `<skills-dir>/wf-<stage>/SKILL.md` and follow it with the
@@ -19,9 +20,11 @@ and report where things stand and the exact next action, when:
   maintenance, deployment, or worktree cleanup;
 - the resolved next action is the human trying a prototype that is `Ready for feedback`, then
   `wf prototype <feedback>` or `wf prototype done`;
-- a stage asks the human a question, fails, escalates, or reports `NOT RUN` for a required stage;
+- a stage asks the human a question, fails, escalates, or reports `NOT RUN` for a required stage; ask
+  its question or escalation choice as `references/conventions.md` → Asking the human says;
 - a stage ends without changing the recorded state, so the same command would run again;
-- more than one task or wave could continue and no ID was given: list them and ask;
+- more than one task or wave could continue and no ID was given: ask which, with each one and its next
+  command as an option;
 - the next stage runs in another worktree and you cannot work there: name the directory and the command.
 
 `wf next` never records an approval, never pushes, never runs `wf deploy`, and never skips a stage or an

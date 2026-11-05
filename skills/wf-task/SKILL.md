@@ -10,8 +10,8 @@ description: >-
 # wf-task — create, drop or split a task
 
 Paths are relative to this skill's directory. Read `references/workflow.md` (sections Layout and Artifact
-headers), `references/project.md` (Waves), and `references/conventions.md` (sections Naming, Task scope
-and Writing style).
+headers), `references/project.md` (Waves), and `references/conventions.md` (sections Naming, Task scope,
+Asking the human and Writing style).
 
 To list tasks or see where one stands, use `wf status` instead.
 
@@ -33,8 +33,9 @@ To list tasks or see where one stands, use `wf status` instead.
      *Problem*, so every later stage and reviewer can read them.
    - Use the roadmap's wave ID when present. For a standalone existing-project task, reserve a one-task
      wave with `python3 scripts/new-id.py --kind wave development` and record its ID in the ticket.
-   - Ask at most 3 questions, and only questions whose answer changes what gets built. Record everything
-     else you assumed under *Notes*.
+   - Before writing, ask the questions whose answer changes what gets built, with options, as
+     `references/conventions.md` → Asking the human says. Record the answers under *Constraints* and
+     everything else you assumed under *Notes*.
 4. **One concern, one task.** Several requests about the same concern go into one ticket, each with its
    own acceptance criteria. Propose separate tasks only when `references/conventions.md` → Task scope
    calls for a split: unrelated requests, or a complete rework. Otherwise write one ticket without

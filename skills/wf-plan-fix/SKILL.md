@@ -11,7 +11,7 @@ description: >-
 
 Role: **author**. Paths are relative to this skill's directory. Read:
 - `references/review-rubric.md`: the section Fix stage
-- `references/conventions.md`: the section Writing style
+- `references/conventions.md`: the sections Asking the human and Writing style
 - the plan
 - the review file (its **header and latest round only**)
 - the ticket, only if a finding refers to it
@@ -25,7 +25,8 @@ Role: **author**. Paths are relative to this skill's directory. Read:
    `not resolved` and human findings (`H…`):
    - `fixed`: change the plan so the finding no longer applies. Fix the cause, not the wording.
    - `disputed`: the reviewer is wrong. Give a reason they can verify, pointing to a file or plan section.
-   - `needs-human`: the decision is not yours to make. State the question and your recommendation.
+   - `needs-human`: the decision is not yours to make. State the question with 2–4 options, your
+     recommendation first (`references/conventions.md` → Asking the human).
 2. **Minor and Nit findings.** Fix them if it is cheap. Otherwise mark them `deferred` and add them to
    *Follow-ups*.
 3. **Stay in scope.** Change only what the findings require. A revision that rewrites unrelated sections

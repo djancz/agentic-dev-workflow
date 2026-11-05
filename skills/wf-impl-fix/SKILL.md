@@ -11,7 +11,7 @@ description: >-
 
 Role: **author**. Paths are relative to this skill's directory. Read:
 - `references/review-rubric.md`: the section Fix stage
-- `references/conventions.md`: sections Git, Checks and Scope
+- `references/conventions.md`: sections Git, Checks, Scope and Asking the human
 - the review files with verdict `Changes requested` (**header and latest round only**): the
   implementation review, the security review, or both
 - the summary, and the plan sections that the findings point to
@@ -24,13 +24,15 @@ Role: **author**. Paths are relative to this skill's directory. Read:
 1. **Answer every open must-fix finding** (`I…`, `S…`, `H…`):
    - `fixed`: fix the cause. For a bug-type finding, add or adjust a test that would have caught it.
    - `disputed`: give a reason with evidence (`path:line`, command output) that the reviewer can verify.
-   - `needs-human`: state the question and your recommendation.
+   - `needs-human`: state the question with 2–4 options, your recommendation first
+     (`references/conventions.md` → Asking the human).
    - A security finding of Medium or above cannot be `deferred`.
 2. **Minor and Nit findings.** Fix them if cheap; otherwise mark them `deferred` and add them to
    *Follow-ups* in the summary.
 3. **Stay in scope.** Change only what the findings require. No opportunistic refactoring: it grows the
    delta the next round must review.
 4. **Material deviation.** If a finding reveals that the plan itself is wrong, stop and ask the human
+   as `references/conventions.md` → Asking the human says; a delegated run reports it as `needs-human`
    (see Deviations in `references/workflow.md`).
 5. **Check.** Run the tests and checks the fix affects, then the fast suite. If the fix is broad, or it
    touches security findings, run every row of the `wf` block. If the fix changes behaviour that the

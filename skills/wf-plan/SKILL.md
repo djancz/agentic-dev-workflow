@@ -69,8 +69,11 @@ Role: **author**. Paths are relative to this skill's directory. Read:
    - **Commits.** Group the steps into commits by concern, in English and in Conventional Commits form
      even if the project's conventions say otherwise (`references/conventions.md` → Git).
    - **Out of scope** binds the whole task. Adjacent ideas go under *Follow-ups*.
-   - **Open decisions** are only for choices that are genuinely the human's, each with a recommendation.
-     If one question would unblock a design choice right now, ask it now instead.
+   - **Ask early.** A choice that is genuinely the human's and changes the approach, a contract, the
+     tests or the scope: ask it now, before writing the plan, as `references/conventions.md` → Asking
+     the human says. Add the answer to the ticket, quoted, under *Constraints*, and plan with it.
+   - **Open decisions** keep only the human's choices that can wait for Gate 1, each with options and a
+     recommendation. Write the plan with the recommendation applied; Gate 1 asks them.
    - **Length follows size.** Aim for roughly 40–70 lines for `S`, 80–150 for `M` and up to about 250 for
      `L`. Write the decisions and the facts a reviewer could disagree with, not explanations of how
      libraries behave. Do not pad, and do not plan for hypothetical future requirements.
@@ -80,6 +83,7 @@ Do not write code, and do not commit.
 
 ## Report
 
-Report the plan path, the size and sensitivity, one line on the approach, and the open decisions. Then:
+Report the plan path, the size and sensitivity, one line on the approach, the questions you asked with
+their answers, and the open decisions left for Gate 1. Then:
 `Next: wf plan loop` (automatic review ⇄ fix, recommended) or `wf plan rev` (one round, ideally in a new
 session). End with `— wf-plan · <timestamp>`.

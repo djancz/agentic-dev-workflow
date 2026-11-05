@@ -47,8 +47,11 @@ it), and do not name `wf wave integrate`.
 ## Human gates
 
 Gate 1 shows the task goal, scope, acceptance tests, security level, approach, review verdict, and
-open decisions. The human approves the exact plan revision before implementation; record it in the plan
-as `Status: Approved` and `Approved: revision <n> (<timestamp>) — "<the human's words>"`. Feedback makes
+open decisions. Ask the approval and the plan's open decisions together, as `conventions.md` → Asking the
+human says. The plan is written with each recommendation applied, so choosing the recommended options
+keeps the revision; any other choice is a change request. The human approves the exact plan revision
+before implementation; record it in the plan as `Status: Approved` and
+`Approved: revision <n> (<timestamp>) — "<the human's words>"`, with the chosen options. Feedback makes
 a new revision and sends it through review again. A plan review verdict never substitutes for human
 approval.
 
