@@ -27,7 +27,8 @@ workflow records, credentials, personal data, model attribution, or raw logs.
 Before showing them, sync with the base as `references/wave-review.md` → Base sync says; if that
 merges anything, return to `wf wave integrate` for review and a new Gate 2.
 
-Show the exact branch, commits, PR title and body. Ask for explicit approval to push and create the PR.
+Show the exact branch, commits, PR title and body. Ask for explicit approval to push and create the PR
+(`references/conventions.md` → Asking the human: a question that grants authority).
 If approved, push only the wave branch. Use a supported forge CLI when authenticated; otherwise print
 its compare URL and the exact title/body for manual creation. Never force-push or merge the PR without a
 separate explicit instruction. Record the PR URL and `Pushed: <sha>` in the wave record and mark it

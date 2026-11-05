@@ -77,6 +77,13 @@ slash commands, `/wf-next` and similar names work too. You need four things:
    by silence, and nothing is pushed or deployed without your explicit yes.
 4. **After you merge the PR:** `wf wave done`. It closes the wave and offers to clean up worktrees.
 
+When the agent needs a decision from you, it asks as soon as the question comes up, not only at the
+next gate: at most four questions at a time, each with two to four options and the recommended one
+first. It uses your agent's question picker when there is one, and otherwise a numbered list in chat,
+and waits for your answer. You can always answer in your own words. A question that approves something,
+authorizes `wf auto`, accepts findings, or allows a push, deployment or deletion recommends no option.
+When you answer while `wf next` or `wf auto` runs, the agent records your answer and goes on.
+
 `wf status` shows where everything stands without changing anything. The next step always comes from
 the records, not from the agent's memory: a script (`shared/scripts/next-step.py`) reads the headers in
 `development/` and names one next command, a question for you, or the tasks to choose between, plus the
@@ -90,10 +97,8 @@ agent: TASK-7 created. Next: wf plan TASK-7
 you:   wf next
 agent: plan written and reviewed (approved in round 2). Gate 1: <plan digest>
 you:   approved
-you:   wf next
 agent: tests, implementation, reviews and wave checks done. Gate 2: <diff, checks, findings>
 you:   approved
-you:   wf next
 agent: PR draft: <branch, commits, title, body>. Push and open it?
 you:   yes
 you:   wf wave done        (after merging on your forge)

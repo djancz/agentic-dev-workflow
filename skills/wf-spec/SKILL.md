@@ -6,15 +6,18 @@ description: >-
 
 # wf-spec
 
-Read `references/project.md`, `references/engineering.md`, `references/security.md`, and
-`templates/spec.md`. Require an approved `development/project/prd.md`. Inspect the existing project
-structure and declared constraints before proposing a design.
+Read `references/project.md`, `references/engineering.md`, `references/security.md`,
+`references/conventions.md` (section Asking the human), and `templates/spec.md`. Require an approved
+`development/project/prd.md`. Inspect the existing project structure and declared constraints before
+proposing a design.
 
 Write `development/project/spec.md` with the simplest architecture that meets the PRD. Define the
 feature boundaries, entry points, data ownership, public interfaces and contracts needed for independent
 tasks, security boundaries, quality checks, deployment assumptions if relevant, and test strategy.
-Choose a stack only where the human has not already chosen one; explain material tradeoffs. Use diagrams
-only when they clarify a boundary. Keep later details flexible until the related milestone is planned.
+Where the human has not chosen a stack, a paid or external service, or a data store and the choice is
+material, ask it before writing, with options (`references/conventions.md` → Asking the human); explain
+material tradeoffs. Use diagrams only when they clarify a boundary. Keep later details flexible until the
+related milestone is planned.
 Name the tracked document (for example `docs/architecture.md`) that will carry the decisions others need
 (`references/project.md` → Private state).
 

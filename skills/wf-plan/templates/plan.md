@@ -77,9 +77,12 @@ the steps it contains. A small, single-concern task has one.>
 
 ## Open decisions
 
-<Each with a recommendation, phrased so the human can answer in one word. "None" is valid.>
+<Only the human's choices that can wait for Gate 1: either option leaves contracts, acceptance criteria,
+tests and dependencies unchanged; ask the others before planning. Each has 2–4 options, the recommended
+one first, and the plan applies the recommendation. "None" is valid.>
 
-1. **<decision>** — Options: <A> / <B>. Recommendation: <A>, because <reason>.
+1. **<decision>** — <A> (recommended): <one-line trade-off>; <B>: <one-line trade-off>. The plan applies
+   <A>, because <reason>.
 
 ## Follow-ups
 

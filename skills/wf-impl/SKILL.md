@@ -24,7 +24,9 @@ The plan must have `Status: Approved`. There are two exceptions for a `Draft` pl
 covers the current revision: its verdict is `Approved*` and the human's message explicitly approves it
 in any language (for example "plan approved, wf impl"); or its verdict is `Changes requested` and the
 human accepts the open findings as *Accepting open findings* in `references/workflow.md` → Human gates
-describes. In either case, record the approval as that section says, and continue.
+describes. In either case, first ask the plan's open decisions, if any: the approval counts only with
+every recommended option (`references/workflow.md` → Human gates). Record it as that section says, and
+continue.
 
 Otherwise stop: Gate 1 has not been passed. Say what is missing: if the latest review approved the current
 revision, only the human's approval is missing (for example `plan approved, wf impl`, in their
@@ -54,7 +56,7 @@ acceptance of its open findings.
    its ability to catch the intended behavior.
 4. **Docs.** Update what the plan lists under *Docs to update*.
 5. **Deviations.** Follow the rules in `references/workflow.md`: record small deviations; for a material
-   one, **stop and ask**.
+   one, **stop and ask**, with options, as `references/conventions.md` → Asking the human says.
 6. **Checkpoint commit.** Stage the files you changed by explicit path, then run
    `git commit -m "wip(TASK-<N>): implementation"`. Hooks stay on.
    If the commit fails because the sandbox keeps `.git` read-only (a delegated run), do not stop: leave

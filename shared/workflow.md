@@ -55,10 +55,15 @@ ready with the command that moves it on, and does not name `wf wave integrate`.
 ## Human gates
 
 Gate 1 shows the task goal, scope, acceptance tests, security level, approach, review verdict, and
-open decisions. The human approves the exact plan revision before implementation; record it in the plan
-as `Status: Approved` and `Approved: revision <n> (<timestamp>) — "<the human's words>"`. Feedback makes
-a new revision and sends it through review again. A plan review verdict never substitutes for human
-approval.
+open decisions. Ask the plan's open decisions and the approval as `conventions.md` → Asking the human
+says: the decisions in batches of at most 4, the approval in the last batch. The plan is written with
+each recommendation applied, so the approval counts only when every open decision got its recommended
+option. Any other choice is a change request, even next to an approval: record no approval, record the
+answer as a human finding, and revise the plan. The human approves the exact plan revision before
+implementation; record it in the plan as `Status: Approved` and
+`Approved: revision <n> (<timestamp>) — "<the human's words>"`, followed by the open decisions it settles
+(`decisions: recommended`). Do not edit the plan body at approval. Feedback makes a new revision and
+sends it through review again. A plan review verdict never substitutes for human approval.
 
 Gate 2 belongs to the integrated wave, not an individual task. It shows the combined diff summary,
 commit list, full checks table, integration review verdict, security findings, deviations, and PR draft.
@@ -66,11 +71,11 @@ Only explicit approval of this wave and current commit permits `wf finalize`. Pu
 require a separate explicit yes after the final text is shown. A task implementation review marked
 Approved means ready to integrate into the wave. It does not authorize a push or PR.
 
-**Accepting open findings.** A human may explicitly accept named unresolved findings. Record IDs,
-severities, rationale, and their words in the plan or wave record; include them in the PR. Accepting a
-task's implementation or security findings makes it ready: set its summary and ticket to
-`Ready to integrate`. Do not silently downgrade High/Critical security findings or call an unrun check a
-pass. Never infer approval from silence, an earlier gate, or a generic request to continue.
+**Accepting open findings.** A human may explicitly accept named unresolved findings, with a rationale in
+their own words. Record IDs, severities, rationale, and their words in the plan or wave record; include
+them in the PR. Accepting a task's implementation or security findings makes it ready: set its summary
+and ticket to `Ready to integrate`. Do not silently downgrade High/Critical security findings or call an
+unrun check a pass. Never infer approval from silence, an earlier gate, or a generic request to continue.
 
 **Autopilot.** `wf auto` is the one exception: the human authorizes Gate 1 and Gate 2 up front for one
 task in a wave of one, and the autopilot passes a gate only when `scripts/auto-gate.py` finds it

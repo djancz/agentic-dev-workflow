@@ -146,6 +146,60 @@ class SkillStructure(unittest.TestCase):
                 self.assertIn('sections Next step and Human gates',
                               (SKILLS / skill / 'SKILL.md').read_text())
 
+    def test_questions_are_asked_early_with_options(self):
+        def flat(path: Path) -> str:
+            return ' '.join(path.read_text().split())
+
+        conventions = flat(SHARED / 'conventions.md')
+        rule = conventions.split('## Asking the human', 1)[1].split(' ## ', 1)[0].lower()
+        for phrase in ('ask as soon as a decision comes up', 'do not leave it in a file for a later gate',
+                       'at most 4 at a time', '2–4 distinct options', 'the recommended option first',
+                       'structured question tool', 'stop until the human answers', 'never invent options',
+                       '"selected: <option label>"', 'marks no option as recommended',
+                       "the human's rationale in their own words", 'a fixer marks the finding `needs-human`',
+                       'the orchestrator asks it', 'only an explicit approval approves'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, rule)
+        task_scope = conventions.split('## Task scope', 1)[1].split(' ## ', 1)[0]
+        self.assertNotIn('do not ask', task_scope.lower())
+        docs = (*SKILLS.glob('*/SKILL.md'), *SHARED.glob('*.md'), *SKILLS.glob('*/templates/*.md'))
+        for doc in docs:
+            text = flat(doc)
+            with self.subTest(doc=str(doc.relative_to(REPO))):
+                self.assertNotIn('Decide; do not list options', text)
+                for cap in re.findall(r'at most (\d+) questions', text):
+                    self.assertLessEqual(int(cap), 4, 'a question cap above the shared rule')
+        # Every skill that asks the human something loads the rule.
+        not_a_question = re.compile(r'did not ask for|ask the human to run')
+        for skill in skill_dirs():
+            text = not_a_question.sub('', flat(skill / 'SKILL.md'))
+            if re.search(r'\b[Aa]sk\b', text):
+                with self.subTest(skill=skill.name):
+                    self.assertIn('Asking the human', text)
+                    self.assertTrue((skill / 'references' / 'conventions.md').is_file())
+        # The plan asks what shapes it before writing; Gate 1 approves only the recommended options.
+        plan = flat(SKILLS / 'wf-plan' / 'SKILL.md')
+        self.assertLess(plan.index('**Ask early.**'), plan.index('**Write**'))
+        self.assertIn('either option leaves every contract, acceptance criterion, test and dependency', plan)
+        task = flat(SKILLS / 'wf-task' / 'SKILL.md')
+        self.assertLess(task.index('**Ask first.**'), task.index('**Number it.**'))
+        gates = flat(SHARED / 'workflow.md').split('## Human gates', 1)[1]
+        for phrase in ('the approval counts only when every open decision got its recommended option',
+                       'record no approval', 'Do not edit the plan body at approval'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, gates)
+        self.assertIn('Does Approach, Steps and Test strategy apply each recommendation',
+                      flat(SKILLS / 'wf-plan-review' / 'SKILL.md'))
+        escalate = flat(LOOP).split('## Escalate', 1)[1]
+        self.assertIn('is never the recommended option', escalate)
+        self.assertIn('the new request that another bounded run needs', escalate)
+        self.assertIn('State the question with 2–4 options, your recommendation first',
+                      flat(SHARED / 'review-rubric.md'))
+        # Answers keep wf next and wf auto going; their gates keep their own rules.
+        self.assertIn('the stage\'s skill records the answer', flat(SKILLS / 'wf-next' / 'SKILL.md'))
+        self.assertIn('an unanswered question stops the run', flat(SKILLS / 'wf-auto' / 'SKILL.md'))
+        self.assertIn('an answered question is recorded and the run goes on', flat(SHARED / 'autopilot.md'))
+
     def test_prototype_reaches_the_base_only_through_a_task(self):
         def flat(path: Path) -> str:
             return ' '.join(path.read_text().split())
@@ -2115,13 +2169,14 @@ Autopilot: 2026-10-01 09:00 UTC — "wf auto fix the CSV export"
 
     def test_the_authorization_must_ask_for_the_autopilot(self):
         for words in ('wf next', 'none', 'Continue.', 'pokračuj', 'please continue', 'continue with TASK-7',
-                      '/wf-next TASK-7', 'wf status'):
+                      '/wf-next TASK-7', 'wf status', 'selected: Continue'):
             with self.subTest(words=words):
                 self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
                 r = self.plan_gate()
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn('does not ask for wf auto or the autopilot', r.stdout)
-        for words in ('/wf-auto TASK-7', 'spusť na to autopilota', 'Autopilot, please'):
+        for words in ('/wf-auto TASK-7', 'spusť na to autopilota', 'Autopilot, please',
+                      'selected: Run the autopilot (wf auto)'):
             with self.subTest(words=words):
                 self.write_plan(notes=f'Autopilot authorization: 2026-10-01 09:00 UTC — "{words}"')
                 r = self.plan_gate()

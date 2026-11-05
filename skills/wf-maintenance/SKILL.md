@@ -14,7 +14,7 @@ description: >-
 
 Role: **author**. Paths are relative to this skill's directory. Read:
 - `references/ecosystems.md`
-- `references/conventions.md`: sections Checks, Task scope, Git and Writing style
+- `references/conventions.md`: sections Checks, Task scope, Git, Asking the human and Writing style
 - `references/security.md`: sections Sensitivity, Scanners and Agent safety
 - `references/workflow.md`: sections Layout, Artifact headers and Human gates
 - `references/project.md`: Waves and Human gates

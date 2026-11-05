@@ -11,7 +11,8 @@ description: >-
 # wf-init — prepare a project
 
 Paths are relative to this skill's directory. Read `references/stacks.md`, `references/project.md`,
-`references/engineering.md`, and from `references/conventions.md` the sections Checks and Git.
+`references/engineering.md`, and from `references/conventions.md` the sections Checks, Git and Asking
+the human (for every question below).
 
 ## Do
 

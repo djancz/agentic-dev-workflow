@@ -92,8 +92,8 @@ code, the tests and the review. Split only when:
   replaced). Split it into stages that each leave the project working.
 
 A large diff is not a reason to split; separate commits keep it reviewable. Adopting a prototype
-(`project.md` → Prototype) is one concern: one task, never split by area. When unsure, keep one task and
-do not ask.
+(`project.md` → Prototype) is one concern: one task, never split by area. When unsure, keep one task;
+ask (Asking the human) only when a split would change what gets delivered, with one task recommended.
 
 ## Scope
 
@@ -114,6 +114,43 @@ These texts are read by someone who has to decide something.
 - Use bullets and tables where they carry structure, and prose where reasoning needs connecting.
 - Test: could a colleague who has not seen the conversation act on this text? Would it mislead them about
   how finished or how tested the work is?
+
+## Asking the human
+
+Ask as soon as a decision comes up that belongs to the human and whose answer changes what gets built:
+scope, behaviour, a contract, security, a dependency or stack, or which of several tasks or waves to
+continue. Do not leave it in a file for a later gate; the one exception is a plan's open decisions that
+can wait for Gate 1 (`wf plan`). Make engineering choices yourself, and never ask what the repository,
+the records or these rules already answer.
+- **Choices.** Ask every question you know of now, at most 4 at a time, and the rest in the next batch.
+  Each question offers 2–4 distinct options, each with a one-line trade-off, the recommended option
+  first and marked as recommended. The human may answer in their own words instead. When more than 4
+  items could be chosen, offer the 3 likeliest and "another (list them)". Ask for a fact only the human
+  knows (a host name, a directory) in plain chat, or offer the values the repository suggests; never
+  invent options.
+- **Tool.** Use the host's structured question tool when it has one (for example `AskUserQuestion` in
+  Claude Code). Otherwise ask in chat, numbered questions with lettered options answered like `1a 2b`,
+  and stop until the human answers. Silence or a request to continue does not answer a question.
+- **Record** each answer, quoted, where later stages and fresh contexts read it: the ticket's
+  *Constraints*, the plan, or the document's decision history. An option picked in the tool is recorded
+  as `"selected: <option label>"`, followed by any words the human typed.
+- **Assume** only when the answer would not change what gets built, and record the assumption (ticket
+  *Notes*, PRD *Assumptions and open decisions*).
+- **Authority.** A question that approves, authorizes (`wf auto`), accepts open findings, or allows a
+  push, a deployment, a restore or a deletion marks no option as recommended. Accepting findings also
+  needs the human's rationale in their own words; ask for it when the answer has none.
+- **Gates** are such questions: show the digest, then offer approval of the exact revision or commit and a
+  change request. Ask a document's remaining open decisions with its gate (Gate 1: `workflow.md` → Human
+  gates). Only an explicit approval approves; the autopilot's policy is the one exception (`autopilot.md`).
+- **Delegated runs** cannot reach the human. A fixer marks the finding `needs-human`, a reviewer states the
+  question as a finding, and the test author in its report, each with options and a recommendation. The
+  orchestrator asks it and records the answer in the ticket's *Constraints*. At an escalation, the human's
+  choice of how to go on is the new request that another bounded run needs (`loop.md` → Escalate).
+- **Answers keep the run going.** When the human answers while `wf next` runs, a gate included, the stage
+  records the answer as its skill says and `wf next` continues; it never decides a gate itself. `wf auto`
+  asks the task's and the plan's questions early, leaving no open decision for Gate 1. An answered
+  question lets it continue, an unanswered one stops it (`autopilot.md` → Stop, never pass), and its
+  gates follow its policy.
 
 ## Reporting to the human
 

@@ -13,7 +13,7 @@ Role: **reviewer**. Use only the artifacts and the repository; ignore any author
 seen. Paths are relative to this skill's directory. Read:
 - `references/review-rubric.md` (all of it)
 - `references/security.md`: sections Sensitivity and Plan
-- `references/conventions.md`: the section Task scope
+- `references/conventions.md`: the sections Task scope and Asking the human
 - `references/engineering.md`: check the proposed structure, coupling, control flow, observability,
   and testability against the project's existing patterns
 - `templates/plan-review.md`
@@ -53,6 +53,10 @@ names the plan's current `Revision`, stop: that revision has already been review
   calls for it; a large diff alone is no reason. A ticket that bundles unrelated changes without a split
   proposal is a Major finding. An `L` plan groups its steps into commits by concern.
 - **Open decisions.** Are they genuinely the human's, or is the plan dodging a call it should make itself?
+  Does Approach, Steps and Test strategy apply each recommendation, and is every option described well
+  enough to choose? A decision that changes a contract, an acceptance criterion, a test or a dependency
+  should have been asked before planning (`references/conventions.md` → Asking the human): a Major
+  finding.
 
 ## Round 2 and later: delta review
 

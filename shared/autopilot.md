@@ -113,7 +113,8 @@ the gate is decided again.
 
 Stop and present the ordinary gate, question, or escalation when:
 - the policy says not eligible or exits 2;
-- a stage asks a question, escalates, reaches its round cap or stagnates, or reports `needs-human`;
+- a stage asks a question the human does not answer, escalates, reaches its round cap or stagnates, or
+  reports `needs-human` (an answered question is recorded and the run goes on);
 - implementation finds a material deviation (`workflow.md` → Deviations);
 - open findings would have to be accepted: only the human accepts findings;
 - a base sync merges anything after Gate 2: integrate and review again, then decide Gate 2 again;
