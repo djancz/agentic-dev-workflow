@@ -33,8 +33,10 @@ previous commit no longer counts.
 **Base sync.** Before the first review and again before a push, run `git fetch origin <base>`. If
 `git merge-base --is-ancestor origin/<base> HEAD` fails, merge it: `git merge origin/<base>` (never rebase,
 never force-push). Resolve conflicts as in integration, rerun the full checks, record `Base synced:
-<sha>` in the wave record, and review the merge in the next round. An earlier Gate 2 approval is void
-because `HEAD` moved. Stop on
+<sha>` in the wave record, and review the merge in the next round. When `WAVE-<N>-review.md` exists,
+append `## Base sync <timestamp>` with the merged base SHA and the new `HEAD`, so its last round no longer
+counts, and set the wave `Review requested`. An earlier Gate 2 approval is void because `HEAD` moved.
+Stop on
 approval, the round cap, a repeated unresolved finding, nondecreasing must-fix count, disagreement, or
 timeout. Show unresolved findings to the human; never infer approval. After all required verdicts are
 approved for the current HEAD, present the wave Gate 2 digest from `project.md`.

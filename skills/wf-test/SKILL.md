@@ -6,7 +6,9 @@ description: >-
 
 # wf-test
 
-Read `references/project.md`, `references/engineering.md`, and the approved task plan. Accept the
+Read `references/project.md`, `references/engineering.md`, and the approved task plan. Work on the
+task's recorded branch, `task/TASK-<N>-<slug>`, in its worktree; if another branch is checked out, stop
+and name the worktree. Accept the
 `test` role (`test=agent[,model[,effort]]` or `test-agent=`, `test-model=`, `test-effort=`) and
 `models=`, resolved with `scripts/resolve-roles.py --roles test` as `references/loop.md` → Arguments
 says. Start a fresh native subagent or headless CLI run. Record the actual selection. If a

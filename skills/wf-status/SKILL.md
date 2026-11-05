@@ -14,11 +14,12 @@ Reporting to the human. Read artifact headers first; read a body only to show a 
 
 This skill is strictly read-only: do not fetch, switch branches, or write files.
 
-Run `python3 scripts/next-step.py --branch "$(git branch --show-current)" development`, with `--id <ID>`
-when the human gave one. It only reads the records. Its item lines are the open items with their next
-actions, and its `Next:` line is the next step; never work either out yourself. On exit 1, list the items
-that could continue rather than choosing one; on exit 2, report the record it names. Show its
-`Follow-ups:` line, when there is one, as information.
+Run `python3 scripts/next-step.py --branch "$(git branch --show-current)"
+"$(git rev-parse --show-toplevel)/development"`, with `--id <ID>` when the human gave one. It only reads
+the records. Its item lines are the open items with their next actions, its `Next:` line is the next
+step, and a `Where:` line names the branch whose worktree that step runs in; never work any of them out
+yourself. On exit 1, list the items that could continue rather than choosing one; on exit 2, report the
+record it names. Show its `Follow-ups:` line, when there is one, as information.
 
 Around those lines, show PRD, spec, and roadmap revision/status when they exist. For a prototype record,
 show its status, revision, branch, worktree and decision; mention `wf prototype` only as optional after

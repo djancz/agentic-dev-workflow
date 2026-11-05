@@ -47,5 +47,6 @@ Do not write code, and do not commit.
 ## Report
 
 Report the counts of fixed, disputed, deferred and needs-human findings, and quote any `needs-human`
-question, then the next step (`references/conventions.md` → Reporting to the human); in a delegated run
-the loop continues. End with `— wf-plan-fix · <timestamp>`.
+question. Run standalone, also give the next step (`references/conventions.md` → Reporting to the human);
+for manual control, `wf plan rev` reviews the revision in a new session. End with
+`— wf-plan-fix · <timestamp>`.

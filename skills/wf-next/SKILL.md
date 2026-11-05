@@ -12,10 +12,11 @@ Read `references/project.md`, `references/workflow.md`, and from `references/con
 section Reporting to the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
 
 Resolve the next step with `python3 scripts/next-step.py --branch "$(git branch --show-current)"
-development` (add `--id <ID>` when the human gave one) and say its `Next:` line. Only a `wf` command
-there runs: load that stage's skill from `<skills-dir>/wf-<stage>/SKILL.md` and follow it with the
-arguments the human gave. When it finishes, resolve again and continue with the following stage. A
-`human:` or `waiting:` action, `choose one of …` (exit 1) or an unreadable record (exit 2) stops. Stop,
+"$(git rev-parse --show-toplevel)/development"` (add `--id <ID>` when the human gave one) and say its
+`Next:` line. Only a `wf` command there runs, and only when no `Where:` line names another branch: load
+that stage's skill from `<skills-dir>/wf-<stage>/SKILL.md` and follow it with the arguments the human
+gave. When it finishes, resolve again and continue with the following stage. A `human:` action,
+`choose one of …` (exit 1, also with an ID) or an unreadable record (exit 2) stops. Stop,
 and report where things stand and the exact next action, when:
 - a human gate or approval is next: PRD, spec, prototype scope, roadmap, Gate 1, Gate 2, push and PR,
   maintenance, deployment, or worktree cleanup;
@@ -24,7 +25,8 @@ and report where things stand and the exact next action, when:
 - a stage asks the human a question, fails, escalates, or reports `NOT RUN` for a required stage;
 - a stage ends without changing the recorded state, so the same command would run again;
 - more than one task or wave could continue and no ID was given: list them and ask;
-- the next stage runs in another worktree and you cannot work there: name the directory and the command.
+- the next stage runs in another worktree (a `Where:` line names its branch) and you cannot work there:
+  name the directory and the command.
 
 `wf next` never records an approval, never pushes, never runs `wf deploy`, and never skips a stage or an
 independent review. It never starts `wf prototype`, which is optional; it only resumes one that is

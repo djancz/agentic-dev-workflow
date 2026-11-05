@@ -24,8 +24,8 @@ correct the scope digest; in `Ready for feedback` they are feedback for a new re
 
 ## Preconditions
 
-- `development/project/prd.md` and `spec.md` both have `Status: Approved`. Otherwise stop and report
-  the next step (`references/conventions.md` → Reporting to the human).
+- `development/project/prd.md` and `spec.md` both have `Status: Approved`. Otherwise stop, name what
+  is missing (`wf prd` or `wf spec`), and report the next step (Reporting to the human).
 - `git check-ignore -q development` succeeds. Otherwise stop and name the installer command,
   `python3 <workflow-repo>/install.py --project <main clone> --agents <agents>`, where `<workflow-repo>`
   is `dirname "<skills-dir>"`.

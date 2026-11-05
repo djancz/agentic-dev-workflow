@@ -37,11 +37,14 @@ more than one task or wave could match.
 | `wf auto <goal>` | Autopilot: run every stage, pass Gate 1 and Gate 2 by policy, prepare the PR | Push and PR |
 
 The next step comes from the records. `shared/scripts/next-step.py` reads the headers in `development/`
-and names one action: a `wf` command, a `human:` answer (a gate, a decision on open findings, a merge, or
-trying a prototype), or, with exit 1, the tasks and waves that could continue. Every stage reports its
-`Next:` line, and `wf status`, `wf next` and `wf auto` use it. A review that requests changes on the
-current plan revision or commit waits for your decision; a stopped loop never starts another run by
-itself. Follow-ups are listed only when no task or wave is open, and are never the next step.
+and the last round of each review, and names one action: a `wf` command, a `human:` answer (a gate, a
+decision on open findings, a merge, or trying a prototype), or, with exit 1, the tasks and waves that
+could continue. A `Where:` line names the branch, and so the worktree, that the step runs in. Every stage
+reports the `Next:` line for the task or wave it worked on (`--id`), and `wf status`, `wf next` and
+`wf auto` use it; a delegated run reports none, and `wf maintenance` and `wf deploy` keep their own. A
+review that requests changes on the current plan revision or commit waits for your decision; a stopped
+loop never starts another run by itself, but your own change request goes back to the loop. Follow-ups
+are listed only when no task or wave is open, and are never the next step.
 
 `Ready to integrate` is per task. A stage names `wf wave integrate WAVE-N` as the next step only when every
 task of the wave (except dropped ones) is ready; otherwise it lists the tasks that are not.

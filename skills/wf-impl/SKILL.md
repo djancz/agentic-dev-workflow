@@ -84,5 +84,6 @@ Never push. Never use `--no-verify`.
 ## Report
 
 Report what was built in two lines, the checks outcome (counts of PASS, FAIL and NOT RUN), and the
-deviations, then the next step (`references/conventions.md` → Reporting to the human). End
-with `— wf-impl · <timestamp>`.
+deviations, then the next step (`references/conventions.md` → Reporting to the human); for manual
+control, `wf impl rev` runs one review round, ideally in a new session. End with
+`— wf-impl · <timestamp>`.

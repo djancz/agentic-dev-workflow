@@ -17,7 +17,8 @@ task) and `references/review-rubric.md` (section Stop conditions).
 ## Preconditions
 
 The plan has `Status: Approved`, the summary has `Status: Review requested`, `Checkpoint` equals `HEAD`,
-and `git status --porcelain` is empty.
+and `git status --porcelain` is empty. If every review that the stage table needs already approved the
+current `Checkpoint`, go straight to the Gate.
 
 ## Stages
 
@@ -28,9 +29,9 @@ and `git status --porcelain` is empty.
 | FIX | `wf impl fix` | `wf-impl-fix` | `impl-fix` | `rw` |
 
 - **Security review.** In round 1 with `Sensitivity: high`, run `wf sec` after `wf impl rev`. In later
-  rounds, run it again only while its verdict is `Changes requested`. It uses the `sec` role
-  (`references/loop.md` → Arguments). Step 3 of the loop needs every
-  verdict that exists to be `Approved*`.
+  rounds, run it again while its verdict is `Changes requested` or it did not review the current
+  `Checkpoint`. It uses the `sec` role (`references/loop.md` → Arguments). Step 3 of the loop needs every
+  verdict that exists to be `Approved*` for the current `Checkpoint`.
 - Validate a delegated review with `--kind impl` or `--kind security`, and
   `--reviewed "commit <Checkpoint sha>"`.
 - **After a fix,** check that `HEAD` moved and the summary's `Checkpoint` equals it. If the fixer changed

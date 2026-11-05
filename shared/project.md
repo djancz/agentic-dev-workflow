@@ -54,18 +54,17 @@ commit and creates a sibling worktree; it installs the skills and private state 
 existing branch or worktree has the same task ID, report it and stop.
 
 `wf wave integrate WAVE-N` requires every task plan approved, task review approved for its current
-checkpoint, and all task branches clean. Integrate one task at a time in the wave's recorded order using
-`git merge --squash <task-branch>`. Commit related code and tests together, usually as one Conventional
-Commit per task; use separate commits only for independently reversible concerns named in the approved
-plan. Save `git write-tree` immediately after the squash merge and compare it with `HEAD^{tree}` after
-the final task commit; both must match. If a
-conflict occurs, resolve it, rerun relevant checks, and document the resolution. Never silently drop
-either side. Run all project checks from the trusted base configuration on the combined wave tree.
-Review the full wave diff in a fresh context, including interactions across tasks, security, and
-acceptance criteria. Fix findings with bounded review rounds (`wave-review.md` → Fix). If the base
-branch moved, merge it into the wave before review and before push (`wave-review.md` → Base sync).
-Then show Gate 2 with the combined diff, checks, open findings, and proposed commits. Only the human
-can approve it.
+checkpoint (or its open findings accepted, `workflow.md` → Human gates), and all task branches clean.
+Integrate one task at a time in the wave's recorded order using `git merge --squash <task-branch>`.
+Commit related code and tests together, usually as one Conventional Commit per task; use separate commits
+only for independently reversible concerns named in the approved plan. Save `git write-tree` immediately
+after the squash merge and compare it with `HEAD^{tree}` after the final task commit; both must match. If
+a conflict occurs, resolve it, rerun relevant checks, and document the resolution. Never silently drop
+either side. Run all project checks from the trusted base configuration on the combined wave tree. Review
+the full wave diff in a fresh context, including interactions across tasks, security, and acceptance
+criteria. Fix findings with bounded review rounds (`wave-review.md` → Fix). If the base branch moved,
+merge it into the wave before review and before push (`wave-review.md` → Base sync). Then show Gate 2
+with the combined diff, checks, open findings, and proposed commits. Only the human can approve it.
 
 ## Spec and roadmap review
 

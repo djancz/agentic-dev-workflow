@@ -67,9 +67,10 @@ require a separate explicit yes after the final text is shown. A task implementa
 Approved means ready to integrate into the wave. It does not authorize a push or PR.
 
 **Accepting open findings.** A human may explicitly accept named unresolved findings. Record IDs,
-severities, rationale, and their words in the plan or wave record; include them in the PR. Do not
-silently downgrade High/Critical security findings or call an unrun check a pass. Never infer approval
-from silence, an earlier gate, or a generic request to continue.
+severities, rationale, and their words in the plan or wave record; include them in the PR. Accepting a
+task's implementation or security findings makes it ready: set its summary and ticket to
+`Ready to integrate`. Do not silently downgrade High/Critical security findings or call an unrun check a
+pass. Never infer approval from silence, an earlier gate, or a generic request to continue.
 
 **Autopilot.** `wf auto` is the one exception: the human authorizes Gate 1 and Gate 2 up front for one
 task in a wave of one, and the autopilot passes a gate only when `scripts/auto-gate.py` finds it

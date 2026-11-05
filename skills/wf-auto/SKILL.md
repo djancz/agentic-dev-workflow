@@ -19,8 +19,8 @@ the human. `<skills-dir>` is `dirname "$(realpath <this skill dir>)"`.
 
 `wf auto <assignment> [rev=…] [fix=…] [sec=…] [test=…] [models=…] [rounds=<n>]` starts a new task.
 `wf auto TASK-<N>` or `wf auto WAVE-<N>` continues an existing one: resolve its next stage with
-`python3 scripts/next-step.py --id <TASK-N|WAVE-N> development`, record the new authorization, and
-continue from there.
+`python3 scripts/next-step.py --id <TASK-N|WAVE-N> "$(git rev-parse --show-toplevel)/development"`, record
+the new authorization, and continue from there.
 The human's words must name `wf auto` or the autopilot; when they only describe the outcome ("dotáhni
 to až do PR"), ask once whether to run the autopilot and record the reply that names it as the
 authorization (`references/autopilot.md` → Authorization).
