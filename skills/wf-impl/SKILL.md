@@ -40,7 +40,9 @@ acceptance of its open findings.
    - Require the recorded `task/TASK-<N>-<slug>` branch created by `wf new-worktree`. Do not branch
      directly from the project base.
    - For `Tests: required`, require `TASK-<N>-test-report.md` from a separate fresh agent session and
-     its test checkpoint. If absent, stop: the test author has not run (`wf test TASK-<N>`).
+     its test checkpoint. If absent, stop: the test author has not run (`wf test TASK-<N>`). If its
+     `Plan` line names an earlier revision than the approved plan, stop: the tests follow that
+     revision (`wf test TASK-<N>`).
    - Record the `Branch` in the ticket.
 2. **Work through the plan's steps in order.**
    - Implement against the contract tests and plan. If tests need correction, record why and get an
@@ -77,7 +79,9 @@ acceptance of its open findings.
    - If a condition is missing, skip the step and write down why. A browser check never goes into the
      Checks table, and one that did not happen is never described as done.
 9. **Summary.** Write `TASK-<N>-impl-summary.md` from the template:
-   - `Status: Review requested`, `Checkpoint:` the output of `git rev-parse HEAD`
+   - `Status: Review requested`, `Plan: revision <n>` (the approved plan), `Checkpoint:` the output of
+     `git rev-parse HEAD`
+   - a summary of an earlier plan revision is rewritten for this one; its *Fix rounds* stay
    - behaviour-level description, deviations, the tests table with red test evidence, the checks table,
      the browser check, security notes, and honest gaps
 

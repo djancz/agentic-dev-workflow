@@ -156,4 +156,7 @@ Plans and reviews live in `development/` in the main worktree; each task worktre
 roadmap revision loses its previous approval. A task review applies only to its recorded checkpoint;
 a wave Gate 2 applies only to its recorded integrated commit. Run `wf status` after a pause or a failed
 stage. When a loop escalates, read the unresolved findings and choose a new approach, an additional
-bounded run, or explicit acceptance. A missing tool is `NOT RUN`, never a pass.
+bounded run, or explicit acceptance. A new approach is recorded as a human round in the review, so the
+records send the item back to its loop. A plan revision approved after implementation makes the
+task's test report and summary stale (their `Plan: revision <n>` line), so the records name `wf test`
+and `wf impl` again. A missing tool is `NOT RUN`, never a pass.

@@ -40,6 +40,10 @@ Task (development/tasks/TASK-<N>-<slug>/, until `Done` or `Dropped`)
   waits for an earlier wave the roadmap lists under *Depends on* that is not `Merged`; no `Branch`:
   `wf new-worktree`; `Tests: required` and no test report: `wf test`; no implementation summary, or one
   `In progress`: `wf impl`; `Checkpoint: pending`: the human commits the delegated run's changes.
+- A plan revision approved after the tests or the implementation: a test report or summary whose
+  `Plan: revision <n>` names an earlier revision belongs to that revision, so `wf test` (the test report)
+  or `wf impl` (the summary) runs again, whatever the summary's status; the task is not ready. A record
+  without a line of that form predates it and is not checked.
 - Summary `Review requested`: without an implementation review of the Checkpoint, or with a human change
   request, `wf impl loop`; with the reviewer's `Changes requested`, the human decides; approved, and for
   `Sensitivity: high` without a security review of the Checkpoint, `wf sec`; all approved, `wf impl loop`
@@ -89,7 +93,7 @@ VERDICTS = {'Approved', 'Approved with comments', 'Changes requested'}
 CLOSED = {'Done', 'Dropped'}
 # Header keys the resolver reads; a record that sets one of them twice is ambiguous.
 READ_KEYS = {'Status', 'Revision', 'Approved', 'Reviewed', 'Latest verdict', 'Verdict', 'Round', 'Checkpoint',
-             'Tasks', 'Wave', 'Branch', 'Sensitivity', 'Tests', 'PR', 'Current milestone', 'Prototype'}
+             'Tasks', 'Wave', 'Branch', 'Sensitivity', 'Tests', 'PR', 'Current milestone', 'Prototype', 'Plan'}
 SHA = re.compile(r'[0-9a-f]{7,40}')
 WORKTREE_COMMANDS = ('wf test ', 'wf impl ', 'wf sec ')
 START = 'human: start new work with wf task <goal>, or wf prd <idea> for a new project or major initiative'
@@ -219,6 +223,21 @@ def revision(fields: dict[str, str], path: Path) -> int:
     if not value.isdigit():
         raise InputError(f'{path}: Revision "{value}" is not a number')
     return int(value)
+
+
+def plan_revision(fields: dict[str, str], path: Path, current: int) -> int | None:
+    """The revision in a test report's or summary's `Plan: revision <n>`. None for a record without that form:
+    one written before the line existed, perhaps with a free-text `Plan:` line its later updates did not change."""
+    value = fields.get('Plan', '')
+    if not value.startswith('revision '):
+        return None
+    match = re.match(r'revision (\d+)\b', value)
+    if not match:
+        raise InputError(f'{path}: Plan "{value}" does not name a plan revision')
+    named = int(match[1])
+    if named > current:
+        raise InputError(f'{path}: Plan names revision {named}, but the plan is at revision {current}')
+    return named
 
 
 def token(value: str | None) -> str:
@@ -469,12 +488,21 @@ def task_step(task: str, directory: Path, ticket: dict[str, str], waves: dict[st
         return item(f'wf wave done {wave}', f'{wave} is merged but {task} is not Done'), False
     if not branch:
         return item(f'wf new-worktree {task}', 'the plan is approved and the task has no branch yet'), False
-    if not plan.get('Tests', 'required').strip().lower().startswith('n/a') and not files['test-report'].is_file():
-        return item(f'wf test {task}', 'the plan requires tests and no test report exists'), False
+    if not plan.get('Tests', 'required').strip().lower().startswith('n/a'):
+        if not files['test-report'].is_file():
+            return item(f'wf test {task}', 'the plan requires tests and no test report exists'), False
+        tested = plan_revision(header(files['test-report']), files['test-report'], current)
+        if tested is not None and tested < current:
+            return item(f'wf test {task}', f'the test report covers plan revision {tested}, and revision {current} '
+                                           f'is approved'), False
     if not files['impl-summary'].is_file():
         return item(f'wf impl {task}', 'the task has no implementation summary yet'), False
     summary = header(files['impl-summary'])
     summary_status = status(summary, 'summary', files['impl-summary'])
+    implemented = plan_revision(summary, files['impl-summary'], current)
+    if implemented is not None and implemented < current:
+        return item(f'wf impl {task}', f'the implementation summary covers plan revision {implemented}, and '
+                                       f'revision {current} is approved'), False
     checkpoint = first_word(summary.get('Checkpoint'))
     if summary_status == 'In progress':
         return item(f'wf impl {task}', 'the implementation summary is In progress'), False

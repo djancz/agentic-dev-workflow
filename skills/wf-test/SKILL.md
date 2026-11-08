@@ -28,7 +28,10 @@ conventions and public APIs. Keep the tests focused and deterministic.
 Run the tests and record the expected red result for unimplemented behavior. A passing test is valid
 only if it verifies a behavior already present; say so. Commit tests on the task branch as a checkpoint,
 using explicit paths. If the commit fails because the sandbox keeps `.git` read-only, leave the tests
-unstaged, list their paths in the report, and finish; the delegating session commits them. Write `TASK-<N>-test-report.md` beside the task plan: agent/model/effort, contract
+unstaged, list their paths in the report, and finish; the delegating session commits them. Write `TASK-<N>-test-report.md` beside the task plan: a header line
+`- Plan: revision <n>` naming the approved plan revision the tests follow, agent/model/effort, contract
 references, tests, command, result, and gaps, and report the next step (`references/conventions.md` →
 Reporting to the human). Do not implement the behavior or weaken an acceptance criterion to make the
 test pass.
+When a later plan revision is approved after the tests exist, update the tests that revision changes
+and rewrite the report for it, with its `Plan` line.

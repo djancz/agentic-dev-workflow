@@ -34,6 +34,8 @@ Role: **author**. Paths are relative to this skill's directory. Read:
 4. **Record the revision.**
    - In the header, increment `Revision`, keep `Status: Draft`, and update `Updated`. If the plan was
      `Approved`, set it back to `Draft` and clear `Approved`, because the human must approve again.
+   - If the ticket is `Ready to integrate`, set it to `In progress`: the implementation follows the
+     earlier revision. After Gate 1, `wf test` and `wf impl` run again for the new one.
    - Append to *Revision history*:
      ```markdown
      ### Revision <n> — <timestamp>
