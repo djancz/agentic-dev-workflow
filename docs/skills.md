@@ -28,7 +28,7 @@ more than one task or wave could match.
 | `wf impl fix TASK-N` | Resolve implementation findings and rerun affected checks | Implementation review |
 | `wf sec TASK-N` | Independent deep security review | Fix or integration |
 | `wf wave integrate WAVE-N` | Combine tasks, full checks, fresh integration review | Gate 2: approve wave |
-| `wf finalize WAVE-N` | Draft and, on explicit yes, push and open one PR; later, fix PR comments and CI failures | Merge on forge |
+| `wf finalize WAVE-N` | Draft and, on explicit yes, push and open one PR; later, fix PR comments and CI failures, or update the open PR after a new Gate 2 | Merge on forge |
 | `wf wave done [WAVE-N]` | After the merge: mark wave and tasks done, offer local cleanup | `wf milestone done` or next task |
 | `wf maintenance` | Scan dependencies and apply approved updates | Maintenance gate |
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
