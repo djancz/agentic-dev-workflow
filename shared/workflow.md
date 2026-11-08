@@ -26,9 +26,11 @@ the plan is approved.
 - Plan: `Status: Draft | Approved`, `Revision`, `Approved`, `Size`, `Sensitivity`.
 - Review: `Latest verdict: Approved | Approved with comments | Changes requested`, `Round`, `Must-fix
   open`, `Reviewed`. A wave review uses only `Approved | Changes requested`.
-- Summary: `Status: In progress | Review requested | Ready to integrate`, `Branch`, `Base`, `Checkpoint`.
+- Summary: `Status: In progress | Review requested | Ready to integrate`, `Branch`, `Base`, `Plan`,
+  `Checkpoint`.
+- Test report: `Plan`, the spec revision, and the agent that authored the tests.
 - Every review names the exact plan revision or commit it covers. A changed target invalidates its
-  approval. A test report names the spec/plan revision and the agent that authored tests.
+  approval. A summary and a test report name the plan revision they follow as `Plan: revision <n>`.
 
 ## Next step
 
@@ -87,6 +89,13 @@ stops at the ordinary gate whenever the policy refuses. Push and PR creation kee
 Record small differences that preserve the approved behavior. If an interface, acceptance criterion,
 security boundary, dependency, or scope changes, stop that task, revise and review its plan, and obtain
 Gate 1 approval again. Other independent tasks may continue.
+
+A plan revised after its task was implemented, or integrated into its wave, sets the ticket back to
+`In progress` (`wf plan fix`). A wave that was already reviewed gets a human round for the change, and an
+`Approved` or `PR opened` wave goes back to `Review requested`, because Gate 2 does not cover the changed
+wave. Once Gate 1 approves the new revision, the test report and the summary of the earlier revision no
+longer count: `wf test` updates the tests and `wf impl` the implementation for it, and the reviews follow
+on the new checkpoint. `scripts/next-step.py` reads this from their `Plan` lines.
 
 ## Project level
 

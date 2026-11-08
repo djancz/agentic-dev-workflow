@@ -3,6 +3,7 @@
 - Status: Review requested
 - Branch: task/TASK-<N>-<slug>
 - Base: <wave branch>
+- Plan: revision <n>
 - Checkpoint: <sha of the commit under review>
 - Approved: —
 - Updated: <YYYY-MM-DD HH:MM UTC>

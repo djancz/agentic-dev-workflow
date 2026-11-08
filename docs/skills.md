@@ -28,7 +28,7 @@ more than one task or wave could match.
 | `wf impl fix TASK-N` | Resolve implementation findings and rerun affected checks | Implementation review |
 | `wf sec TASK-N` | Independent deep security review | Fix or integration |
 | `wf wave integrate WAVE-N` | Combine tasks, full checks, fresh integration review | Gate 2: approve wave |
-| `wf finalize WAVE-N` | Draft and, on explicit yes, push and open one PR; later, fix PR comments and CI failures | Merge on forge |
+| `wf finalize WAVE-N` | Draft and, on explicit yes, push and open one PR; later, fix PR comments and CI failures, or update the open PR after a new Gate 2 | Merge on forge |
 | `wf wave done [WAVE-N]` | After the merge: mark wave and tasks done, offer local cleanup | `wf milestone done` or next task |
 | `wf maintenance` | Scan dependencies and apply approved updates | Maintenance gate |
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
@@ -156,4 +156,7 @@ Plans and reviews live in `development/` in the main worktree; each task worktre
 roadmap revision loses its previous approval. A task review applies only to its recorded checkpoint;
 a wave Gate 2 applies only to its recorded integrated commit. Run `wf status` after a pause or a failed
 stage. When a loop escalates, read the unresolved findings and choose a new approach, an additional
-bounded run, or explicit acceptance. A missing tool is `NOT RUN`, never a pass.
+bounded run, or explicit acceptance. A new approach is recorded as a human round in the review, so the
+records send the item back to its loop. A plan revision approved after implementation makes the
+task's test report and summary stale (their `Plan: revision <n>` line), so the records name `wf test`
+and `wf impl` again. A missing tool is `NOT RUN`, never a pass.

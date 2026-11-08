@@ -11,7 +11,9 @@ description: >-
 
 Read `references/project.md`, `references/conventions.md`, `references/wave-review.md`,
 `templates/pr.md`, `templates/merge-commit.md`, and the wave record. Resolve `WAVE-<N>` from the argument
-or current branch. If the wave is `PR opened`, go to *PR feedback*.
+or current branch. If the wave is `PR opened`, go to *PR feedback*. If it is `Approved` and its record
+already names a PR (`PR:` is not `none`), the PR exists, for example after a reopened wave passed a new
+Gate 2: go to *Update the PR*.
 
 ## Open the PR
 
@@ -51,8 +53,15 @@ comments that need no change, each with a one-line reason, and update the review
 verdict: Changes requested`, `Round`, `Must-fix open`). If nothing is actionable, say so and stop.
 
 Otherwise set the wave `Review requested` and continue as `wf wave integrate` does from its review loop:
-fix, review, full checks, and Gate 2 for the new `HEAD`. After that approval, show the new commits and
-ask before pushing. Push fast-forward only, update `Pushed`, update the PR description if its facts
-changed, and set the wave back to `PR opened`. Reply to reviewers only when the human asks.
+fix, review, full checks, and Gate 2 for the new `HEAD`. After that approval, continue with *Update the
+PR*. Reply to reviewers only when the human asks.
+
+## Update the PR
+
+Require `Status: Approved`, the current `HEAD` equal to the commit reviewed at Gate 2, and a clean
+worktree, and sync with the base, all as *Open the PR* does. Never open a second PR. Show the commits after
+`Pushed` and ask before pushing (`references/conventions.md` → Asking the human: a question that grants
+authority). Push fast-forward only, update `Pushed`, update the PR description if its facts changed, and
+set the wave back to `PR opened`.
 
 End with `— wf-finalize · <timestamp>`.

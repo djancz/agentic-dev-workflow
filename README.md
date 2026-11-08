@@ -89,7 +89,8 @@ the records, not from the agent's memory: a script (`shared/scripts/next-step.py
 `development/` and names one next command, a question for you, or the tasks to choose between, plus the
 branch whose worktree that command runs in. Every stage ends with its `Next:` line, and `wf status`,
 `wf next` and `wf auto` use it. A follow-up recorded during a task is never offered as the next step
-while a task or wave is still open. A typical small change:
+while a task or wave is still open. A plan revised after its task was implemented sends that task back
+through tests, implementation and review, and its wave waits for it. A typical small change:
 
 ```text
 you:   wf task CSV export drops rows with empty names; export them with an empty cell
@@ -175,7 +176,9 @@ reports which pass, fail, or cannot run, and writes them to a managed block in `
 through your normal process. Then start each change with `wf task`. For a major initiative, start with
 `wf prd`. `wf maintenance` checks routine dependency and security updates; `wf deploy` uses an approved
 runbook when your project deploys to a server. If the PR gets comments or CI fails, type
-`wf finalize WAVE-N` and the agent works them in and asks before pushing again.
+`wf finalize WAVE-N` and the agent works them in and asks before pushing again. When a wave whose PR is
+open goes back for changes and passes Gate 2 again, the same command updates that PR, again only after
+your yes, and never opens a second one.
 
 ## Choices you control
 

@@ -2626,11 +2626,21 @@ class NextStep(unittest.TestCase):
         self.add_round(self.directory(n) / f'TASK-{n}-{kind}.md', kind, verdict, reviewed, human)
 
     def summary(self, n: int = 7, status: str = 'Review requested', checkpoint: str = SHA,
-                follow_ups: str | None = None):
-        text = self.fill('impl-summary', {'Status': status, 'Checkpoint': checkpoint}, n)
+                follow_ups: str | None = None, plan: int | None = None):
+        """The summary that wf impl writes; `Plan` names the plan's current revision unless given."""
+        path = self.directory(n) / f'TASK-{n}-plan.md'
+        if plan is None and path.is_file():
+            plan = int(re.search(r'^- Revision: (\d+)$', path.read_text(), flags=re.MULTILINE)[1])
+        named = '—' if plan is None else f'revision {plan}'
+        text = self.fill('impl-summary', {'Status': status, 'Plan': named, 'Checkpoint': checkpoint}, n)
         if follow_ups is not None:
             text = text.replace('<Deferred Minor findings and out-of-scope ideas.>', follow_ups)
         (self.directory(n) / f'TASK-{n}-impl-summary.md').write_text(text)
+
+    def write_test_report(self, n: int = 7, plan: int | None = None):
+        """The report that wf test writes; without `plan` it has no `Plan` line, as reports before it did."""
+        line = '' if plan is None else f'\n- Plan: revision {plan}\n- Agent: claude / default / default\n'
+        (self.directory(n) / f'TASK-{n}-test-report.md').write_text(f'# TASK-{n} — Test report\n{line}')
 
     def reserve_wave(self, n: int = 3):
         (self.dev / 'waves' / f'WAVE-{n}.md').write_text('')  # new-id.py reserves an empty record
@@ -2754,6 +2764,86 @@ class NextStep(unittest.TestCase):
         self.wave(status='Merged')
         self.ticket(status='Done', branch='task/TASK-7-csv-export')
         self.assertTrue(self.next_line().startswith('human: start new work'))
+
+    def test_a_plan_revised_after_integration_sends_the_task_back_to_its_tests(self):
+        """The wave review finds a contract problem, and the human revises the plan of an integrated task."""
+        self.ready_task()
+        self.write_test_report(plan=2)
+        self.wave(status='Review requested')
+        self.wave_round('Changes requested', f'commit {self.W1}')
+        self.assertTrue(self.next_line().startswith('human: decide on the open findings of the WAVE-3 review'))
+        self.wave_round('Changes requested', human=True)  # the escalation answer: a new approach
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3', 'the answered question is not asked again')
+        self.plan(revision=3)  # wf plan fix sets the plan and the ticket back
+        self.ticket(status='In progress', branch='task/TASK-7-csv-export')
+        self.task_round('plan-review', 'Changes requested', human=True)
+        self.assertEqual(self.next_line(), 'wf plan loop TASK-7')
+        self.task_round('plan-review', 'Approved', 'plan revision 3')
+        self.assertTrue(self.next_line().startswith('human: Gate 1 — approve the TASK-7 plan revision 3'))
+        self.approve_plan(revision=3)
+        out = self.run_next()[1]
+        self.assertIn('TASK-7: wf test TASK-7 — the test report covers plan revision 2, and revision 3 is approved',
+                      out)
+        self.assertIn('WAVE-3: waiting: TASK-7 (In progress)', out)
+        self.assertEqual(self.next_line(), 'wf test TASK-7')
+        self.assertEqual(self.where(), 'task/TASK-7-csv-export')
+        self.write_test_report(plan=3)
+        self.assertEqual(self.next_line(), 'wf impl TASK-7', 'a ready summary of revision 2 no longer counts')
+        self.assertIn('the implementation summary covers plan revision 2, and revision 3 is approved',
+                      self.run_next()[1])
+        self.summary(checkpoint=self.SHA2)
+        self.assertEqual(self.next_line(), 'wf impl loop TASK-7')
+        self.task_round('impl-review', 'Approved', f'commit {self.SHA2[:7]}')
+        self.summary(status='Ready to integrate', checkpoint=self.SHA2)
+        self.ticket(status='Ready to integrate', branch='task/TASK-7-csv-export')
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3')
+
+    def test_a_plan_revised_after_gate_2_holds_the_wave_until_the_task_is_ready(self):
+        self.ready_task()
+        self.write_test_report(plan=2)
+        self.wave(status='Review requested')
+        self.wave_round('Approved', f'commit {self.W1}')
+        self.approve_plan(revision=3)
+        self.ticket(status='In progress', branch='task/TASK-7-csv-export')
+        for state in ('Approved', 'PR opened'):  # even a wave that wf plan fix did not reopen
+            with self.subTest(state=state):
+                self.wave(status=state, pr='https://forge.example/pr/1')
+                self.assertIn('WAVE-3: waiting: TASK-7 (In progress)', self.run_next('--id', 'WAVE-3')[1])
+                self.assertEqual(self.next_line('--id', 'WAVE-3'), 'wf test TASK-7')
+        self.wave(status='Review requested', pr='https://forge.example/pr/1')  # as wf plan fix reopens it
+        self.wave_round('Changes requested', human=True)
+        self.write_test_report(plan=3)
+        self.summary(status='Ready to integrate', checkpoint=self.SHA2)
+        self.task_round('impl-review', 'Approved', f'commit {self.SHA2[:7]}')
+        self.ticket(status='Ready to integrate', branch='task/TASK-7-csv-export')
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3', 'Gate 2 does not cover the changed wave')
+
+    def test_a_plan_line_names_a_revision_up_to_the_plans(self):
+        self.started_task()
+        self.wave()
+        legacy = '`TASK-7-plan.md` revision 1 (Approved)'  # free text that a later update left as it was
+        for value, expected in (('—', 'wf impl loop TASK-7'), (legacy, 'wf impl loop TASK-7'),
+                                ('revision 2 (Approved 2026-11-05)', 'wf impl loop TASK-7'),
+                                ('revision 1', 'wf impl TASK-7')):
+            with self.subTest(value=value):
+                self.summary()
+                path = self.directory() / 'TASK-7-impl-summary.md'
+                path.write_text(path.read_text().replace('- Plan: revision 2', f'- Plan: {value}'))
+                self.assertEqual(self.next_line(), expected)
+        for value, problem in (('revision <n>', 'Plan "revision <n>" does not name a plan revision'),
+                               ('revision 3', 'Plan names revision 3, but the plan is at revision 2')):
+            with self.subTest(value=value):
+                self.summary(plan=2)
+                path = self.directory() / 'TASK-7-impl-summary.md'
+                path.write_text(path.read_text().replace('- Plan: revision 2', f'- Plan: {value}'))
+                returncode, out, err = self.run_next()
+                self.assertEqual(returncode, 2, out + err)
+                self.assertIn(problem, err)
+        self.summary()
+        self.write_test_report(plan=3)
+        returncode, _, err = self.run_next()
+        self.assertEqual(returncode, 2)
+        self.assertIn('TASK-7-test-report.md: Plan names revision 3', err)
 
     def test_a_maintenance_task_goes_through_its_wave(self):
         self.ticket(12)

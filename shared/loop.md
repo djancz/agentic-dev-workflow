@@ -141,7 +141,11 @@ Following the rubric, list the open findings at full severity and why each survi
 its exact reply: one more round (`wf <plan|impl> loop rounds=<n>`), a new approach, `wf task split`, or
 accepting the open findings (`workflow.md` → Human gates), which needs the human's rationale and is never
 the recommended option. Record each answer in the ticket's *Constraints*; the choice of how to go on is
-the new request that another bounded run needs.
+the new request that another bounded run needs. When that choice asks for changes (a new approach or a
+spec revision), also append it to the review file as a `Round <n> — human` section: verdict
+`Changes requested`, findings `H<n>-…` quoting the human, and the header updated. The records then
+send the item back to its loop instead of asking the answered question again. One more round and
+accepting the findings are not change requests.
 
 ## Report
 

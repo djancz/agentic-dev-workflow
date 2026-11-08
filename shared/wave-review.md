@@ -38,5 +38,6 @@ append `## Base sync <timestamp>` with the merged base SHA and the new `HEAD`, s
 counts, and set the wave `Review requested`. An earlier Gate 2 approval is void because `HEAD` moved.
 Stop on
 approval, the round cap, a repeated unresolved finding, nondecreasing must-fix count, disagreement, or
-timeout. Show unresolved findings to the human; never infer approval. After all required verdicts are
-approved for the current HEAD, present the wave Gate 2 digest from `project.md`.
+timeout. Show unresolved findings to the human; never infer approval. A choice that asks for
+changes becomes a human round in `WAVE-<N>-review.md` (`loop.md` → Escalate). After all required
+verdicts are approved for the current HEAD, present the wave Gate 2 digest from `project.md`.
