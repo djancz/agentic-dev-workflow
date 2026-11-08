@@ -176,7 +176,9 @@ reports which pass, fail, or cannot run, and writes them to a managed block in `
 through your normal process. Then start each change with `wf task`. For a major initiative, start with
 `wf prd`. `wf maintenance` checks routine dependency and security updates; `wf deploy` uses an approved
 runbook when your project deploys to a server. If the PR gets comments or CI fails, type
-`wf finalize WAVE-N` and the agent works them in and asks before pushing again.
+`wf finalize WAVE-N` and the agent works them in and asks before pushing again. When a wave whose PR is
+open goes back for changes and passes Gate 2 again, the same command updates that PR, again only after
+your yes, and never opens a second one.
 
 ## Choices you control
 
