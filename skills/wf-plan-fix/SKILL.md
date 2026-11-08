@@ -14,7 +14,7 @@ Role: **author**. Paths are relative to this skill's directory. Read:
 - `references/conventions.md`: the sections Asking the human and Writing style
 - the plan
 - the review file (its **header and latest round only**)
-- the ticket, only if a finding refers to it
+- the ticket, only if a finding refers to it or the plan was `Approved` (step 4), and then its wave record
 
 ## Do
 
@@ -36,6 +36,10 @@ Role: **author**. Paths are relative to this skill's directory. Read:
      `Approved`, set it back to `Draft` and clear `Approved`, because the human must approve again.
    - If the ticket is `Ready to integrate`, set it to `In progress`: the implementation follows the
      earlier revision. After Gate 1, `wf test` and `wf impl` run again for the new one.
+   - If the task's wave already has a `WAVE-<N>-review.md` whose last round is not a human change
+     request, append one there (`Round <n> — human`, a finding that names this plan revision), so the
+     wave is integrated and reviewed again. Set an `Approved` or `PR opened` wave back to
+     `Review requested`: Gate 2 does not cover the changed wave.
    - Append to *Revision history*:
      ```markdown
      ### Revision <n> — <timestamp>

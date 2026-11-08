@@ -2637,7 +2637,7 @@ class NextStep(unittest.TestCase):
             text = text.replace('<Deferred Minor findings and out-of-scope ideas.>', follow_ups)
         (self.directory(n) / f'TASK-{n}-impl-summary.md').write_text(text)
 
-    def test_report(self, n: int = 7, plan: int | None = None):
+    def write_test_report(self, n: int = 7, plan: int | None = None):
         """The report that wf test writes; without `plan` it has no `Plan` line, as reports before it did."""
         line = '' if plan is None else f'\n- Plan: revision {plan}\n- Agent: claude / default / default\n'
         (self.directory(n) / f'TASK-{n}-test-report.md').write_text(f'# TASK-{n} — Test report\n{line}')
@@ -2768,7 +2768,7 @@ class NextStep(unittest.TestCase):
     def test_a_plan_revised_after_integration_sends_the_task_back_to_its_tests(self):
         """The wave review finds a contract problem, and the human revises the plan of an integrated task."""
         self.ready_task()
-        self.test_report(plan=2)
+        self.write_test_report(plan=2)
         self.wave(status='Review requested')
         self.wave_round('Changes requested', f'commit {self.W1}')
         self.assertTrue(self.next_line().startswith('human: decide on the open findings of the WAVE-3 review'))
@@ -2787,7 +2787,7 @@ class NextStep(unittest.TestCase):
         self.assertIn('WAVE-3: waiting: TASK-7 (In progress)', out)
         self.assertEqual(self.next_line(), 'wf test TASK-7')
         self.assertEqual(self.where(), 'task/TASK-7-csv-export')
-        self.test_report(plan=3)
+        self.write_test_report(plan=3)
         self.assertEqual(self.next_line(), 'wf impl TASK-7', 'a ready summary of revision 2 no longer counts')
         self.assertIn('the implementation summary covers plan revision 2, and revision 3 is approved',
                       self.run_next()[1])
@@ -2797,6 +2797,26 @@ class NextStep(unittest.TestCase):
         self.summary(status='Ready to integrate', checkpoint=self.SHA2)
         self.ticket(status='Ready to integrate', branch='task/TASK-7-csv-export')
         self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3')
+
+    def test_a_plan_revised_after_gate_2_holds_the_wave_until_the_task_is_ready(self):
+        self.ready_task()
+        self.write_test_report(plan=2)
+        self.wave(status='Review requested')
+        self.wave_round('Approved', f'commit {self.W1}')
+        self.approve_plan(revision=3)
+        self.ticket(status='In progress', branch='task/TASK-7-csv-export')
+        for state in ('Approved', 'PR opened'):  # even a wave that wf plan fix did not reopen
+            with self.subTest(state=state):
+                self.wave(status=state, pr='https://forge.example/pr/1')
+                self.assertIn('WAVE-3: waiting: TASK-7 (In progress)', self.run_next('--id', 'WAVE-3')[1])
+                self.assertEqual(self.next_line('--id', 'WAVE-3'), 'wf test TASK-7')
+        self.wave(status='Review requested', pr='https://forge.example/pr/1')  # as wf plan fix reopens it
+        self.wave_round('Changes requested', human=True)
+        self.write_test_report(plan=3)
+        self.summary(status='Ready to integrate', checkpoint=self.SHA2)
+        self.task_round('impl-review', 'Approved', f'commit {self.SHA2[:7]}')
+        self.ticket(status='Ready to integrate', branch='task/TASK-7-csv-export')
+        self.assertEqual(self.next_line(), 'wf wave integrate WAVE-3', 'Gate 2 does not cover the changed wave')
 
     def test_a_plan_line_names_a_revision_up_to_the_plans(self):
         self.started_task()
@@ -2820,7 +2840,7 @@ class NextStep(unittest.TestCase):
                 self.assertEqual(returncode, 2, out + err)
                 self.assertIn(problem, err)
         self.summary()
-        self.test_report(plan=3)
+        self.write_test_report(plan=3)
         returncode, _, err = self.run_next()
         self.assertEqual(returncode, 2)
         self.assertIn('TASK-7-test-report.md: Plan names revision 3', err)

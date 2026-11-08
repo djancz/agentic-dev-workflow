@@ -53,7 +53,8 @@ Task (development/tasks/TASK-<N>-<slug>/, until `Done` or `Dropped`)
   change request. A ready task waits for its wave.
 
 Wave (development/waves/WAVE-<N>.md, once started)
-- While a task it lists that is not `Dropped` is not ready, it waits for those tasks.
+- While a task it lists that is not `Dropped` is not ready, it waits for those tasks, whatever its
+  status (`Approved` and `PR opened` too: a task whose plan was revised again is not ready).
 - Otherwise, until `Approved`: the human's change request or a review that is not current is
   `wf wave integrate`; an approving review is Gate 2 at the commit it reviewed; `Changes requested` by
   the reviewer waits for the human's decision; no review yet is `wf wave integrate`.
@@ -562,6 +563,13 @@ def wave_step(wave: str, path: Path, record: dict[str, str], tasks: dict[str, Pa
     for task in listed:
         if task not in tasks:
             raise InputError(f'{path}: Tasks names {task}, which has no task directory')
+    live = [task for task in listed if tickets.get(task, {}).get('Status') != 'Dropped']
+    if not live:
+        return item(f'human: drop {wave} or add a task to it', 'every task of the wave is Dropped')
+    missing = [task for task in live if not ready[task]]
+    if missing:
+        states = ', '.join(f'{task} ({tickets.get(task, {}).get("Status", "no ticket")})' for task in missing)
+        return item(f'waiting: {states}', 'wf wave integrate needs every task of the wave ready', missing)
     if state == 'PR opened':
         pr = record.get('PR', '').strip()
         pr = f' ({pr})' if re.fullmatch(r'https?://\S+|[#!]\d+', pr) else ''
@@ -572,13 +580,6 @@ def wave_step(wave: str, path: Path, record: dict[str, str], tasks: dict[str, Pa
         if found and not found.current:
             return item(f'wf wave integrate {wave}', 'a base sync after Gate 2 needs a new review and Gate 2')
         return item(f'wf finalize {wave}', 'Gate 2 approved the wave; it shows the PR and asks before pushing')
-    live = [task for task in listed if tickets.get(task, {}).get('Status') != 'Dropped']
-    if not live:
-        return item(f'human: drop {wave} or add a task to it', 'every task of the wave is Dropped')
-    missing = [task for task in live if not ready[task]]
-    if missing:
-        states = ', '.join(f'{task} ({tickets.get(task, {}).get("Status", "no ticket")})' for task in missing)
-        return item(f'waiting: {states}', 'wf wave integrate needs every task of the wave ready', missing)
     if not found:
         return item(f'wf wave integrate {wave}', 'every task of the wave is ready to integrate')
     if found.human_changes:

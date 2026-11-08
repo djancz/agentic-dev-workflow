@@ -91,10 +91,11 @@ security boundary, dependency, or scope changes, stop that task, revise and revi
 Gate 1 approval again. Other independent tasks may continue.
 
 A plan revised after its task was implemented, or integrated into its wave, sets the ticket back to
-`In progress` (`wf plan fix`). Once Gate 1 approves the new revision, the test report and the summary
-of the earlier revision no longer count: `wf test` updates the tests and `wf impl` the implementation
-for it, and the reviews follow on the new checkpoint. `scripts/next-step.py` reads this from their
-`Plan` lines.
+`In progress` (`wf plan fix`). A wave that was already reviewed gets a human round for the change, and an
+`Approved` or `PR opened` wave goes back to `Review requested`, because Gate 2 does not cover the changed
+wave. Once Gate 1 approves the new revision, the test report and the summary of the earlier revision no
+longer count: `wf test` updates the tests and `wf impl` the implementation for it, and the reviews follow
+on the new checkpoint. `scripts/next-step.py` reads this from their `Plan` lines.
 
 ## Project level
 
