@@ -84,7 +84,8 @@ Verdict, Round, Must-fix open and Reviewed values into the header.
 A non-zero run or validation exit, or exit 3 (tree changed), is a **failed review, not a clean one**. Retry
 once only for a transient failure. If it fails again, stop and report the log tail. Never write a review
 yourself. If a requested agent, model, or effort is unavailable, stop without retrying under a different
-setting; ask the human to choose a supported value.
+setting; ask the human to choose a supported value. A usage limit (exit 6) is never retried
+(*Delegated runs*).
 
 ## Delegated runs
 
@@ -106,6 +107,21 @@ These rules apply to every stage you delegate, including `wf test`, `wf sec` and
   log, the one-time fix (the exact command or setting, such as `Agent network: on` or installing the
   required toolchain), and ask how to continue. NOT RUN of such a check in a writing stage is not
   finished work. Do not work around the blocker for a single run.
+- **Usage limit.** `run-agent.sh` exits 6 when the agent reached its usage limit and repeats the agent's
+  line, which says when it resets. It is not transient and produced no result: never retry it, and never
+  switch agent, model or effort on your own. Stop and ask the human (`conventions.md` → Asking the human):
+  wait for the reset and rerun the same prompt, or use an agent and model they name for this run. Record
+  the answer where the stage records its agent; it covers that run only.
+- **Reruns.** Before any rerun, keep the failed run's files: rename them to
+  `<stage>-r<n>-attempt<k>.out.md` with its `.exit` and `.log`, so the rerun starts with an empty out-file.
+- **Checks a review did not run.** A review round that marks NOT RUN a check with a command in the
+  `AGENTS.md` table has an environment blocker, and its verdict does not count until that check has run
+  on the reviewed commit; `validate-review.py` and `validate-wave-review.py` name such checks on a
+  `not run:` line. Run each one yourself on that commit, as the stage would have (with the same
+  environment the project needs, such as a `TMPDIR`), and append the results to the round as
+  `### Orchestrator checks — <timestamp>`: one row per check with its command, result and summary line.
+  This verifies the round; it does not change it, and you still report the blocker and its one-time fix.
+  If a check fails, or you cannot run it either, the verdict does not count: stop and ask as above.
 
 ## Loop
 

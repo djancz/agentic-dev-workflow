@@ -293,6 +293,14 @@ class WaveReviewValidator(unittest.TestCase):
                                '\n- Verdict: Changes requested\n- Must-fix open: 1\n' + METHOD +
                                '- Major: incompatible API change\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_names_the_checks_the_round_did_not_run(self):
+        result = self.validate('## Round 2\n- Reviewed: commit ' + self.sha + '\n- Verdict: Approved\n'
+                               '- Must-fix open: 0\n' + METHOD + '\n| Check | Result |\n|---|---|\n'
+                               '| test-integration | NOT RUN (no sockets) |\n| sast | PASS |\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'not run: test-integration\n')
 
     def test_rejects_a_round_without_method_or_with_another_number(self):
         approved = '- Reviewed: commit ' + self.sha + '\n- Verdict: Approved\n- Must-fix open: 0\n'
@@ -787,6 +795,12 @@ case ${FAKE_MODE:-ok} in
   modify) echo changed >> tracked.txt ;;
   record) echo 'Status: Approved' >> development/tasks/TASK-1/TASK-1.md ;;
   fence) body=$(printf '```markdown\n%s\n```' "$body") ;;
+  limit) echo progress; echo 'ERROR: You’ve hit your usage limit. Visit the usage page or try again at 9:32 PM.' >&2
+    exit 1 ;;
+  limit-output) echo "You've hit your 5-hour limit · resets 9pm (Europe/Prague)"; exit 1 ;;
+  limit-mentioned) echo 'Run the review. The reviewer hit your usage limit earlier, said the prompt.' >&2; exit 1 ;;
+  limit-in-review) body="$body
+You've hit your usage limit, the finding quotes." ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
 '''
@@ -956,6 +970,21 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), path='/usr/bin:/bin')
         self.assertEqual(r.returncode, 4)
 
+    def test_a_usage_limit_exits_6_with_the_agents_message(self):
+        for agent, mode, reset in (('codex', 'limit', 'try again at 9:32 PM'),
+                                   ('claude', 'limit-output', 'resets 9pm (Europe/Prague)')):
+            with self.subTest(agent=agent):
+                r = self.run_agent(agent, 'rw', str(self.prompt), str(self.out), mode=mode)
+                self.assertEqual(r.returncode, 6, r.stderr)
+                self.assertIn(f'run-agent: {agent} reached its usage limit:', r.stderr)
+                self.assertIn(reset, r.stderr)
+                self.assertEqual(Path(f'{self.out}.exit').read_text().strip(), '6')
+                self.assertEqual(self.run_agent('--wait', str(self.out), '10').returncode, 6)
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='limit-mentioned')
+        self.assertEqual(r.returncode, 5, 'a failed run whose log only mentions a limit is an ordinary failure')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='limit-in-review')
+        self.assertEqual(r.returncode, 0, 'a successful run is never a usage limit')
+
     def test_outer_code_fence_is_stripped(self):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='fence')
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1116,6 +1145,18 @@ None.
 '''
         r = self.run_validator(text, '--kind', 'impl', '--round', '2', '--reviewed', 'commit abc123')
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('not run:', r.stdout)
+
+    def test_checks_the_round_did_not_run_are_named(self):
+        text = ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n- Reviewed: commit abc123\n'
+                '\n### Method\n\nRead the diff.\n\n| Check | Result | Evidence |\n|---|---|---|\n'
+                '| lint | PASS | clean |\n| test-unit | NOT RUN (sandbox) | 47 failed |\n'
+                '| deps-audit | NOT RUN (network blocked) | no DNS |\n\n'
+                '```text\n| format | NOT RUN | quoted output, not a result |\n```\n')
+        r = self.run_validator(text, '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ['impl round 1: Approved; 0 must-fix',
+                                                 'not run: test-unit, deps-audit'])
 
     def test_each_finding_has_exactly_one_severity(self):
         text = ('## Round 1 — now\n- Verdict: Approved with comments\n- Must-fix open: 0\n'

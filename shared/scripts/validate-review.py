@@ -97,6 +97,18 @@ def validate(text: str, kind: str, round_no: int, reviewed: str) -> tuple[str, i
     return verdict, must_fix
 
 
+def not_run(text: str) -> list[str]:
+    """The checks the round's tables mark NOT RUN: the first cell of each row whose second cell starts so."""
+    names: list[str] = []
+    for line in FENCE.sub('', text).splitlines():
+        if not line.strip().startswith('|'):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+        if len(cells) > 1 and cells[1].startswith('NOT RUN') and cells[0] not in names:
+            names.append(cells[0])
+    return names
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kind', choices=PREFIX, required=True)
@@ -107,12 +119,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.round < 1:
         parser.error('--round must be positive')
     try:
-        verdict, must_fix = validate(args.file.read_text(encoding='utf-8'), args.kind,
-                                     args.round, args.reviewed)
+        text = args.file.read_text(encoding='utf-8')
+        verdict, must_fix = validate(text, args.kind, args.round, args.reviewed)
     except (OSError, ValueError) as exc:
         print(f'validate-review: {exc}', file=sys.stderr)
         return 2
     print(f'{args.kind} round {args.round}: {verdict}; {must_fix} must-fix')
+    unrun = not_run(text)
+    if unrun:  # loop.md → Delegated runs: the orchestrator runs these before the verdict counts
+        print('not run: ' + ', '.join(unrun))
     return 0
 
 

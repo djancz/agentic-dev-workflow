@@ -67,7 +67,22 @@ backup; the PRs hold the delivered behavior and test evidence.
 Read the stage's `.out.md.log` in the task or wave `runs/` directory. A timeout, invalid response,
 changed review tree, or unsupported model is a failed stage, not approval. `wf status` shows the next
 safe action. Choose another available agent/model or request a new bounded run; do not edit a review
-verdict by hand.
+verdict by hand. The failed run's files stay as `<stage>-r<n>-attempt<k>.out.md` beside the rerun.
+
+## An agent reached its usage limit
+
+`scripts/run-agent.sh` exits 6 and repeats the agent's message, for example Codex's "You’ve hit your
+usage limit … try again at 9:32 PM" or Claude's "You've hit your 5-hour limit · resets 9pm". The run
+produced nothing, and the loop stops instead of retrying. Wait for the reset and ask for the same stage
+again, or name another agent and model for that run (`rev=claude,<model>`, for example); the loop asks
+again at the next limit and never switches by itself.
+
+## A review could not run a check
+
+A delegated review in a sandbox can report a check `NOT RUN` (integration tests without sockets, an
+audit without network). The validator names it on a `not run:` line. The orchestrator runs it on the
+reviewed commit and records it under `### Orchestrator checks` in that round before the verdict counts;
+fix the cause for later runs, for example with `Agent network: on`.
 
 ## A loop stops with findings
 

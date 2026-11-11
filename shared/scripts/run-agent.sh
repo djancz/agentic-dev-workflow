@@ -33,11 +33,12 @@
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #
 # Exit codes: 0 ok, 2 usage, 3 tree or records changed, 4 required executable not found,
-#             5 agent failed, timed out (124) or produced no output
+#             5 agent failed, timed out (124) or produced no output,
+#             6 the agent reached its usage limit (its message, repeated on stderr, says when it resets)
 set -eu
 
 usage() {
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -255,6 +256,17 @@ if [ "$expect_clean" = 1 ] && [ "$(fingerprint)" != "$before" ]; then
     exit 3
 fi
 if [ "$rc" -ne 0 ]; then
+    # A usage limit is not transient. Codex prints "ERROR: You’ve hit your usage limit … try again at <time>"
+    # to the log, Claude "You've hit your 5-hour limit · resets <time>" as its output. Only a line that starts
+    # that way counts, so a prompt that mentions a limit and is echoed into the log does not.
+    if [ "$rc" -ne 124 ]; then
+        limit_re='^[[:space:]]*((ERROR|Error):[[:space:]]*)?You[^[:space:]]* (hit|reached) your [[:alnum:] -]*limit'
+        limit_line=$({ tail -n 50 "$log"; head -n 5 "$out"; } 2>/dev/null | grep -E "$limit_re" | sed -n 1p)
+        if [ -n "$limit_line" ]; then
+            echo "run-agent: $agent reached its usage limit: $limit_line" >&2
+            exit 6
+        fi
+    fi
     echo "run-agent: $agent exited with $rc (124 = timeout); last lines of $log:" >&2
     tail -n 20 "$log" >&2 || true
     exit 5

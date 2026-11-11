@@ -36,6 +36,18 @@ def validate(text: str, revision: str, round_number: int) -> None:
         raise ValueError('must-fix count does not match severity-ranked findings')
 
 
+def not_run(text: str) -> list[str]:
+    """The checks the round's tables mark NOT RUN: the first cell of each row whose second cell starts so."""
+    names: list[str] = []
+    for line in re.sub(r'^[ \t]*(`{3,}|~{3,}).*?^[ \t]*\1[ \t]*$', '', text, flags=re.M | re.S).splitlines():
+        if not line.strip().startswith('|'):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+        if len(cells) > 1 and cells[1].startswith('NOT RUN') and cells[0] not in names:
+            names.append(cells[0])
+    return names
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reviewed', required=True)
@@ -45,9 +57,13 @@ def main() -> int:
     if args.round < 1:
         parser.error('round must be positive')
     try:
-        validate(args.path.read_text(encoding='utf-8'), args.reviewed, args.round)
+        text = args.path.read_text(encoding='utf-8')
+        validate(text, args.reviewed, args.round)
     except (OSError, ValueError) as exc:
         parser.exit(2, f'invalid wave review: {exc}\n')
+    unrun = not_run(text)
+    if unrun:  # loop.md → Delegated runs: the orchestrator runs these before the verdict counts
+        print('not run: ' + ', '.join(unrun))
     return 0
 
 
