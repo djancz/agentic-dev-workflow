@@ -53,9 +53,12 @@ Task (development/tasks/TASK-<N>-<slug>/, until `Done` or `Dropped`)
   human accepted the open findings); otherwise `wf impl rev`, `wf sec`, or `wf impl fix` for a human
   change request. A ready task waits for its wave.
 
-Dependencies: a roadmap row's *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the wave of its row,
-else of its ticket), or a row by the key that starts its *Concern and acceptance* cell (`M1.2`); other
-words in the cell are ignored. A name that no row or ticket has, two rows with one key, or a dependency
+Dependencies: a roadmap row's *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the waves of its
+rows, else of its ticket), or a row by the key that starts its *Concern and acceptance* cell (`M1.2`: its
+wave, else the waves of its tasks' tickets).
+Emphasis and code marks around a name do not matter. A key-shaped word counts only with a prefix that the
+roadmap's own keys use (`M`), so a spec section such as `C4.1` stays prose; other words are ignored. A
+name that no row, wave record or ticket has, a name with no wave, two rows with one key, or a dependency
 on the same or a later wave is invalid.
 
 Wave (development/waves/WAVE-<N>.md, once started)
@@ -205,24 +208,22 @@ def section(path: Path, title: str) -> str:
 
 
 def table(body: str) -> list[dict[str, str]]:
-    """The rows of the tables in `body`, each row keyed by its own table's header: the first table line, and
-    every line that a separator row (`|---|`) follows."""
+    """The rows of the tables in `body`, each keyed by its own table's header. A table is a run of
+    consecutive `|` lines; its first line is the header, and separator rows (`|---|`) are skipped."""
     def cells(line: str) -> list[str]:
         return [cell.strip() for cell in line.strip().strip('|').split('|')]
 
-    def separator(values: list[str]) -> bool:
-        return all(set(value) <= set('-: ') for value in values)
-
-    lines = [cells(line) for line in body.splitlines() if line.strip().startswith('|')]
-    names: list[str] = []
+    names: list[str] | None = None
     rows = []
-    for index, values in enumerate(lines):
-        if separator(values):
+    for line in body.splitlines():
+        if not line.strip().startswith('|'):
+            names = None
             continue
-        if not names or (index + 1 < len(lines) and separator(lines[index + 1])):
+        values = cells(line)
+        if names is None:
             names = values
-            continue
-        rows.append(dict(zip(names, values)))
+        elif not all(set(value) <= set('-: ') for value in values):
+            rows.append(dict(zip(names, values)))
     return rows
 
 
@@ -431,39 +432,64 @@ def milestone_step(roadmap: Path, road: dict[str, str], tickets: dict[str, dict[
     return None
 
 
+def plain(text: str) -> str:
+    """The text without Markdown emphasis and code marks, which never belong to a name."""
+    return re.sub(r'[*_`]', ' ', text)
+
+
 def row_key(row: dict[str, str]) -> str:
     """The key that starts a row's *Concern and acceptance* cell, such as `M1.2`; '' for a row without one."""
-    match = re.match(rf'({ROW_KEY})\b', re.sub(r'[*_`]', '', row.get('Concern and acceptance', '')).strip())
+    match = re.match(rf'({ROW_KEY})\b', plain(row.get('Concern and acceptance', '')).strip())
     return match[1] if match else ''
 
 
-def dependencies(dev: Path, tickets: dict[str, dict[str, str]]) -> dict[str, set[str]]:
-    """The waves each roadmap wave depends on. *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the wave
-    of its row, else of its ticket) or a row by its key (`M1.2`); other words in the cell are ignored."""
+def dependencies(dev: Path, tickets: dict[str, dict[str, str]],
+                 records: dict[str, dict[str, str]]) -> dict[str, set[str]]:
+    """The waves each roadmap wave depends on. *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the
+    waves of its rows, else of its ticket) or a row by its key (`M1.2`: its row's wave, else its tasks'
+    tickets'). A key-shaped word counts only with a prefix that the roadmap's own row keys use, so a spec
+    section such as C4.1 stays prose; other words in the cell are ignored."""
     roadmap = dev / 'project' / 'roadmap.md'
     if not roadmap.is_file():
         return {}
     rows = [(row, re.findall(r'WAVE-\d+', row.get('Wave', ''))) for row in task_rows(roadmap)]
-    where = {task: {wave_of(ticket)} for task, ticket in tickets.items() if wave_of(ticket)}
-    in_roadmap: set[str] = set()
+    named: dict[str, set[str]] = {}  # a task or row key -> the waves of its rows
+    owners: dict[str, list[str]] = {}  # a row key -> the tasks of its row
     for row, waves in rows:
-        for task in re.findall(r'TASK-\d+', row.get('Task', '')):
-            where[task] = (where[task] if task in in_roadmap else set()) | set(waves)
-            in_roadmap.add(task)
+        tasks = re.findall(r'TASK-\d+', row.get('Task', ''))
+        for task in tasks:
+            named.setdefault(task, set()).update(waves)
         key = row_key(row)
-        if key in in_roadmap:
+        if key in owners:
             raise InputError(f'{roadmap}: two rows of Waves and tasks have the key {key}')
         if key:
-            where[key] = set(waves)
-            in_roadmap.add(key)
+            named[key], owners[key] = set(waves), tasks
+    prefixes = {re.match(r'[A-Z]+', key)[0] for key in owners}
+    known = {wave for _, waves in rows for wave in waves} | set(records) | \
+        {wave_of(ticket) for ticket in tickets.values() if wave_of(ticket)}
+
+    def waves_of(name: str) -> set[str] | None:
+        """The waves a name stands for: its rows' waves, else its tickets' (a key's are those of its row's
+        tasks); empty when none has a wave, None when nothing has the name."""
+        if name.startswith('WAVE-'):
+            return {name} if name in known else None
+        if name not in named and name not in tickets:
+            return None
+        return named.get(name) or {wave_of(tickets.get(task, {})) for task in owners.get(name, [name])} - {''}
+
     deps: dict[str, set[str]] = {}
     for row, waves in rows:
         label = row_key(row) or ', '.join(re.findall(r'TASK-\d+', row.get('Task', ''))) or 'a row'
-        for name in re.findall(rf'\b(?:WAVE-\d+|TASK-\d+|{ROW_KEY})\b', row.get('Depends on', '')):
-            targets = {name} if name.startswith('WAVE-') else where.get(name)
+        for name in re.findall(rf'\b(?:WAVE-\d+|TASK-\d+|{ROW_KEY})\b', plain(row.get('Depends on', ''))):
+            if not name.startswith(('WAVE-', 'TASK-')) and re.match(r'[A-Z]+', name)[0] not in prefixes:
+                continue  # key-shaped prose, such as a spec section
+            targets = waves_of(name)
             if targets is None:
-                raise InputError(f'{roadmap}: {label} depends on {name}, which no row of Waves and tasks and no '
-                                 f'ticket names')
+                raise InputError(f'{roadmap}: {label} depends on {name}, which no row of Waves and tasks, wave '
+                                 f'record or ticket names')
+            if not targets:
+                raise InputError(f'{roadmap}: {label} depends on {name}, whose rows name no wave and whose '
+                                 f'ticket names none either')
             for wave in waves:
                 late = sorted((target for target in targets if number(target) >= number(wave)), key=number)
                 if late:
@@ -750,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         project = project_step(dev, args.agents_md or dev.resolve().parent / 'AGENTS.md', tickets, tasks)
         if project:
             items.append(project)
-        deps = dependencies(dev, tickets)
+        deps = dependencies(dev, tickets, waves)
         ready: dict[str, bool] = {}
         for task in tasks:
             if task in unwritten:

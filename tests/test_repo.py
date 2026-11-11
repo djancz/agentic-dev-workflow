@@ -3085,6 +3085,8 @@ class NextStep(unittest.TestCase):
         self.ticket(9, wave='WAVE-3')
         for depends_on, message in (('M1.9', 'M1.2 depends on M1.9, which no row'),
                                     ('TASK-99', 'M1.2 depends on TASK-99, which no row'),
+                                    ('WAVE-0', 'M1.2 depends on WAVE-0, which no row of Waves and tasks, wave '
+                                               'record or ticket names'),
                                     ('WAVE-2', 'M1.2 in WAVE-2 depends on WAVE-2 in WAVE-2'),
                                     ('M1.3', 'M1.2 in WAVE-2 depends on M1.3 in WAVE-3'),
                                     ('TASK-9', 'M1.2 in WAVE-2 depends on TASK-9 in WAVE-3')):
@@ -3100,17 +3102,51 @@ class NextStep(unittest.TestCase):
         self.assertIn('two rows of Waves and tasks have the key M1.1', err)
 
     def test_each_task_table_has_its_own_header_and_other_tables_are_not_tasks(self):
-        extra = ('\n### M1, second part\n\n'
-                 '| Task | Wave | Milestone | Depends on | Concern and acceptance | Parallel boundary |\n'
-                 '|---|---|---|---|---|---|\n'
-                 '| TASK-9 | WAVE-3 | M1 | M1.1 | **M1.3 — Sync (S).** c | z |\n\n'
-                 '| Check | Milestone |\n|---|---|\n| Format | M1 |\n')
         self.ticket(9, wave='WAVE-3')
         self.approve_plan(9)
-        self.dependent_waves('M1.1', extra)
-        returncode, out, err = self.run_next()
-        self.assertIn('TASK-9: waiting: WAVE-1 merged into the base first — WAVE-3 depends on WAVE-1', out, err)
-        self.assertNotIn('wf milestone M1', out, 'a check table is not a task row')
+        for separator in ('|---|---|---|---|---|---|\n', ''):
+            with self.subTest(separator=bool(separator)):
+                extra = ('\n### M1, second part\n\n'
+                         '| Task | Wave | Milestone | Depends on | Concern and acceptance | Parallel boundary |\n'
+                         f'{separator}| TASK-9 | WAVE-3 | M1 | M1.1 | **M1.3 — Sync (S).** c | z |\n\n'
+                         '| Check | Milestone |\n|---|---|\n| Format | M1 |\n')
+                self.dependent_waves('M1.1', extra)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-9: waiting: WAVE-1 merged into the base first — WAVE-3 depends on WAVE-1', out,
+                              err)
+                self.assertNotIn('wf milestone M1', out, 'a check table is not a task row')
+
+    def test_marked_up_names_hold_the_wave_and_key_shaped_prose_does_not(self):
+        for depends_on in ('`M1.1`', '*M1.1*', '_M1.1_', '__M1.1__', '**TASK-7**',
+                           'WAVE-1 (see spec C4.1; Python 3.14)', 'M1.1, as section C4.1 and OD15 say'):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on)
+                returncode, out, err = self.run_next()
+                self.assertNotEqual(returncode, 2, err)
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+
+    def test_a_row_without_a_wave_falls_back_to_its_tickets(self):
+        no_wave = '| — | M1 | TASK-6 | **M1.5 — Later (S).** d | — | w |\n'
+        for depends_on in ('TASK-6', 'M1.5'):
+            with self.subTest(depends_on=depends_on):
+                self.ticket(6, wave='WAVE-1')
+                self.dependent_waves(depends_on, no_wave)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+                self.ticket(6, wave='—')
+                returncode, _, err = self.run_next()
+                self.assertEqual(returncode, 2, 'a dependency without a wave is never satisfied silently')
+                self.assertIn(f'M1.2 depends on {depends_on}, whose rows name no wave', err)
+
+    def test_a_wave_review_with_orchestrator_checks_stays_current(self):
+        self.ready_task()
+        self.wave(status='Review requested')
+        self.wave_round('Approved', f'commit {self.W1}')
+        self.wave_append('\n### Orchestrator checks — 2026-11-05 10:30 UTC\n\n| Check | Command | Result | Evidence |\n'
+                         '|---|---|---|---|\n| test-unit | `make test` | PASS | 12 passed |\n')
+        self.assertEqual(self.next_line(), f'human: Gate 2 — approve WAVE-3 at commit {self.W1[:7]} or ask for changes')
 
     def test_project_route_follows_the_records(self):
         project = self.dev / 'project'
