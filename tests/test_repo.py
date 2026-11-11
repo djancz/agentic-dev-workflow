@@ -293,6 +293,14 @@ class WaveReviewValidator(unittest.TestCase):
                                '\n- Verdict: Changes requested\n- Must-fix open: 1\n' + METHOD +
                                '- Major: incompatible API change\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_names_the_checks_the_round_did_not_run(self):
+        result = self.validate('## Round 2\n- Reviewed: commit ' + self.sha + '\n- Verdict: Approved\n'
+                               '- Must-fix open: 0\n' + METHOD + '\n| Check | Result |\n|---|---|\n'
+                               '| test-integration | NOT RUN (no sockets) |\n| sast | PASS |\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'not run: test-integration\n')
 
     def test_rejects_a_round_without_method_or_with_another_number(self):
         approved = '- Reviewed: commit ' + self.sha + '\n- Verdict: Approved\n- Must-fix open: 0\n'
@@ -787,6 +795,15 @@ case ${FAKE_MODE:-ok} in
   modify) echo changed >> tracked.txt ;;
   record) echo 'Status: Approved' >> development/tasks/TASK-1/TASK-1.md ;;
   fence) body=$(printf '```markdown\n%s\n```' "$body") ;;
+  limit) echo progress; echo 'ERROR: You’ve hit your usage limit. Visit the usage page or try again at 9:32 PM.' >&2
+    exit 1 ;;
+  limit-output) echo "You've hit your 5-hour limit · resets 9pm (Europe/Prague)"; exit 1 ;;
+  limit-mentioned) echo 'Run the review. The reviewer hit your usage limit earlier, said the prompt.' >&2; exit 1 ;;
+  echo-then-fail) cat "$FAKE_LOG/$name.stdin" >&2; echo 'unrelated transport failure' >&2; exit 1 ;;
+  echo-then-limit) cat "$FAKE_LOG/$name.stdin" >&2; echo 'ERROR: You’ve hit your usage limit. Try again at 10:05 PM.' >&2
+    exit 1 ;;
+  limit-in-review) body="$body
+You've hit your usage limit, the finding quotes." ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
 '''
@@ -956,6 +973,28 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), path='/usr/bin:/bin')
         self.assertEqual(r.returncode, 4)
 
+    def test_a_usage_limit_exits_6_with_the_agents_message(self):
+        for agent, mode, reset in (('codex', 'limit', 'try again at 9:32 PM'),
+                                   ('claude', 'limit-output', 'resets 9pm (Europe/Prague)')):
+            with self.subTest(agent=agent):
+                r = self.run_agent(agent, 'rw', str(self.prompt), str(self.out), mode=mode)
+                self.assertEqual(r.returncode, 6, r.stderr)
+                self.assertIn(f'run-agent: {agent} reached its usage limit:', r.stderr)
+                self.assertIn(reset, r.stderr)
+                self.assertEqual(Path(f'{self.out}.exit').read_text().strip(), '6')
+                self.assertEqual(self.run_agent('--wait', str(self.out), '10').returncode, 6)
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='limit-mentioned')
+        self.assertEqual(r.returncode, 5, 'a failed run whose log only mentions a limit is an ordinary failure')
+        self.prompt.write_text('Run the stage. Say so if the reviewer reports:\n'
+                               'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.\n')
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='echo-then-fail')
+        self.assertEqual(r.returncode, 5, 'a limit message that is a line of the echoed prompt is not a limit')
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='echo-then-limit')
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertIn('Try again at 10:05 PM', r.stderr)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='limit-in-review')
+        self.assertEqual(r.returncode, 0, 'a successful run is never a usage limit')
+
     def test_outer_code_fence_is_stripped(self):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='fence')
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1116,6 +1155,34 @@ None.
 '''
         r = self.run_validator(text, '--kind', 'impl', '--round', '2', '--reviewed', 'commit abc123')
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('not run:', r.stdout)
+
+    def test_checks_the_round_did_not_run_are_named(self):
+        text = ('## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n- Reviewed: commit abc123\n'
+                '\n### Method\n\nRead the diff.\n\n| Check | Result | Evidence |\n|---|---|---|\n'
+                '| lint | PASS | clean |\n| test-unit | NOT RUN (sandbox) | 47 failed |\n'
+                '| deps-audit | NOT RUN (network blocked) | no DNS |\n\n'
+                '```text\n| format | NOT RUN | quoted output, not a result |\n```\n')
+        r = self.run_validator(text, '--kind', 'impl', '--round', '1', '--reviewed', 'commit abc123')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ['impl round 1: Approved; 0 must-fix',
+                                                 'not run: test-unit, deps-audit'])
+
+    def test_the_loop_runs_unrun_checks_before_a_round_counts(self):
+        loop = ' '.join(LOOP.read_text().split())
+        for phrase in ('Before you append the round, run each one yourself on the reviewed commit',
+                       'When one fails or cannot run, do not append the round',
+                       'the one exception is a check a review did not run',
+                       '`run-agent.sh` exits 6', 'never retry it'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, loop)
+        wave = ' '.join((SHARED / 'wave-review.md').read_text().split())
+        self.assertIn('run the checks it names on a `not run:` line first', wave)
+        for doc in (REPO / 'README.md', REPO / 'docs' / 'skills.md'):
+            text = ' '.join(doc.read_text().split())
+            for phrase in ('exit 6', 'M1.2', 'NOT RUN'):
+                with self.subTest(doc=doc.name, phrase=phrase):
+                    self.assertIn(phrase, text)
 
     def test_each_finding_has_exactly_one_severity(self):
         text = ('## Round 1 — now\n- Verdict: Approved with comments\n- Must-fix open: 0\n'
@@ -2958,6 +3025,12 @@ class NextStep(unittest.TestCase):
         self.assertEqual(self.next_line('--id', 'TASK-1'), 'wf plan TASK-1')
         self.assertEqual(self.next_line('--branch', 'task/TASK-10-csv-export'), 'wf plan TASK-10')
 
+    def test_items_to_choose_from_come_earliest_wave_first(self):
+        for n, wave in ((5, '—'), (6, 'WAVE-10'), (7, 'WAVE-5'), (8, 'WAVE-4')):
+            self.ticket(n, wave=wave)
+        self.assertEqual(self.next_line(code=1), 'choose one of TASK-8, TASK-7, TASK-6, TASK-5',
+                         'by wave number, and a task without a wave last')
+
     def test_identical_actions_count_once(self):
         for n in (7, 8):
             self.ticket(n)
@@ -3008,6 +3081,98 @@ class NextStep(unittest.TestCase):
         self.wave(1, status='Merged', tasks='TASK-7')
         self.ticket(7, status='Done', wave='WAVE-1', branch='task/TASK-7-csv-export')
         self.assertEqual(self.next_line(), 'wf wave start WAVE-2')
+
+    def dependent_waves(self, depends_on: str, extra_rows: str = ''):
+        """WAVE-1 (TASK-7, row M1.1) has its PR open; TASK-8 of WAVE-2 (row M1.2) has an approved plan."""
+        rows = (f'| WAVE-1 | M1 | TASK-7 | **M1.1 — Export (S).** a | — | x |\n'
+                f'| WAVE-2 | M1 | TASK-8 | **M1.2 — Import (M).** b | {depends_on} | y |\n{extra_rows}')
+        self.project(roadmap='Approved', roadmap_fields={'Current milestone': 'M1'}, rows=rows)
+        self.ready_task(7, wave='WAVE-1')
+        self.wave(1, status='PR opened', tasks='TASK-7')
+        self.ticket(8, wave='WAVE-2')
+        self.approve_plan(8)
+
+    def test_a_dependency_named_by_row_key_or_task_holds_the_wave(self):
+        self.ticket(6, wave='WAVE-1')  # a task the roadmap does not list: its ticket names the wave
+        for depends_on in ('M1.1', 'M1.1, M1.1', 'TASK-7 (the M0 layout on Python 3.14)', 'TASK-6'):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+        self.dependent_waves('M1.1')
+        self.wave(1, status='Merged', tasks='TASK-7')
+        self.ticket(7, status='Done', wave='WAVE-1', branch='task/TASK-7-csv-export')
+        self.ticket(6, status='Done', wave='WAVE-1')
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-2', 'the merge releases the wave')
+
+    def test_a_dependency_no_row_names_or_on_a_later_wave_is_invalid(self):
+        later = '| WAVE-3 | M1 | TASK-9 | **M1.3 — Sync (S).** c | — | z |\n'
+        self.ticket(9, wave='WAVE-3')
+        for depends_on, message in (('M1.9', 'M1.2 depends on M1.9, which no row'),
+                                    ('TASK-99', 'M1.2 depends on TASK-99, which no row'),
+                                    ('WAVE-0', 'M1.2 depends on WAVE-0, which no row of Waves and tasks, wave '
+                                               'record or ticket names'),
+                                    ('WAVE-2', 'M1.2 in WAVE-2 depends on WAVE-2 in WAVE-2'),
+                                    ('M1.3', 'M1.2 in WAVE-2 depends on M1.3 in WAVE-3'),
+                                    ('TASK-9', 'M1.2 in WAVE-2 depends on TASK-9 in WAVE-3')):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on, later)
+                returncode, _, err = self.run_next()
+                self.assertEqual(returncode, 2)
+                self.assertIn('roadmap.md', err)
+                self.assertIn(message, err)
+        self.dependent_waves('M1.1', later.replace('M1.3', 'M1.1'))
+        returncode, _, err = self.run_next()
+        self.assertEqual(returncode, 2)
+        self.assertIn('two rows of Waves and tasks have the key M1.1', err)
+
+    def test_each_task_table_has_its_own_header_and_other_tables_are_not_tasks(self):
+        self.ticket(9, wave='WAVE-3')
+        self.approve_plan(9)
+        for separator in ('|---|---|---|---|---|---|\n', ''):
+            with self.subTest(separator=bool(separator)):
+                extra = ('\n### M1, second part\n\n'
+                         '| Task | Wave | Milestone | Depends on | Concern and acceptance | Parallel boundary |\n'
+                         f'{separator}| TASK-9 | WAVE-3 | M1 | M1.1 | **M1.3 — Sync (S).** c | z |\n\n'
+                         '| Check | Milestone |\n|---|---|\n| Format | M1 |\n')
+                self.dependent_waves('M1.1', extra)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-9: waiting: WAVE-1 merged into the base first — WAVE-3 depends on WAVE-1', out,
+                              err)
+                self.assertNotIn('wf milestone M1', out, 'a check table is not a task row')
+
+    def test_marked_up_names_hold_the_wave_and_key_shaped_prose_does_not(self):
+        for depends_on in ('`M1.1`', '*M1.1*', '_M1.1_', '__M1.1__', '**TASK-7**',
+                           'WAVE-1 (see spec C4.1; Python 3.14)', 'M1.1, as section C4.1 and OD15 say'):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on)
+                returncode, out, err = self.run_next()
+                self.assertNotEqual(returncode, 2, err)
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+
+    def test_a_row_without_a_wave_falls_back_to_its_tickets(self):
+        no_wave = '| — | M1 | TASK-6 | **M1.5 — Later (S).** d | — | w |\n'
+        for depends_on in ('TASK-6', 'M1.5'):
+            with self.subTest(depends_on=depends_on):
+                self.ticket(6, wave='WAVE-1')
+                self.dependent_waves(depends_on, no_wave)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+                self.ticket(6, wave='—')
+                returncode, _, err = self.run_next()
+                self.assertEqual(returncode, 2, 'a dependency without a wave is never satisfied silently')
+                self.assertIn(f'M1.2 depends on {depends_on}, whose rows name no wave', err)
+
+    def test_a_wave_review_with_orchestrator_checks_stays_current(self):
+        self.ready_task()
+        self.wave(status='Review requested')
+        self.wave_round('Approved', f'commit {self.W1}')
+        self.wave_append('\n### Orchestrator checks — 2026-11-05 10:30 UTC\n\n| Check | Command | Result | Evidence |\n'
+                         '|---|---|---|---|\n| test-unit | `make test` | PASS | 12 passed |\n')
+        self.assertEqual(self.next_line(), f'human: Gate 2 — approve WAVE-3 at commit {self.W1[:7]} or ask for changes')
 
     def test_project_route_follows_the_records(self):
         project = self.dev / 'project'

@@ -3,9 +3,10 @@
 
   next-step.py [--id TASK-N|WAVE-N|project] [--branch <current branch>] [--agents-md AGENTS.md] development
 
-It reads record headers, the last `## Round` of each review file, the roadmap's two tables, and a task's
-*Follow-ups* only when nothing is open. It never runs Git, never writes, and never guesses. Each open item
-gets one line, `<item>: <action> — <reason>`. The last lines are `Next: <action>` and, when that step
+It reads record headers, the last `## Round` of each review file, the roadmap's milestone table and task
+tables (the tables under *Waves and tasks* with a Wave and a Task column, each read with its own header),
+and a task's *Follow-ups* only when nothing is open. It never runs Git, never writes, and never guesses.
+Each open item gets one line, `<item>: <action> — <reason>`. The last lines are `Next: <action>` and, when that step
 runs on a branch other than --branch, `Where: <branch>`. An action is a `wf` command or a `human:`
 answer or act (a gate, a decision on open findings, a merge, trying a prototype); an item line may also
 say `waiting: <what it waits for>`, which is never the `Next:` line.
@@ -37,7 +38,7 @@ Task (development/tasks/TASK-<N>-<slug>/, until `Done` or `Dropped`)
   by the reviewer waits for the human's decision, because a loop that stopped never restarts itself; an
   approving review is Gate 1.
 - Plan approved: a wave with no record, or one still `Planned` without a branch: `wf wave start`, or it
-  waits for an earlier wave the roadmap lists under *Depends on* that is not `Merged`; no `Branch`:
+  waits for an earlier wave the roadmap's *Depends on* names that is not `Merged`; no `Branch`:
   `wf new-worktree`; `Tests: required` and no test report: `wf test`; no implementation summary, or one
   `In progress`: `wf impl`; `Checkpoint: pending`: the human commits the delegated run's changes.
 - A plan revision approved after the tests or the implementation: a test report or summary whose
@@ -52,6 +53,14 @@ Task (development/tasks/TASK-<N>-<slug>/, until `Done` or `Dropped`)
   human accepted the open findings); otherwise `wf impl rev`, `wf sec`, or `wf impl fix` for a human
   change request. A ready task waits for its wave.
 
+Dependencies: a roadmap row's *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the waves of its
+rows, else of its ticket), or a row by the key that starts its *Concern and acceptance* cell (`M1.2`: its
+wave, else the waves of its tasks' tickets).
+Emphasis and code marks around a name do not matter. A key-shaped word counts only with a prefix that the
+roadmap's own keys use (`M`), so a spec section such as `C4.1` stays prose; other words are ignored. A
+name that no row, wave record or ticket has, a name with no wave, two rows with one key, or a dependency
+on the same or a later wave is invalid.
+
 Wave (development/waves/WAVE-<N>.md, once started)
 - While a task it lists that is not `Dropped` is not ready, it waits for those tasks, whatever its
   status (`Approved` and `PR opened` too: a task whose plan was revised again is not ready).
@@ -64,8 +73,9 @@ Wave (development/waves/WAVE-<N>.md, once started)
 Choosing: --id selects that item, else --branch (`task/TASK-<N>-…`, `wave/WAVE-<N>-…`, or
 `prototype/…` for the project), else every item. An item that only waits stands for what it waits on,
 and identical actions count once. One action left is the next step; several end with
-`Next: choose one of …` and exit 1. When nothing can move by itself, the next step is the human's. A
-selected item with nothing left falls back to every item. With nothing open, the next step is the
+`Next: choose one of …`, the project's item first and then by wave, earliest first, and exit 1. When
+nothing can move by itself, the next step is the human's. A selected item with nothing left falls back
+to every item. With nothing open, the next step is the
 project's, or `human: start new work …`.
 
 Follow-ups are never an action. The tasks of the latest merged wave whose *Follow-ups* say more than
@@ -96,6 +106,7 @@ CLOSED = {'Done', 'Dropped'}
 READ_KEYS = {'Status', 'Revision', 'Approved', 'Reviewed', 'Latest verdict', 'Verdict', 'Round', 'Checkpoint',
              'Tasks', 'Wave', 'Branch', 'Sensitivity', 'Tests', 'PR', 'Current milestone', 'Prototype', 'Plan'}
 SHA = re.compile(r'[0-9a-f]{7,40}')
+ROW_KEY = r'[A-Z]+\d+(?:\.\d+)+'  # a roadmap row's key, such as M1.2
 WORKTREE_COMMANDS = ('wf test ', 'wf impl ', 'wf sec ')
 START = 'human: start new work with wf task <goal>, or wf prd <idea> for a new project or major initiative'
 
@@ -197,19 +208,28 @@ def section(path: Path, title: str) -> str:
 
 
 def table(body: str) -> list[dict[str, str]]:
+    """The rows of the tables in `body`, each keyed by its own table's header. A table is a run of
+    consecutive `|` lines; its first line is the header, and separator rows (`|---|`) are skipped."""
     def cells(line: str) -> list[str]:
         return [cell.strip() for cell in line.strip().strip('|').split('|')]
 
-    lines = [line for line in body.splitlines() if line.strip().startswith('|')]
-    if not lines:
-        return []
-    names, rows = cells(lines[0]), []
-    for line in lines[1:]:
-        values = cells(line)
-        if all(set(value) <= set('-: ') for value in values):
+    names: list[str] | None = None
+    rows = []
+    for line in body.splitlines():
+        if not line.strip().startswith('|'):
+            names = None
             continue
-        rows.append(dict(zip(names, values)))
+        values = cells(line)
+        if names is None:
+            names = values
+        elif not all(set(value) <= set('-: ') for value in values):
+            rows.append(dict(zip(names, values)))
     return rows
+
+
+def task_rows(roadmap: Path) -> list[dict[str, str]]:
+    """The rows of the task tables under *Waves and tasks*: the tables with a Wave and a Task column."""
+    return [row for row in table(section(roadmap, 'Waves and tasks')) if 'Wave' in row and 'Task' in row]
 
 
 def status(fields: dict[str, str], kind: str, path: Path) -> str:
@@ -397,8 +417,7 @@ def milestone_step(roadmap: Path, road: dict[str, str], tickets: dict[str, dict[
         return None
     milestones = {row.get('ID', ''): row for row in table(section(roadmap, 'Milestones'))}
     milestone_done = milestones.get(current, {}).get('Status', '').strip().startswith('Done')
-    rows = [row for row in table(section(roadmap, 'Waves and tasks'))
-            if row.get('Milestone', '').strip() == current]
+    rows = [row for row in task_rows(roadmap) if row.get('Milestone', '').strip() == current]
     if not rows:
         return None if milestone_done else \
             Item('project', 'wf roadmap', f'milestone {current} has no tasks in the roadmap yet')
@@ -413,13 +432,70 @@ def milestone_step(roadmap: Path, road: dict[str, str], tickets: dict[str, dict[
     return None
 
 
-def dependencies(dev: Path) -> dict[str, set[str]]:
+def plain(text: str) -> str:
+    """The text without Markdown emphasis and code marks, which never belong to a name."""
+    return re.sub(r'[*_`]', ' ', text)
+
+
+def row_key(row: dict[str, str]) -> str:
+    """The key that starts a row's *Concern and acceptance* cell, such as `M1.2`; '' for a row without one."""
+    match = re.match(rf'({ROW_KEY})\b', plain(row.get('Concern and acceptance', '')).strip())
+    return match[1] if match else ''
+
+
+def dependencies(dev: Path, tickets: dict[str, dict[str, str]],
+                 records: dict[str, dict[str, str]]) -> dict[str, set[str]]:
+    """The waves each roadmap wave depends on. *Depends on* names a wave (`WAVE-N`), a task (`TASK-N`: the
+    waves of its rows, else of its ticket) or a row by its key (`M1.2`: its row's wave, else its tasks'
+    tickets'). A key-shaped word counts only with a prefix that the roadmap's own row keys use, so a spec
+    section such as C4.1 stays prose; other words in the cell are ignored."""
     roadmap = dev / 'project' / 'roadmap.md'
+    if not roadmap.is_file():
+        return {}
+    rows = [(row, re.findall(r'WAVE-\d+', row.get('Wave', ''))) for row in task_rows(roadmap)]
+    named: dict[str, set[str]] = {}  # a task or row key -> the waves of its rows
+    owners: dict[str, list[str]] = {}  # a row key -> the tasks of its row
+    for row, waves in rows:
+        tasks = re.findall(r'TASK-\d+', row.get('Task', ''))
+        for task in tasks:
+            named.setdefault(task, set()).update(waves)
+        key = row_key(row)
+        if key in owners:
+            raise InputError(f'{roadmap}: two rows of Waves and tasks have the key {key}')
+        if key:
+            named[key], owners[key] = set(waves), tasks
+    prefixes = {re.match(r'[A-Z]+', key)[0] for key in owners}
+    known = {wave for _, waves in rows for wave in waves} | set(records) | \
+        {wave_of(ticket) for ticket in tickets.values() if wave_of(ticket)}
+
+    def waves_of(name: str) -> set[str] | None:
+        """The waves a name stands for: its rows' waves, else its tickets' (a key's are those of its row's
+        tasks); empty when none has a wave, None when nothing has the name."""
+        if name.startswith('WAVE-'):
+            return {name} if name in known else None
+        if name not in named and name not in tickets:
+            return None
+        return named.get(name) or {wave_of(tickets.get(task, {})) for task in owners.get(name, [name])} - {''}
+
     deps: dict[str, set[str]] = {}
-    if roadmap.is_file():
-        for row in table(section(roadmap, 'Waves and tasks')):
-            for wave in re.findall(r'WAVE-\d+', row.get('Wave', '')):
-                deps.setdefault(wave, set()).update(re.findall(r'WAVE-\d+', row.get('Depends on', '')))
+    for row, waves in rows:
+        label = row_key(row) or ', '.join(re.findall(r'TASK-\d+', row.get('Task', ''))) or 'a row'
+        for name in re.findall(rf'\b(?:WAVE-\d+|TASK-\d+|{ROW_KEY})\b', plain(row.get('Depends on', ''))):
+            if not name.startswith(('WAVE-', 'TASK-')) and re.match(r'[A-Z]+', name)[0] not in prefixes:
+                continue  # key-shaped prose, such as a spec section
+            targets = waves_of(name)
+            if targets is None:
+                raise InputError(f'{roadmap}: {label} depends on {name}, which no row of Waves and tasks, wave '
+                                 f'record or ticket names')
+            if not targets:
+                raise InputError(f'{roadmap}: {label} depends on {name}, whose rows name no wave and whose '
+                                 f'ticket names none either')
+            for wave in waves:
+                late = sorted((target for target in targets if number(target) >= number(wave)), key=number)
+                if late:
+                    raise InputError(f'{roadmap}: {label} in {wave} depends on {name} in {", ".join(late)}; a '
+                                     f'dependency must be in an earlier wave, so revise the roadmap')
+                deps.setdefault(wave, set()).update(targets)
     return deps
 
 
@@ -632,6 +708,13 @@ def expand(item: Item, by_id: dict[str, Item], items: list[Item], seen: set[str]
     return out or [item]
 
 
+def earliest(item: Item) -> int:
+    """The order of the items to choose from: the project's first, then by wave, then those without a wave."""
+    if item.id == 'project':
+        return 0
+    return number(item.wave) if item.wave else sys.maxsize
+
+
 def selected(branch: str | None) -> str | None:
     match = re.match(r'(?:task|wave)/((?:TASK|WAVE)-\d+)-', branch or '')
     if match:
@@ -693,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         project = project_step(dev, args.agents_md or dev.resolve().parent / 'AGENTS.md', tickets, tasks)
         if project:
             items.append(project)
-        deps = dependencies(dev)
+        deps = dependencies(dev, tickets, waves)
         ready: dict[str, bool] = {}
         for task in tasks:
             if task in unwritten:
@@ -731,9 +814,11 @@ def main(argv: list[str] | None = None) -> int:
         for each in expand(item, by_id, items, {item.id}):
             if each.waiting:
                 what = each.action[len('waiting: '):]
-                each = Item(each.id, f'human: unblock {each.id}, which waits for {what}', each.reason)
+                each = Item(each.id, f'human: unblock {each.id}, which waits for {what}', each.reason,
+                            wave=each.wave)
             if all(each.action != other.action for other in candidates):
                 candidates.append(each)
+    candidates.sort(key=earliest)
     if found:
         print('Follow-ups: ' + ', '.join(found))
     if not candidates:

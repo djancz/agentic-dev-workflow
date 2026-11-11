@@ -88,9 +88,11 @@ When you answer while `wf next` or `wf auto` runs, the agent records your answer
 the records, not from the agent's memory: a script (`shared/scripts/next-step.py`) reads the headers in
 `development/` and names one next command, a question for you, or the tasks to choose between, plus the
 branch whose worktree that command runs in. Every stage ends with its `Next:` line, and `wf status`,
-`wf next` and `wf auto` use it. A follow-up recorded during a task is never offered as the next step
-while a task or wave is still open. A plan revised after its task was implemented sends that task back
-through tests, implementation and review, and its wave waits for it. A typical small change:
+`wf next` and `wf auto` use it. Tasks to choose between come earliest wave first, and a wave does not
+start until the waves its roadmap rows depend on (`WAVE-N`, `TASK-N` or a row key such as `M1.2`) are
+merged. A follow-up recorded during a task is never offered as the next step while a task or wave is
+still open. A plan revised after its task was implemented sends that task back through tests,
+implementation and review, and its wave waits for it. A typical small change:
 
 ```text
 you:   wf task CSV export drops rows with empty names; export them with an empty cell
@@ -208,7 +210,10 @@ finite run. See [commands and gates](docs/skills.md).
 A fresh agent writes feature tests from the approved contract before implementation. A different fresh
 context reviews the implementation. Every task runs its declared checks; security-sensitive tasks also
 receive a dedicated review. `PASS` means the check ran and passed; missing tools and skipped checks are
-`NOT RUN` with a reason. The agent uses the project's existing conventions and the
+`NOT RUN` with a reason. A review counts only once every check it could not run in its sandbox has run
+and passed on the reviewed commit. When a delegated agent reaches its usage limit, the run stops with
+exit 6 and the loop asks you whether to wait for the reset or use another agent; it never switches by
+itself. The agent uses the project's existing conventions and the
 [engineering principles](shared/engineering.md).
 
 Skills load only stage-relevant references. Review round one covers the full change; later rounds focus

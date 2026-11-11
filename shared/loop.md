@@ -78,13 +78,15 @@ Validate the output before trusting it:
 python3 scripts/validate-review.py --kind <plan|impl|security> --round <artifact-round> \
   --reviewed "<plan revision N|commit SHA>" <out-file>
 ```
-Only after success, append it **verbatim** (create the file from its template if needed), then copy its
-Verdict, Round, Must-fix open and Reviewed values into the header.
+Only after success, and after the checks it did not run (*Delegated runs*), append it **verbatim** (create
+the file from its template if needed), then copy its Verdict, Round, Must-fix open and Reviewed values
+into the header.
 
 A non-zero run or validation exit, or exit 3 (tree changed), is a **failed review, not a clean one**. Retry
 once only for a transient failure. If it fails again, stop and report the log tail. Never write a review
 yourself. If a requested agent, model, or effort is unavailable, stop without retrying under a different
-setting; ask the human to choose a supported value.
+setting; ask the human to choose a supported value. A usage limit (exit 6) is never retried
+(*Delegated runs*).
 
 ## Delegated runs
 
@@ -105,7 +107,24 @@ These rules apply to every stage you delegate, including `wf test`, `wf sec` and
   that retry. Then stop and tell the human in plain words: what is blocked, one line of evidence from the
   log, the one-time fix (the exact command or setting, such as `Agent network: on` or installing the
   required toolchain), and ask how to continue. NOT RUN of such a check in a writing stage is not
-  finished work. Do not work around the blocker for a single run.
+  finished work. Do not work around the blocker for a single run; the one exception is a check a review
+  did not run, which you run yourself to verify the round (below).
+- **Usage limit.** `run-agent.sh` exits 6 when the agent reached its usage limit and repeats the agent's
+  line, which says when it resets. It is not transient and produced no result: never retry it, and never
+  switch agent, model or effort on your own. Stop and ask the human (`conventions.md` → Asking the human):
+  wait for the reset and rerun the same prompt, or use an agent and model they name for this run. Record
+  the answer where the stage records its agent; it covers that run only.
+- **Reruns.** Before any rerun, keep the failed run's files: rename them to
+  `<stage>-r<n>-attempt<k>.out.md` with its `.exit` and `.log`, so the rerun starts with an empty out-file.
+- **Checks a review did not run.** A review round that marks NOT RUN a check with a command in the
+  `AGENTS.md` table hit an environment blocker; `validate-review.py` and `validate-wave-review.py` name
+  such checks on a `not run:` line. Before you append the round, run each one yourself on the reviewed
+  commit, as the stage would have (with the environment the project needs, such as a `TMPDIR`). When all
+  pass, append the round followed by `### Orchestrator checks — <timestamp>`, one row per check with its
+  command, result and summary line, and only then copy its header. When one fails or cannot run, do not
+  append the round: keep its out-file, so no review covers the commit and no gate can pass, then stop and
+  ask as above. A choice that asks for changes becomes a human round with the failure as its finding
+  (*Escalate*). Either way, report the blocker and its one-time fix.
 
 ## Loop
 

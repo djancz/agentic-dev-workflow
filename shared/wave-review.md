@@ -16,7 +16,8 @@ can rerun relevant checks while leaving the source tree unchanged. The response 
 and includes `- Reviewed: commit <sha>`,
 `- Verdict: Approved | Changes requested`, `- Must-fix open: <count>`, and a `### Method` section with
 what was read and run; each must-fix finding starts `- Major:` or `- Blocker:`. Validate with
-`python3 scripts/validate-wave-review.py --reviewed <HEAD> --round <n> <out>` before appending it.
+`python3 scripts/validate-wave-review.py --reviewed <HEAD> --round <n> <out>` before appending it, and
+run the checks it names on a `not run:` line first (`loop.md` → Delegated runs).
 If invalid, retry once for a transient error, then stop.
 Every delegated run follows `loop.md` → Delegated runs.
 

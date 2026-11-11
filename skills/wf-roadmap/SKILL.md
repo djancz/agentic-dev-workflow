@@ -23,7 +23,9 @@ the spec names; the next delivers a
 thin usable path. Keep distant milestones coarse. Split a milestone into tasks, each one concern with
 acceptance criteria, dependencies, and a size estimate. Tasks in one wave all start from its base
 commit: group them only when none needs another's code and they share no mutable files. A dependent
-task goes to a later wave. If uncertain, use consecutive waves.
+task goes to a later wave. If uncertain, use consecutive waves. In *Depends on*, name earlier waves
+(`WAVE-N`), tasks (`TASK-N`) or row keys (`M1.2`, the key that starts a row's concern); the resolver holds
+a wave until all of them are merged and refuses a name no row has.
 
 Keep one wave PR small enough to review. Name contracts that must be frozen before parallel tasks start.
 Do not introduce stack choices that contradict the approved spec. On revision, increment `Revision`,
