@@ -799,6 +799,9 @@ case ${FAKE_MODE:-ok} in
     exit 1 ;;
   limit-output) echo "You've hit your 5-hour limit · resets 9pm (Europe/Prague)"; exit 1 ;;
   limit-mentioned) echo 'Run the review. The reviewer hit your usage limit earlier, said the prompt.' >&2; exit 1 ;;
+  echo-then-fail) cat "$FAKE_LOG/$name.stdin" >&2; echo 'unrelated transport failure' >&2; exit 1 ;;
+  echo-then-limit) cat "$FAKE_LOG/$name.stdin" >&2; echo 'ERROR: You’ve hit your usage limit. Try again at 10:05 PM.' >&2
+    exit 1 ;;
   limit-in-review) body="$body
 You've hit your usage limit, the finding quotes." ;;
 esac
@@ -982,6 +985,13 @@ class RunAgent(unittest.TestCase):
                 self.assertEqual(self.run_agent('--wait', str(self.out), '10').returncode, 6)
         r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='limit-mentioned')
         self.assertEqual(r.returncode, 5, 'a failed run whose log only mentions a limit is an ordinary failure')
+        self.prompt.write_text('Run the stage. Say so if the reviewer reports:\n'
+                               'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.\n')
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='echo-then-fail')
+        self.assertEqual(r.returncode, 5, 'a limit message that is a line of the echoed prompt is not a limit')
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='echo-then-limit')
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertIn('Try again at 10:05 PM', r.stderr)
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='limit-in-review')
         self.assertEqual(r.returncode, 0, 'a successful run is never a usage limit')
 
@@ -1157,6 +1167,22 @@ None.
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines(), ['impl round 1: Approved; 0 must-fix',
                                                  'not run: test-unit, deps-audit'])
+
+    def test_the_loop_runs_unrun_checks_before_a_round_counts(self):
+        loop = ' '.join(LOOP.read_text().split())
+        for phrase in ('Before you append the round, run each one yourself on the reviewed commit',
+                       'When one fails or cannot run, do not append the round',
+                       'the one exception is a check a review did not run',
+                       '`run-agent.sh` exits 6', 'never retry it'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, loop)
+        wave = ' '.join((SHARED / 'wave-review.md').read_text().split())
+        self.assertIn('run the checks it names on a `not run:` line first', wave)
+        for doc in (REPO / 'README.md', REPO / 'docs' / 'skills.md'):
+            text = ' '.join(doc.read_text().split())
+            for phrase in ('exit 6', 'M1.2', 'NOT RUN'):
+                with self.subTest(doc=doc.name, phrase=phrase):
+                    self.assertIn(phrase, text)
 
     def test_each_finding_has_exactly_one_severity(self):
         text = ('## Round 1 — now\n- Verdict: Approved with comments\n- Must-fix open: 0\n'

@@ -76,7 +76,11 @@ then `default`); an agent falls back to `self`. `rounds=` sets the review rounds
 `default` passes no model or effort flag. `auto` chooses only a supported setting and records the
 actual value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your
 explicit request. Headless stages have a timeout. Each review has at most one retry for a transient
-execution failure, and stagnation or an unresolved reviewer dispute stops the loop.
+execution failure, and stagnation or an unresolved reviewer dispute stops the loop. An agent's usage
+limit (`run-agent.sh` exit 6) is never retried: the loop asks whether to wait for the reset or use an
+agent you name for that run. A review round that marks a check of the `AGENTS.md` table `NOT RUN`
+counts only after the orchestrator has run that check on the reviewed commit and it passed; otherwise
+the round is not appended and the loop asks you.
 
 Examples:
 

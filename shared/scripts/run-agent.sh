@@ -258,10 +258,11 @@ fi
 if [ "$rc" -ne 0 ]; then
     # A usage limit is not transient. Codex prints "ERROR: You’ve hit your usage limit … try again at <time>"
     # to the log, Claude "You've hit your 5-hour limit · resets <time>" as its output. Only a line that starts
-    # that way counts, so a prompt that mentions a limit and is echoed into the log does not.
+    # that way counts, and not one that is a line of the prompt, which Codex echoes into the log.
     if [ "$rc" -ne 124 ]; then
         limit_re='^[[:space:]]*((ERROR|Error):[[:space:]]*)?You[^[:space:]]* (hit|reached) your [[:alnum:] -]*limit'
-        limit_line=$({ tail -n 50 "$log"; head -n 5 "$out"; } 2>/dev/null | grep -E "$limit_re" | sed -n 1p)
+        limit_line=$({ tail -n 50 "$log"; head -n 5 "$out"; } 2>/dev/null | grep -E "$limit_re" |
+            grep -vxF -f "$prompt" | sed -n 1p)
         if [ -n "$limit_line" ]; then
             echo "run-agent: $agent reached its usage limit: $limit_line" >&2
             exit 6

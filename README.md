@@ -210,7 +210,10 @@ finite run. See [commands and gates](docs/skills.md).
 A fresh agent writes feature tests from the approved contract before implementation. A different fresh
 context reviews the implementation. Every task runs its declared checks; security-sensitive tasks also
 receive a dedicated review. `PASS` means the check ran and passed; missing tools and skipped checks are
-`NOT RUN` with a reason. The agent uses the project's existing conventions and the
+`NOT RUN` with a reason. A review counts only once every check it could not run in its sandbox has run
+and passed on the reviewed commit. When a delegated agent reaches its usage limit, the run stops with
+exit 6 and the loop asks you whether to wait for the reset or use another agent; it never switches by
+itself. The agent uses the project's existing conventions and the
 [engineering principles](shared/engineering.md).
 
 Skills load only stage-relevant references. Review round one covers the full change; later rounds focus

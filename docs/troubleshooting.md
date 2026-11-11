@@ -80,9 +80,11 @@ again at the next limit and never switches by itself.
 ## A review could not run a check
 
 A delegated review in a sandbox can report a check `NOT RUN` (integration tests without sockets, an
-audit without network). The validator names it on a `not run:` line. The orchestrator runs it on the
-reviewed commit and records it under `### Orchestrator checks` in that round before the verdict counts;
-fix the cause for later runs, for example with `Agent network: on`.
+audit without network). The validator names it on a `not run:` line. Before the round is appended, the
+orchestrator runs it on the reviewed commit. When it passes, the round goes into the review file with an
+`### Orchestrator checks` section; when it fails or cannot run there either, the round is not appended, so
+the commit has no review and no gate can pass, and the loop asks you. Fix the cause for later runs, for
+example with `Agent network: on`.
 
 ## A loop stops with findings
 
