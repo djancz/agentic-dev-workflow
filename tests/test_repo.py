@@ -2958,6 +2958,12 @@ class NextStep(unittest.TestCase):
         self.assertEqual(self.next_line('--id', 'TASK-1'), 'wf plan TASK-1')
         self.assertEqual(self.next_line('--branch', 'task/TASK-10-csv-export'), 'wf plan TASK-10')
 
+    def test_items_to_choose_from_come_earliest_wave_first(self):
+        for n, wave in ((5, '—'), (6, 'WAVE-10'), (7, 'WAVE-5'), (8, 'WAVE-4')):
+            self.ticket(n, wave=wave)
+        self.assertEqual(self.next_line(code=1), 'choose one of TASK-8, TASK-7, TASK-6, TASK-5',
+                         'by wave number, and a task without a wave last')
+
     def test_identical_actions_count_once(self):
         for n in (7, 8):
             self.ticket(n)
@@ -3008,6 +3014,62 @@ class NextStep(unittest.TestCase):
         self.wave(1, status='Merged', tasks='TASK-7')
         self.ticket(7, status='Done', wave='WAVE-1', branch='task/TASK-7-csv-export')
         self.assertEqual(self.next_line(), 'wf wave start WAVE-2')
+
+    def dependent_waves(self, depends_on: str, extra_rows: str = ''):
+        """WAVE-1 (TASK-7, row M1.1) has its PR open; TASK-8 of WAVE-2 (row M1.2) has an approved plan."""
+        rows = (f'| WAVE-1 | M1 | TASK-7 | **M1.1 — Export (S).** a | — | x |\n'
+                f'| WAVE-2 | M1 | TASK-8 | **M1.2 — Import (M).** b | {depends_on} | y |\n{extra_rows}')
+        self.project(roadmap='Approved', roadmap_fields={'Current milestone': 'M1'}, rows=rows)
+        self.ready_task(7, wave='WAVE-1')
+        self.wave(1, status='PR opened', tasks='TASK-7')
+        self.ticket(8, wave='WAVE-2')
+        self.approve_plan(8)
+
+    def test_a_dependency_named_by_row_key_or_task_holds_the_wave(self):
+        self.ticket(6, wave='WAVE-1')  # a task the roadmap does not list: its ticket names the wave
+        for depends_on in ('M1.1', 'M1.1, M1.1', 'TASK-7 (the M0 layout on Python 3.14)', 'TASK-6'):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on)
+                returncode, out, err = self.run_next()
+                self.assertIn('TASK-8: waiting: WAVE-1 merged into the base first — WAVE-2 depends on WAVE-1', out,
+                              err)
+        self.dependent_waves('M1.1')
+        self.wave(1, status='Merged', tasks='TASK-7')
+        self.ticket(7, status='Done', wave='WAVE-1', branch='task/TASK-7-csv-export')
+        self.ticket(6, status='Done', wave='WAVE-1')
+        self.assertEqual(self.next_line(), 'wf wave start WAVE-2', 'the merge releases the wave')
+
+    def test_a_dependency_no_row_names_or_on_a_later_wave_is_invalid(self):
+        later = '| WAVE-3 | M1 | TASK-9 | **M1.3 — Sync (S).** c | — | z |\n'
+        self.ticket(9, wave='WAVE-3')
+        for depends_on, message in (('M1.9', 'M1.2 depends on M1.9, which no row'),
+                                    ('TASK-99', 'M1.2 depends on TASK-99, which no row'),
+                                    ('WAVE-2', 'M1.2 in WAVE-2 depends on WAVE-2 in WAVE-2'),
+                                    ('M1.3', 'M1.2 in WAVE-2 depends on M1.3 in WAVE-3'),
+                                    ('TASK-9', 'M1.2 in WAVE-2 depends on TASK-9 in WAVE-3')):
+            with self.subTest(depends_on=depends_on):
+                self.dependent_waves(depends_on, later)
+                returncode, _, err = self.run_next()
+                self.assertEqual(returncode, 2)
+                self.assertIn('roadmap.md', err)
+                self.assertIn(message, err)
+        self.dependent_waves('M1.1', later.replace('M1.3', 'M1.1'))
+        returncode, _, err = self.run_next()
+        self.assertEqual(returncode, 2)
+        self.assertIn('two rows of Waves and tasks have the key M1.1', err)
+
+    def test_each_task_table_has_its_own_header_and_other_tables_are_not_tasks(self):
+        extra = ('\n### M1, second part\n\n'
+                 '| Task | Wave | Milestone | Depends on | Concern and acceptance | Parallel boundary |\n'
+                 '|---|---|---|---|---|---|\n'
+                 '| TASK-9 | WAVE-3 | M1 | M1.1 | **M1.3 — Sync (S).** c | z |\n\n'
+                 '| Check | Milestone |\n|---|---|\n| Format | M1 |\n')
+        self.ticket(9, wave='WAVE-3')
+        self.approve_plan(9)
+        self.dependent_waves('M1.1', extra)
+        returncode, out, err = self.run_next()
+        self.assertIn('TASK-9: waiting: WAVE-1 merged into the base first — WAVE-3 depends on WAVE-1', out, err)
+        self.assertNotIn('wf milestone M1', out, 'a check table is not a task row')
 
     def test_project_route_follows_the_records(self):
         project = self.dev / 'project'

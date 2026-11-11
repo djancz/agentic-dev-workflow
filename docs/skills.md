@@ -39,8 +39,9 @@ more than one task or wave could match.
 The next step comes from the records. `shared/scripts/next-step.py` reads the headers in `development/`
 and the last round of each review, and names one action: a `wf` command, a `human:` answer (a gate, a
 decision on open findings, a merge, or trying a prototype), or, with exit 1, the tasks and waves that
-could continue. A `Where:` line names the branch, and so the worktree, that the step runs in. Every stage
-reports the `Next:` line for the task or wave it worked on (`--id`), and `wf status`, `wf next` and
+could continue, earliest wave first. A wave waits until every earlier wave its roadmap rows depend on is
+merged; *Depends on* names waves, tasks or row keys such as `M1.2`. A `Where:` line names the branch,
+and so the worktree, that the step runs in. Every stage reports the `Next:` line for the task or wave it worked on (`--id`), and `wf status`, `wf next` and
 `wf auto` use it; a delegated run reports none, and `wf maintenance` and `wf deploy` keep their own. A
 review that requests changes on the current plan revision or commit waits for your decision; a stopped
 loop never starts another run by itself, but your own change request goes back to the loop. Follow-ups

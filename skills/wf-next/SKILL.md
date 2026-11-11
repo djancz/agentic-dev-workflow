@@ -34,7 +34,8 @@ things stand and the exact next action, when:
   `references/conventions.md` → Asking the human says;
 - a stage ends without changing the recorded state, so the same command would run again;
 - more than one task or wave could continue (the resolver exits 1, also with an ID): ask which, with each
-  one and its next command as an option;
+  one and its next command as an option, in the resolver's order (earliest wave first), the first one
+  recommended;
 - the next stage runs in another worktree (a `Where:` line names its branch) and you cannot work there:
   name the directory and the command.
 
