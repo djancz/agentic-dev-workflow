@@ -37,11 +37,12 @@ Ask as `conventions.md` → Asking the human says, at most four questions at a t
 Create the file if it is missing, and keep its other lines. Write one line per role,
 `- <Role>: <agent>[,<model>[,<effort>]]`, even for `self` with its defaults, so that the setup is not
 asked again. For each role whose fallbacks change, replace all its `- <Role> fallback:` lines in that
-file, `none` included, with one line for each fallback in the order given. Run the read command
-again. If it exits 2, fix the line it names. Check that each role and its fallbacks now read as chosen.
-If not, the other file decides: a project line overrides the user file, and `- <Role> fallback: none` in
-the project file turns off the user file's fallbacks. Change that file only when the human agrees. Show
-the role and fallback lines to the human.
+file, `none` included, with one line for each fallback in the order given, or with
+`- <Role> fallback: none` for no fallback. Run the read command again. If it exits 2, fix the line it
+names. Check that each role and its fallbacks now read as chosen. If not, the other file decides: a
+project line overrides the user file, and `- <Role> fallback: none` in the project file turns off the
+user file's fallbacks. Change that file only when the human agrees. Show the role and fallback lines to
+the human.
 
 ## Something set (`wf init` only)
 

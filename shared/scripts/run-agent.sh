@@ -260,13 +260,15 @@ worktree_tree() {
     [ "$snapshot_rc" = 0 ] && printf '%s\n' "$tree"
 }
 
-# Each part is taken on its own, so that a part that fails fails the snapshot.
+# Each part is taken on its own, so that a part that fails fails the snapshot. The tree holds what is on
+# disk; the real index entries add what is staged, which can differ.
 fingerprint() {
     tree=$(worktree_tree) || return 1
     head=$(git rev-parse HEAD 2>/dev/null) || head=none
     status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) || return 1
+    staged=$(git ls-files --stage) || return 1
     record_hashes=$(records) || return 1
-    printf '%s\n' "$head" "$status" "$tree" "$record_hashes" | git hash-object --stdin
+    printf '%s\n' "$head" "$status" "$tree" "$staged" "$record_hashes" | git hash-object --stdin
 }
 
 # A snapshot that cannot be taken after the run counts as a change.

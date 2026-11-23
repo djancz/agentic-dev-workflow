@@ -815,6 +815,7 @@ You've hit your usage limit, the finding quotes." ;;
   home-settings) echo '- Rev: gemini' >> "$HOME/.config/agentic-dev-workflow/settings.md" ;;
   untracked-mode) chmod +x notes.txt ;;
   untracked-tab) printf 'more\n' >> "$(printf 'tab\tname.txt')" ;;
+  restage) echo D > tracked.txt; git add tracked.txt; echo C > tracked.txt ;;
   untracked) echo more >> notes.txt ;;
   untracked-then-limit) echo more >> notes.txt
     echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
@@ -1090,6 +1091,15 @@ class RunAgent(unittest.TestCase):
         self.assertNotEqual(exists.returncode, 0, 'the snapshot stored the untracked file in .git/objects')
         r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='untracked')
         self.assertEqual(r.returncode, 3, 'the snapshot still sees an edit of an untracked file')
+
+    def test_a_change_of_staged_content_alone_is_a_change(self):
+        # HEAD has v1, B is staged and C is on disk; the run stages D and puts C back on disk.
+        (self.repo / 'tracked.txt').write_text('B\n')
+        subprocess.run(['git', '-C', str(self.repo), 'add', 'tracked.txt'], check=True)
+        (self.repo / 'tracked.txt').write_text('C\n')
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='restage')
+        self.assertEqual(r.returncode, 3, 'a review that changed what is staged changed the tree')
+        self.assertEqual((self.repo / 'tracked.txt').read_text(), 'C\n')
 
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root reads an unreadable directory')
     def test_records_that_cannot_be_read_fail_the_snapshot(self):
@@ -1877,7 +1887,8 @@ class ResolveRoles(unittest.TestCase):
                        'scripts/resolve-roles.py --paths', 'a fallback always names its agent',
                        'Asking the human', 'the first option keeps them',
                        'replace all its `- <Role> fallback:` lines in that file, `none` included',
-                       'now read as chosen', 'the other file decides'):
+                       'now read as chosen', 'the other file decides',
+                       'or with `- <Role> fallback: none` for no fallback'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, roles)
         loop = ' '.join(LOOP.read_text().split())
