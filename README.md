@@ -206,6 +206,7 @@ warning until `wf init` moves them into `development/wf-settings.md`.
 - Fix: claude,<model>,high
 ```
 
+`wf sec audit` adds two roles of its own, `hunt` and `verify`, and asks for them on its first run.
 A role is `agent[,model[,effort]]`; an omitted part follows `Models: default | auto`. Up to three
 `fallback` lines per role are tried in order when the role's agent reaches its usage limit, and the
 stage records which one ran. Override a role for one run with `<role>=agent,model,effort` (leave a part

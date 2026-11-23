@@ -71,6 +71,8 @@ run of its CLI. Agent CLI authentication is the user's responsibility.
 | rev | `rev=a,m,e` | `rev-agent=`, `rev-model=`, `rev-effort=` | `Rev`, `Rev fallback` | Spec, roadmap, plan, implementation, wave reviews |
 | sec | `sec=a,m,e` | `sec-agent=`, `sec-model=`, `sec-effort=` | `Sec`, `Sec fallback` | `wf sec`, in `wf impl loop` or standalone |
 | fix | `fix=a,m,e` | `fix-agent=`, `fix-model=`, `fix-effort=` | `Fix`, `Fix fallback` | Plan, implementation, wave fixes |
+| hunt | `hunt=a,m,e` | `hunt-agent=`, `hunt-model=`, `hunt-effort=` | `Hunt`, `Hunt fallback` | `wf sec audit`: reconnaissance and hunters |
+| verify | `verify=a,m,e` | `verify-agent=`, `verify-model=`, `verify-effort=` | `Verify`, `Verify fallback` | `wf sec audit`: coverage critics and verifiers |
 
 ```markdown
 - Rev: codex,<model>,xhigh
@@ -91,7 +93,9 @@ in order, each naming its agent; one equal to the role's choice or an earlier fa
 committed `development/wf-settings.md` is refused. Unknown keys and invalid values stop the stage. Role
 lines left in an older `AGENTS.md` block (`Rev agent`, …) count last, with a warning, until `wf init`
 moves them. `rounds=` sets the review rounds in this run (settings, then the block's `Max review rounds`,
-then 3). The stage prints the resolved settings, fallbacks included, before it starts.
+then 3). The stage prints the resolved settings, fallbacks included, before it starts. `hunt` and
+`verify` are used only by `wf sec audit`, which asks for them on its first run; they never count as the
+role setup that `wf init` asks for.
 
 `default` passes no model or effort flag. `auto` chooses only a supported setting and records the actual
 value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your explicit

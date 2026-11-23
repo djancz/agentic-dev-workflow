@@ -7,13 +7,15 @@
      fix: agent=claude model=default effort=default
      rounds: 3
 
-Roles: test (wf test), rev (reviews), sec (security review), fix (review fixes). Their settings are
-personal and never committed. Two files hold them: the user file
+Roles: test (wf test), rev (reviews), sec (security review), fix (review fixes), and the two audit roles
+hunt (wf sec audit: reconnaissance and hunters) and verify (wf sec audit: coverage critics and verifiers),
+which only wf sec audit asks for. Their settings are personal and never committed. Two files hold them: the user file
 ${XDG_CONFIG_HOME:-~/.config}/agentic-dev-workflow/settings.md for every project, and
 development/wf-settings.md of the current repository, which overrides the user file key by key. Their
 `- Key: value` lines (HTML comments are ignored) are:
 
-  Test, Rev, Sec, Fix: agent[,model[,effort]]   an omitted, empty or `default` part follows Models
+  Test, Rev, Sec, Fix, Hunt, Verify: agent[,model[,effort]]
+                                                an omitted, empty or `default` part follows Models
   <Role> fallback: agent[,model[,effort]]       up to 3 lines, tried in order after a usage limit; or none.
                                                 A fallback names its agent; one equal to the role's choice
                                                 or to an earlier fallback is left out
@@ -34,8 +36,9 @@ reviews of a new project), a missing AGENTS.md or wf block means built-in defaul
 whose fields come partly from arguments reads `(from argument, <source>)`, `; models=auto from
 <source>` names where Models came from when it filled a field, and `<role> fallback: none` shows a file
 that turned the fallbacks off. Its first line, `settings: <sources>`, names where the human set a role
-(all roles, not only the printed ones; fallbacks alone do not count), or reads `settings: none` when no
-role is set and the role setup should ask. --paths prints the absolute paths of
+(test, rev, sec or fix, printed or not; fallbacks and the audit roles do not count), or reads
+`settings: none` when none of them is set and the role setup should ask. --roles prints test, rev, sec and
+fix unless it names others. --paths prints the absolute paths of
 the user and project files (`user: <path>`, `project: <path>|none`) and needs no --agents-md.
 A project file that git tracks is refused: the settings of one person must not reach the others.
 Exit codes: 0 resolved, 2 invalid argument, settings file or block.
@@ -50,7 +53,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROLES = ('test', 'rev', 'sec', 'fix')
+CORE_ROLES = ('test', 'rev', 'sec', 'fix')
+# Only wf sec audit uses these; they never decide whether the role setup asks.
+AUDIT_ROLES = ('hunt', 'verify')
+ROLES = CORE_ROLES + AUDIT_ROLES
 FIELDS = ('agent', 'model', 'effort')
 AGENTS = {'self', 'claude', 'codex', 'gemini', 'opencode'}
 MAX_ROUNDS = 10
@@ -63,7 +69,7 @@ EFFORT = re.compile(r'[a-z]+')
 SETTING_KEYS = {key.lower(): key for key in (
     'Models', 'Max review rounds', *(role.capitalize() for role in ROLES),
     *(f'{role.capitalize()} fallback' for role in ROLES))}
-BLOCK_ROLE_KEYS = [f'{role.capitalize()} {field}' for role in ROLES for field in FIELDS]
+BLOCK_ROLE_KEYS = [f'{role.capitalize()} {field}' for role in CORE_ROLES for field in FIELDS]
 RENAMED_OPTIONS = {
     'reviewer': 'rev-agent= or rev=', 'model': 'rev-model=, test-model= or sec-model=',
     'effort': 'rev-effort=, test-effort= or sec-effort=', 'agent': 'test-agent= or sec-agent=',
@@ -291,9 +297,10 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
                      else 'AGENTS.md' if 'Max review rounds' in block else 'default')
     lines.append(line(f'rounds: {int(rounds)}', rounds_source, []))
     if sources is not None:
-        # Every role counts, not only the printed ones: the question is whether the human chose any role.
-        # A fallback alone is no choice of a role, so it leaves the setup to ask.
-        found = list(dict.fromkeys(origin(role.capitalize()) for role in ROLES
+        # Every core role counts, not only the printed ones: the question is whether the human chose any
+        # role. A fallback alone is no choice of a role, and neither is an audit role, so they leave the
+        # setup to ask.
+        found = list(dict.fromkeys(origin(role.capitalize()) for role in CORE_ROLES
                                    if origin(role.capitalize()) != 'default'))
         lines.insert(0, f'settings: {", ".join(found) if found else "none"}')
     return lines
@@ -347,7 +354,9 @@ def load_settings(user: Path | None, project: Path | None) -> tuple[dict, dict[s
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--agents-md', help='AGENTS.md with the wf block, or - for stdin (required)')
-    parser.add_argument('--roles', default=','.join(ROLES), help='comma-separated roles to print')
+    parser.add_argument('--roles', default=','.join(CORE_ROLES),
+                        help=f'comma-separated roles to print, of {",".join(ROLES)} '
+                             f'(default: {",".join(CORE_ROLES)})')
     parser.add_argument('--before-init', action='store_true',
                         help='accept a missing AGENTS.md or wf block (new project before wf init)')
     parser.add_argument('--settings', type=Path,

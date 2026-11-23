@@ -108,11 +108,12 @@ class SkillStructure(unittest.TestCase):
             with self.subTest(doc=str(doc.relative_to(REPO))):
                 self.assertIsNone(removed.search(doc.read_text()))
         block = (SKILLS / 'wf-init' / 'SKILL.md').read_text().split('<!-- wf:begin', 1)[1].split('wf:end', 1)[0]
-        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix) (?:agent|model|effort)|Models):', block, flags=re.MULTILINE)
+        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix|Hunt|Verify) (?:agent|model|effort)|Models):', block,
+                          flags=re.MULTILINE)
         self.assertEqual(keys, [], 'agent roles are personal settings, never part of AGENTS.md')
         self.assertIn('development/wf-settings.md', block)
         template = (SKILLS / 'wf-init' / 'templates' / 'wf-settings.md').read_text()
-        for key in ('`Test`', '`Rev`', '`Sec`', '`Fix`', '`<Role> fallback`', '`Models`'):
+        for key in ('`Test`', '`Rev`', '`Sec`', '`Fix`', '`Hunt`', '`Verify`', '`<Role> fallback`', '`Models`'):
             with self.subTest(key=key):
                 self.assertIn(key, template)
 
@@ -1833,6 +1834,40 @@ class ResolveRoles(unittest.TestCase):
             'sec fallback 1: agent=claude model=some-model effort=high',
             'rounds: 3',
         ])
+
+    def test_the_audit_roles_resolve_like_the_others_but_never_count_as_set(self):
+        # Without --roles, only the four core roles are printed, as before.
+        command = [sys.executable, str(RESOLVE_ROLES), '--agents-md', '-', '--settings', str(self.project_file)]
+        r = subprocess.run(command, input=self.BLOCK, capture_output=True, text=True, cwd=self.tmp,
+                           env={**os.environ, 'XDG_CONFIG_HOME': str(self.config)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([line.split(':')[0] for line in r.stdout.splitlines()],
+                         ['test', 'rev', 'sec', 'fix', 'rounds'])
+        self.assertEqual(self.lines('hunt=opencode,provider/open-model', 'verify-agent=claude', 'verify-effort=high',
+                                    roles='hunt,verify'), [
+            'hunt: agent=opencode model=provider/open-model effort=default',
+            'verify: agent=claude model=default effort=high',
+            'rounds: 4',
+        ])
+        project = '- Hunt: opencode,provider/open-model\n- Hunt fallback: codex\n- Verify: claude,,high\n'
+        self.assertEqual(self.lines('--sources', roles='hunt,verify', project=project), [
+            'settings: none',
+            f'hunt: agent=opencode model=provider/open-model effort=default  (from {self.project_file})',
+            f'hunt fallback 1: agent=codex model=default effort=default  (from {self.project_file})',
+            f'verify: agent=claude model=default effort=high  (from {self.project_file})',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        # A core role still counts, and the audit roles left unset read as default.
+        self.assertEqual(self.lines('--sources', roles='hunt', project='- Sec: codex\n')[:2], [
+            f'settings: {self.project_file}',
+            'hunt: agent=self model=default effort=default  (from default)',
+        ])
+        r = self.resolve('hunt=opencode', 'hunt-model=x', roles='hunt')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('either hunt= or', r.stderr)
+        r = self.resolve(roles='rev,audit')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('--roles takes test,rev,sec,fix,hunt,verify', r.stderr)
 
     def test_sources_say_where_each_line_comes_from_and_whether_roles_are_set(self):
         r = self.resolve('--sources', roles='rev,fix')

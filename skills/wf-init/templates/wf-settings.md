@@ -5,8 +5,10 @@ by its worktrees. `~/.config/agentic-dev-workflow/settings.md` (in `$XDG_CONFIG_
 takes the same lines for every project. A line here overrides the same key there, and a per-run argument
 such as `rev=codex,,high` overrides both.
 
-Roles: `Test` writes tests, `Rev` reviews, `Sec` runs the security review, `Fix` fixes review findings. A
-role is `agent[,model[,effort]]`, where the agent is `self`, `claude`, `codex`, `gemini` or `opencode`; an
+Roles: `Test` writes tests, `Rev` reviews, `Sec` runs the security review, `Fix` fixes review findings.
+`Hunt` and `Verify` are used only by `wf sec audit`: `Hunt` maps the code and hunts (an open-weight model
+through `opencode` suits it), `Verify` runs the coverage critics and verifiers (best another model family
+than `Hunt`); that audit asks for them on its first run. A role is `agent[,model[,effort]]`, where the agent is `self`, `claude`, `codex`, `gemini` or `opencode`; an
 omitted part, or `default`, follows `Models`. Up to three `<Role> fallback` lines are tried in order when
 the role's agent reaches its usage limit; each names its agent, and one equal to the role's choice is left
 out. `<Role> fallback: none` turns off the fallbacks of the user file. `Max review rounds` overrides the
@@ -23,4 +25,7 @@ name.
 - Sec: codex,<model>,high
 - Sec fallback: claude,<model>,high
 - Fix: claude,<model>,high
+- Hunt: opencode,<model>
+- Hunt fallback: codex,<model>,high
+- Verify: claude,<model>,high
 -->
