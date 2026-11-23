@@ -140,8 +140,8 @@ plan approved as `Approved: revision <n> …` with an approving plan review of t
 commands it can read statically (no `cd`, shell globs, `..`, variable or symlinked paths, or submodules).
 A review counts only when its last round is valid and matches its header. Otherwise it stops at the usual
 gate with its reasons; after your answer, `wf auto TASK-N` continues. A reviewer from another model
-family (`rev=codex`, `rev=gemini`) is recommended. Add `- Autopilot: disabled` to the managed block to
-turn it off, or `- Autopilot paths: <glob>, …` to protect more paths.
+family (`rev=codex`, `rev=gemini`) is recommended, also for its fallback. Add `- Autopilot: disabled` to
+the managed block to turn it off, or `- Autopilot paths: <glob>, …` to protect more paths.
 
 ## Start a new project
 
@@ -175,9 +175,10 @@ when needed, a PRD or spec revision. Simulated sign-in never reaches the base br
 
 Install the skills and run `wf init` on the project base branch. It detects the project's check commands,
 reports which pass, fail, or cannot run, and writes them to a managed block in `AGENTS.md`; commit it
-through your normal process. Then start each change with `wf task`. For a major initiative, start with
-`wf prd`. `wf maintenance` checks routine dependency and security updates; `wf deploy` uses an approved
-runbook when your project deploys to a server. If the PR gets comments or CI fails, type
+through your normal process. Your agent roles stay in the private `development/wf-settings.md`. Then
+start each change with `wf task`. For a major initiative, start with `wf prd`. `wf maintenance` checks
+routine dependency and security updates; `wf deploy` uses an approved runbook when your project deploys
+to a server. If the PR gets comments or CI fails, type
 `wf finalize WAVE-N` and the agent works them in and asks before pushing again. When a wave whose PR is
 open goes back for changes and passes Gate 2 again, the same command updates that PR, again only after
 your yes, and never opens a second one.
@@ -185,11 +186,31 @@ your yes, and never opens a second one.
 ## Choices you control
 
 Four roles each have an agent, a model and an effort: `test` writes tests, `rev` reviews, `sec` runs
-the security review, and `fix` fixes review findings. Project defaults live in the managed workflow block
-of `AGENTS.md` (`Rev agent`, `Rev model`, `Rev effort`, …) with the maximum review rounds. They start as
-`self`, `default` model/effort, and **3 rounds**. Override a role for one run with
-`<role>=agent,model,effort` (leave a part out or empty for `default`) or with `<role>-agent=`,
-`<role>-model=`, `<role>-effort=`:
+the security review, and `fix` fixes review findings. They are your personal choice, so they live
+outside the repository and never reach a commit or a teammate: `~/.config/agentic-dev-workflow/settings.md`
+for all your projects, and `development/wf-settings.md` for one project, which overrides the first key by
+key. You do not have to write them by hand. While no role is set, the first stage that needs one
+(`wf init`, or the spec review of a new project) asks you for each role's agent and a fallback. It
+offers the agent CLIs you have installed, and you can type a model. It then saves your answers for all
+projects or for this one. Each later `wf init` shows the current roles and asks whether to keep or
+change them. A role left at `self` runs on the agent's `default` model and effort. The maximum review
+rounds (**3** by default) stays a project setting in the managed block of `AGENTS.md`; a settings file
+may override it for you. A block that still has role lines (`Rev agent`, …) keeps working with a
+warning until `wf init` moves them into `development/wf-settings.md`.
+
+```markdown
+- Rev: codex,<model>,xhigh
+- Rev fallback: claude,<model>,medium
+- Sec: codex,<model>,xhigh
+- Test: claude,<model>,high
+- Fix: claude,<model>,high
+```
+
+A role is `agent[,model[,effort]]`; an omitted part follows `Models: default | auto`. Up to three
+`fallback` lines per role are tried in order when the role's agent reaches its usage limit, and the
+stage records which one ran. Override a role for one run with `<role>=agent,model,effort` (leave a part
+out or empty for `default`) or with `<role>-agent=`, `<role>-model=`, `<role>-effort=`; the role keeps
+its fallbacks:
 
 ```text
 wf test TASK-7 test=gemini,<model>
@@ -211,10 +232,11 @@ A fresh agent writes feature tests from the approved contract before implementat
 context reviews the implementation. Every task runs its declared checks; security-sensitive tasks also
 receive a dedicated review. `PASS` means the check ran and passed; missing tools and skipped checks are
 `NOT RUN` with a reason. A review counts only once every check it could not run in its sandbox has run
-and passed on the reviewed commit. When a delegated agent reaches its usage limit, the run stops with
-exit 6 and the loop asks you whether to wait for the reset or use another agent; it never switches by
-itself. The agent uses the project's existing conventions and the
-[engineering principles](shared/engineering.md).
+and passed on the reviewed commit. When a delegated agent reaches its usage limit (exit 6), the loop
+runs the stage again with the role's next fallback from your settings and records it; without one, it
+asks you whether to wait for the reset or use another agent, and it never picks one itself. A write
+stage that had already changed files when it hit the limit (exit 7) always stops and asks. The agent
+uses the project's existing conventions and the [engineering principles](shared/engineering.md).
 
 Skills load only stage-relevant references. Review round one covers the full change; later rounds focus
 on findings and the delta. The orchestrator reads short artifact headers and bounded command output.

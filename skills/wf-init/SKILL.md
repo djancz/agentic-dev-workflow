@@ -4,8 +4,9 @@ description: >-
   Set a repository up for the wf development workflow: detect the stack (Python, Rust, Go, TypeScript/JS
   and others), choose and verify the check commands (format, lint, typecheck, unit and integration tests,
   build, secret scan, dependency audit, SAST), write the managed wf block into AGENTS.md, gitignore
-  development/, and make CLAUDE.md and GEMINI.md import AGENTS.md. Use once per project, or to refresh the
-  checks after the toolchain changes. Triggers: "wf init", "set up wf", "nastav wf", "inicializuj workflow".
+  development/, keep the personal agent roles in the private development/wf-settings.md, and make
+  CLAUDE.md and GEMINI.md import AGENTS.md. Use once per project, or to refresh the checks after the
+  toolchain changes. Triggers: "wf init", "set up wf", "nastav wf", "inicializuj workflow".
 ---
 
 # wf-init — prepare a project
@@ -49,18 +50,23 @@ the human (for every question below).
    `dirname "$(dirname "$(realpath <this skill dir>)")"`. It links
    `development/` to the common Git directory; never overwrite an existing directory. Add
    `/development` to `.gitignore` if absent; without a trailing slash it also matches the link.
-8. **Import files.** If `CLAUDE.md` or `GEMINI.md` is missing, create it with the single line
+   Create `development/wf-settings.md` from `templates/wf-settings.md` if it is missing: the agent,
+   model, effort and fallbacks of each role are personal and never go into `AGENTS.md`.
+8. **Agent roles.** After any move of old role lines (Block format), follow `references/roles.md`: with
+   `settings: none`, ask for the roles and their fallbacks; otherwise show them and ask whether to keep
+   or change them. Never write them into `AGENTS.md`.
+9. **Import files.** If `CLAUDE.md` or `GEMINI.md` is missing, create it with the single line
    `@AGENTS.md`. If it exists but does not mention `AGENTS.md`, append `@AGENTS.md` and say so in the
    report.
-9. **Commit only on a yes.** Report the stacks, the check table with the status of each check, the
-   missing tools with install hints, and the files you changed. Suggest committing them on the base branch
-   as `chore: set up wf workflow` before the first `wf wave start`: wave and task branches start from
-   the base, and their checks are read from the base's `AGENTS.md`. If the base branch has no commit yet,
-   this commit is
-   required: offer to make it, and after the human's yes stage the files by name and commit.
-   Then report the next step (`references/conventions.md` → Reporting to the human). If checks
-   are `planned`, the first task should set up the toolchain and those checks. Add `wf deploy setup` if
-   the project is deployed to a server.
+10. **Commit only on a yes.** Report the stacks, the role settings and their file, the check table with
+    the status of each check, the missing tools with install hints, and the files you changed. Suggest
+    committing them on the base branch as `chore: set up wf workflow` before the first `wf wave start`:
+    wave and task branches start from the base, and their checks are read from the base's `AGENTS.md`.
+    If the base branch has no commit yet, this commit is required: offer to make it, and after the
+    human's yes stage the files by name and commit. Then report the next step
+    (`references/conventions.md` → Reporting to the human). If checks are `planned`, the first task
+    should set up the toolchain and those checks. Add `wf deploy setup` if the project is deployed to a
+    server.
 
 ## Block format
 
@@ -76,23 +82,11 @@ Use `wf status` to resume. `wf maintenance` and `wf deploy` are optional.
 If your agent does not load skills, read the matching `wf-<stage>/SKILL.md` under its installed
 project directory: `.claude/skills/`, `.agents/skills/`, `.gemini/skills/`, or `.opencode/skills/`.
 `wf plan rev` is `wf-plan-review`, `wf impl rev` is `wf-impl-review`, and `wf sec` is
-`wf-security-review`.
+`wf-security-review`. The agent, model and effort of each role and their usage-limit fallbacks are
+personal: `development/wf-settings.md` (private) and `~/.config/agentic-dev-workflow/settings.md`.
 
 - Base branch: main
 - Max review rounds: 3
-- Models: default <!-- default | auto -->
-- Test agent: self <!-- self | claude | codex | gemini | opencode -->
-- Test model: default
-- Test effort: default
-- Rev agent: self
-- Rev model: default
-- Rev effort: default
-- Sec agent: self
-- Sec model: default
-- Sec effort: default
-- Fix agent: self
-- Fix model: default
-- Fix effort: default
 - Dev server: none <!-- `<command>` at <url>, for browser checks; the command stays in the foreground -->
 - Autopilot: allowed <!-- allowed | disabled; wf auto may pass gates only by its policy -->
 - Agent network: off <!-- on | off; headless Codex write runs get network, e.g. for online checks -->
@@ -115,11 +109,16 @@ Project rules (may only tighten the workflow):
 <!-- wf:end -->
 ```
 
-When refreshing an existing block, keep the human's edits: all agent, model, effort, round settings,
-the dev server, the `Autopilot`, `Autopilot paths` and `Agent network` lines, and the project rules. Rename old keys
-and keep their values: `Reviewer` → `Rev agent`, `Review model` → `Rev model`, `Review effort` → `Rev effort`, `Security reviewer` → `Sec agent`,
-`Security model` → `Sec model`, `Security effort` → `Sec effort`. Change only the rows you re-verified,
-and add missing rows. Replace a `planned` row with its command once the toolchain for it exists and the
-command runs.
+When refreshing an existing block, keep the human's edits: `Max review rounds`, the dev server, the
+`Autopilot`, `Autopilot paths` and `Agent network` lines, and the project rules. Move role settings out
+of the block: for each role whose `<Role> agent`, `model` and `effort` lines (older names: `Reviewer`,
+`Review model`, `Review effort`, `Security reviewer`, `Security model`, `Security effort`) are not all
+`self` or `default`, add `- <Role>: <agent>,<model>,<effort>` to `development/wf-settings.md` (created
+from `templates/wf-settings.md` if missing), with an empty part for `default`, and `- Models: auto` if
+the block says so. If the file already sets that key differently, ask which to keep. Then delete every
+role line and `Models` from the block, and name the moved keys in the report: the `AGENTS.md` change
+needs a commit, and the old values stay in its history. Point out text outside the block that names
+agents or models for the roles; do not edit it. Change only the rows you re-verified, and add missing
+rows. Replace a `planned` row with its command once the toolchain for it exists and the command runs.
 
 End with `— wf-init · <timestamp>`.

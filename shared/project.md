@@ -125,10 +125,13 @@ account.
 
 ## Agent selection
 
-The roles `test`, `rev`, `sec` and `fix` each have an agent, a model and an effort. The managed
-`AGENTS.md` block holds their defaults (`Test agent`, `Rev model`, `Sec effort`, `Fix agent`, …), plus
-`Models` and `Max review rounds`; per-run arguments override them. `loop.md` → Arguments defines the
-syntax and precedence, and `scripts/resolve-roles.py` applies it. Agent values: `self` (a fresh native
+The roles `test`, `rev`, `sec` and `fix` each have an agent, a model, an effort and up to three
+usage-limit fallbacks. They are the human's personal settings, never project policy, so they stay out of
+`AGENTS.md`: `development/wf-settings.md` (private, shared by this clone's worktrees) overrides
+`~/.config/agentic-dev-workflow/settings.md` key by key, and per-run arguments override both. The
+`AGENTS.md` block keeps the project's `Max review rounds`. `loop.md` → Arguments defines the syntax and
+precedence, `scripts/resolve-roles.py` applies it, and `roles.md` asks the human for the settings
+(`wf init`, and the first stage that needs a role while none is set). Agent values: `self` (a fresh native
 subagent or headless run of the current CLI), `claude`, `codex`, `gemini`, `opencode`. `default` passes
 no setting. `models=auto` may select a supported model and effort from available CLIs, but must record
 what actually ran. A requested setting that the selected CLI cannot apply stops the stage with an

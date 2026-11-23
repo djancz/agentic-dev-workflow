@@ -17,19 +17,26 @@ Set a role with the shorthand `<role>=agent[,model[,effort]]` (an omitted or emp
 or with `<role>-agent=`, `<role>-model=`, `<role>-effort=`; never both for one role. For example
 `rev=codex,,high`, `fix=claude,sonnet`, `sec-agent=gemini`. An agent is `self`, `claude`, `codex`,
 `gemini` or `opencode`; a model or effort is a name, `auto`, or `default` (the agent's own setting).
-Unset fields come from the `wf` block (`Rev agent`, `Rev model`, …), then from `models` (argument, then
-`Models`, then `default`); an agent falls back to `self`. `rounds` defaults to `Max review rounds`, or 3,
-must be 1–10, and counts review rounds in this run; another run requires a new human request.
+Unset fields come from the human's personal settings, never from `AGENTS.md`: `development/wf-settings.md`,
+then `~/.config/agentic-dev-workflow/settings.md` (`- Rev: codex,<model>,high`; `scripts/resolve-roles.py`
+lists the keys), then from `models` (argument, then `Models`, then `default`); an agent falls back to
+`self`. There a role may also list up to three usage-limit fallbacks (`- Rev fallback: claude,<model>`),
+which an argument for the role keeps. Role keys still left in the `wf` block count last, with a warning.
+`rounds` defaults to `Max review rounds` (settings, then block), or 3, must be 1–10, and counts review
+rounds in this run; another run requires a new human request.
 
 Resolve the settings before the first stage with the trusted block (`conventions.md` → Checks):
 ```bash
 git show "$(git merge-base <base> HEAD):AGENTS.md" |
-  python3 scripts/resolve-roles.py --agents-md - --roles rev,fix <the stage's arguments>
+  python3 scripts/resolve-roles.py --agents-md - --roles rev,fix --sources <the stage's arguments>
 ```
 `wf impl loop` adds `sec` (`--roles rev,sec,fix`); spec and roadmap reviews, which are project-level,
 use `--agents-md AGENTS.md --roles rev --before-init`, because a new project reaches them before
-`wf init` writes the block. Show the output lines to the human, use them for every stage, and put the
-actual values in the round's `Reviewer` line. A non-zero exit stops the loop with its message. If any
+`wf init` writes the block. When the first line reads `settings: none`, no role is set anywhere: set them
+up first (`roles.md` → Nothing set), then resolve again. Show the output lines and any warning to the
+human, use them for every stage
+of this run (a role changes only to its listed fallbacks, *Delegated runs*), and put the actual values in
+the round's `Reviewer` line. A non-zero exit stops the loop with its message. If any
 model or effort is not `default`, apply `models.md` at every stage.
 
 ## How a stage runs in a fresh context
@@ -85,8 +92,8 @@ into the header.
 A non-zero run or validation exit, or exit 3 (tree changed), is a **failed review, not a clean one**. Retry
 once only for a transient failure. If it fails again, stop and report the log tail. Never write a review
 yourself. If a requested agent, model, or effort is unavailable, stop without retrying under a different
-setting; ask the human to choose a supported value. A usage limit (exit 6) is never retried
-(*Delegated runs*).
+setting; ask the human to choose a supported value. A usage limit (exit 6 or 7) is never retried under
+the same settings; only a listed fallback continues it (*Delegated runs*).
 
 ## Delegated runs
 
@@ -110,12 +117,22 @@ These rules apply to every stage you delegate, including `wf test`, `wf sec` and
   finished work. Do not work around the blocker for a single run; the one exception is a check a review
   did not run, which you run yourself to verify the round (below).
 - **Usage limit.** `run-agent.sh` exits 6 when the agent reached its usage limit and repeats the agent's
-  line, which says when it resets. It is not transient and produced no result: never retry it, and never
-  switch agent, model or effort on your own. Stop and ask the human (`conventions.md` → Asking the human):
-  wait for the reset and rerun the same prompt, or use an agent and model they name for this run. Record
-  the answer where the stage records its agent; it covers that run only.
+  line, which says when it resets; a native subagent that stops on a usage limit counts the same. It is
+  not transient and produced no result: never retry it under the same settings. **Fallback:** when the
+  resolved role lists a fallback not yet tried in this run, run the same stage with the next one: keep
+  the failed run's files (*Reruns*), write the prompt again with the fallback's agent, model and effort,
+  and record `(fallback: <agent> / <model> / <effort> reached its usage limit)` where the stage records
+  its agent. Print one line saying so. The role keeps that fallback for the rest of this run; the next
+  run starts with the first choice again. Exit 7 is a usage limit after the run had already changed the
+  tree, `HEAD` or the records: never continue it under another agent. When no fallback is left, or on
+  exit 7, stop and ask the human (`conventions.md` → Asking the human): wait for the reset and rerun the
+  same prompt, or use an agent and model they name for this run. Never switch to an agent, model or
+  effort that neither the settings nor the human named. Record the answer where the stage records its
+  agent; it covers that run only.
 - **Reruns.** Before any rerun, keep the failed run's files: rename them to
-  `<stage>-r<n>-attempt<k>.out.md` with its `.exit` and `.log`, so the rerun starts with an empty out-file.
+  `<stage>-r<n>-attempt<k>.out.md` with its `.exit` and `.log` (and the prompt to
+  `<stage>-r<n>-attempt<k>.prompt.md` when the rerun gets a new one), so the rerun starts with an empty
+  out-file.
 - **Checks a review did not run.** A review round that marks NOT RUN a check with a command in the
   `AGENTS.md` table hit an environment blocker; `validate-review.py` and `validate-wave-review.py` name
   such checks on a `not run:` line. Before you append the round, run each one yourself on the reviewed

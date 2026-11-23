@@ -8,6 +8,7 @@
 #        The working tree and the private records in development/ (except runs/) are always
 #        checked afterwards.
 #   rw   the agent may edit files and run commands in the repository.
+#   In every mode, the local role settings (development/wf-settings.md) must not change during the run.
 #   --expect-clean  with rw: fail with exit 3 if the tree or the records changed — for reviews that must
 #        run the project's checks but must not touch the code.
 #
@@ -32,13 +33,14 @@
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #
-# Exit codes: 0 ok, 2 usage, 3 tree or records changed, 4 required executable not found,
+# Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
-#             6 the agent reached its usage limit (its message, repeated on stderr, says when it resets)
+#             6 the agent reached its usage limit (its message, repeated on stderr, says when it resets),
+#             7 the same, but the run had already changed the tree, HEAD or the records
 set -eu
 
 usage() {
-    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -146,6 +148,9 @@ esac
 
 model=${WF_AGENT_MODEL:-}
 effort=${WF_AGENT_EFFORT:-}
+case $model in
+    -*|*[[:space:]]*) die 2 "WF_AGENT_MODEL must be a name without spaces, not starting with -: $model" ;;
+esac
 case $effort in
     *[!a-z]*) die 2 "WF_AGENT_EFFORT must be a lowercase level such as high: $effort" ;;
 esac
@@ -230,6 +235,15 @@ fingerprint() {
     } | git hash-object --stdin
 }
 
+# The local role settings decide which agents later stages run; no delegated run may change them.
+settings_hash() {
+    if [ -f development/wf-settings.md ]; then
+        git hash-object --stdin <development/wf-settings.md
+    else
+        echo none
+    fi
+}
+
 timeout_s=${WF_AGENT_TIMEOUT:-1800}
 is_uint "$timeout_s" && [ "$timeout_s" -gt 0 ] || die 2 "WF_AGENT_TIMEOUT must be a positive integer"
 if command -v timeout >/dev/null 2>&1; then
@@ -242,6 +256,7 @@ fi
 set -- "$timeout_cmd" -k 30 "$timeout_s" "$@"
 
 before=$(fingerprint)
+settings_before=$(settings_hash)
 : >"$out"
 rc=0
 if [ "$stdout_is_output" = 1 ]; then
@@ -250,6 +265,10 @@ else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
 fi
 
+if [ "$(settings_hash)" != "$settings_before" ]; then
+    echo "run-agent: the local wf settings (development/wf-settings.md) changed during the run" >&2
+    exit 3
+fi
 if [ "$expect_clean" = 1 ] && [ "$(fingerprint)" != "$before" ]; then
     echo "run-agent: the working tree changed during a run that must not modify it:" >&2
     git status --short >&2
@@ -265,6 +284,11 @@ if [ "$rc" -ne 0 ]; then
             grep -vxF -f "$prompt" | sed -n 1p)
         if [ -n "$limit_line" ]; then
             echo "run-agent: $agent reached its usage limit: $limit_line" >&2
+            if [ "$(fingerprint)" != "$before" ]; then
+                echo "run-agent: the run had already changed the tree, HEAD or the records;" \
+                    "no other agent may continue it" >&2
+                exit 7
+            fi
             exit 6
         fi
     fi

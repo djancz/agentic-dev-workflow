@@ -107,10 +107,14 @@ class SkillStructure(unittest.TestCase):
                     *SKILLS.glob('*/SKILL.md'), *SKILLS.glob('*/templates/*.md')):
             with self.subTest(doc=str(doc.relative_to(REPO))):
                 self.assertIsNone(removed.search(doc.read_text()))
-        block = (SKILLS / 'wf-init' / 'SKILL.md').read_text().split('<!-- wf:begin', 1)[1]
-        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix) (?:agent|model|effort)):', block, flags=re.MULTILINE)
-        self.assertEqual(sorted(keys), sorted(f'{role} {field}' for role in ('Test', 'Rev', 'Sec', 'Fix')
-                                              for field in ('agent', 'model', 'effort')))
+        block = (SKILLS / 'wf-init' / 'SKILL.md').read_text().split('<!-- wf:begin', 1)[1].split('wf:end', 1)[0]
+        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix) (?:agent|model|effort)|Models):', block, flags=re.MULTILINE)
+        self.assertEqual(keys, [], 'agent roles are personal settings, never part of AGENTS.md')
+        self.assertIn('development/wf-settings.md', block)
+        template = (SKILLS / 'wf-init' / 'templates' / 'wf-settings.md').read_text()
+        for key in ('`Test`', '`Rev`', '`Sec`', '`Fix`', '`<Role> fallback`', '`Models`'):
+            with self.subTest(key=key):
+                self.assertIn(key, template)
 
     def test_review_and_test_contexts_are_separate(self):
         self.assertIn('fresh context', (SKILLS / 'wf-test' / 'SKILL.md').read_text())
@@ -804,6 +808,9 @@ case ${FAKE_MODE:-ok} in
     exit 1 ;;
   limit-in-review) body="$body
 You've hit your usage limit, the finding quotes." ;;
+  modify-then-limit) echo changed >> tracked.txt
+    echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
+  settings) echo '- Rev: gemini' >> development/wf-settings.md ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
 '''
@@ -995,6 +1002,37 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='limit-in-review')
         self.assertEqual(r.returncode, 0, 'a successful run is never a usage limit')
 
+    def test_a_usage_limit_after_changes_exits_7(self):
+        r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='modify-then-limit')
+        self.assertEqual(r.returncode, 7, r.stderr)
+        self.assertIn('codex reached its usage limit', r.stderr)
+        self.assertIn('no other agent may continue it', r.stderr)
+        self.assertEqual(self.run_agent('--wait', str(self.out), '10').returncode, 7)
+        subprocess.run(['git', '-C', str(self.repo), 'checkout', '-q', '--', 'tracked.txt'], check=True)
+        r = self.run_agent('--expect-clean', 'codex', 'rw', str(self.prompt), str(self.out),
+                           mode='modify-then-limit')
+        self.assertEqual(r.returncode, 3, 'a review that changed the tree fails as a changed tree first')
+
+    def test_a_run_that_changes_the_local_settings_fails(self):
+        (self.repo / 'development').mkdir()
+        (self.repo / '.git/info/exclude').write_text('/development\n')
+        (self.repo / 'development/wf-settings.md').write_text('- Rev: codex\n')
+        r = self.run_agent('claude', 'rw', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='settings')
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn('development/wf-settings.md', r.stderr)
+        (self.repo / 'development/wf-settings.md').unlink()
+        r = self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='settings')
+        self.assertEqual(r.returncode, 3, 'creating the settings file counts as a change')
+
+    def test_a_model_that_could_pass_as_an_option_is_rejected(self):
+        for model in ('--dangerously-skip-permissions', 'gpt 5'):
+            with self.subTest(model=model):
+                r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_MODEL=model)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn('WF_AGENT_MODEL', r.stderr)
+
     def test_outer_code_fence_is_stripped(self):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='fence')
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1178,9 +1216,14 @@ None.
                 self.assertIn(phrase, loop)
         wave = ' '.join((SHARED / 'wave-review.md').read_text().split())
         self.assertIn('run the checks it names on a `not run:` line first', wave)
+        for phrase in ('**Fallback:**', 'Exit 7 is a usage limit after the run had already changed',
+                       'never continue it under another agent', 'The role keeps that fallback for the rest of this run'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, loop)
         for doc in (REPO / 'README.md', REPO / 'docs' / 'skills.md'):
             text = ' '.join(doc.read_text().split())
-            for phrase in ('exit 6', 'M1.2', 'NOT RUN'):
+            for phrase in ('exit 6', 'exit 7', 'M1.2', 'NOT RUN', 'development/wf-settings.md',
+                           '~/.config/agentic-dev-workflow/settings.md', 'fallback'):
                 with self.subTest(doc=doc.name, phrase=phrase):
                     self.assertIn(phrase, text)
 
@@ -1391,6 +1434,13 @@ class NewId(unittest.TestCase):
 class ResolveRoles(unittest.TestCase):
     BLOCK = """# Project
 <!-- wf:begin — managed by wf-init; edit the values, keep the markers -->
+- Base branch: main
+- Max review rounds: 4
+<!-- wf:end -->
+"""
+    # A block written before the roles moved to the personal settings.
+    OLD_BLOCK = """# Project
+<!-- wf:begin — managed by wf-init; edit the values, keep the markers -->
 - Test agent: self <!-- self | claude | codex | gemini | opencode -->
 - Rev agent: gemini
 - Rev model: default
@@ -1401,11 +1451,37 @@ class ResolveRoles(unittest.TestCase):
 - Models: default <!-- default | auto -->
 <!-- wf:end -->
 """
+    USER = """# wf settings
 
-    def resolve(self, *args: str, block: str | None = None, roles: str = 'rev'):
-        command = [sys.executable, str(RESOLVE_ROLES), '--agents-md', '-', '--roles', roles, *args]
-        return subprocess.run(command, input=self.BLOCK if block is None else block,
-                              capture_output=True, text=True)
+<!-- Personal. -->
+- Rev: gemini,,high
+- Rev fallback: claude,model-b,medium
+- Sec: claude
+- Models: default <!-- default | auto -->
+"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.config = self.tmp / 'config'
+        self.user_file = self.config / 'agentic-dev-workflow' / 'settings.md'
+        self.project_file = self.tmp / 'wf-settings.md'
+
+    def resolve(self, *args: str, block: str | None = None, roles: str = 'rev', user: str | None = None,
+                project: str | None = None, agents_md: str = '-', cwd: Path | None = None,
+                env: dict[str, str] | None = None, explicit_project: bool = True):
+        if user is not None:
+            self.user_file.parent.mkdir(parents=True, exist_ok=True)
+            self.user_file.write_text(user)
+        if project is not None:
+            self.project_file.write_text(project)
+        command = [sys.executable, str(RESOLVE_ROLES), '--agents-md', agents_md, '--roles', roles]
+        if explicit_project:
+            command += ['--settings', str(self.project_file)]
+        # Never read the developer's own settings: the user file comes from a temporary XDG_CONFIG_HOME.
+        full_env = {**os.environ, 'XDG_CONFIG_HOME': str(self.config), **(env or {})}
+        return subprocess.run([*command, *args], input=self.BLOCK if block is None else block,
+                              capture_output=True, text=True, env=full_env, cwd=cwd or self.tmp)
 
     def lines(self, *args: str, **kwargs) -> list[str]:
         r = self.resolve(*args, **kwargs)
@@ -1420,46 +1496,104 @@ class ResolveRoles(unittest.TestCase):
             ('opencode,ollama/llama3:8b,high', 'agent=opencode model=ollama/llama3:8b effort=high'),
             ('codex,auto,auto', 'agent=codex model=auto effort=auto'),
             (',sonnet', 'agent=self model=sonnet effort=default'),
+            ('claude,model-c[1m],xhigh', 'agent=claude model=model-c[1m] effort=xhigh'),
         ]:
             with self.subTest(value=value):
                 self.assertEqual(self.lines('TASK-7', f'rev={value}')[0], f'rev: {expected}')
 
-    def test_long_form_overrides_only_the_given_field(self):
-        self.assertEqual(self.lines('rev-model=opus')[0], 'rev: agent=gemini model=opus effort=high')
+    def test_without_settings_every_role_is_self_and_default(self):
+        self.assertEqual(self.lines(roles='test,rev,sec,fix'),
+                         [f'{role}: agent=self model=default effort=default'
+                          for role in ('test', 'rev', 'sec', 'fix')] + ['rounds: 4'])
 
-    def test_block_then_models_then_self(self):
-        self.assertEqual(self.lines(roles='test,rev,sec,fix'), [
+    def test_user_settings_then_models_then_self(self):
+        r = self.resolve(roles='test,rev,sec,fix', user=self.USER)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, '')
+        self.assertEqual(r.stdout.splitlines(), [
             'test: agent=self model=default effort=default',
             'rev: agent=gemini model=default effort=high',
+            'rev fallback 1: agent=claude model=model-b effort=medium',
             'sec: agent=claude model=default effort=default',
             'fix: agent=self model=default effort=default',
             'rounds: 4',
         ])
-        self.assertEqual(self.lines('models=auto')[0], 'rev: agent=gemini model=auto effort=high')
-        auto_block = self.BLOCK.replace('- Models: default', '- Models: auto')
-        self.assertEqual(self.lines(block=auto_block)[0], 'rev: agent=gemini model=auto effort=high')
-        # An omitted shorthand part is an explicit default: it beats the block and models=auto.
-        self.assertEqual(self.lines('rev=codex', 'models=auto')[0],
-                         'rev: agent=codex model=default effort=default')
+        self.assertEqual(self.lines('models=auto', user=self.USER)[0], 'rev: agent=gemini model=auto effort=high')
+        auto = self.USER.replace('- Models: default', '- Models: auto')
+        self.assertEqual(self.lines(user=auto)[:2], ['rev: agent=gemini model=auto effort=high',
+                                                     'rev fallback 1: agent=claude model=model-b effort=medium'])
+        # An omitted shorthand part of an argument is an explicit default: it beats models=auto.
+        self.assertEqual(self.lines('rev=codex', user=auto)[0], 'rev: agent=codex model=default effort=default')
 
-    def test_roles_can_mix_forms(self):
-        self.assertEqual(self.lines('rev=codex,,high', 'fix-agent=claude', roles='rev,fix')[:2],
-                         ['rev: agent=codex model=default effort=high',
-                          'fix: agent=claude model=default effort=default'])
+    def test_the_user_file_defaults_to_the_home_config(self):
+        home = self.tmp / 'home'
+        (home / '.config' / 'agentic-dev-workflow').mkdir(parents=True)
+        (home / '.config' / 'agentic-dev-workflow' / 'settings.md').write_text('- Rev: codex\n')
+        env = {'HOME': str(home), 'XDG_CONFIG_HOME': ''}
+        self.assertEqual(self.lines(env=env)[0], 'rev: agent=codex model=default effort=default')
+        r = self.resolve('--user-settings', str(self.tmp / 'missing.md'), env=env)
+        self.assertEqual(r.stdout.splitlines()[0], 'rev: agent=self model=default effort=default')
 
-    def test_rounds_default_and_range(self):
-        self.assertEqual(self.lines()[-1], 'rounds: 4')
-        self.assertEqual(self.lines('rounds=2')[-1], 'rounds: 2')
-        no_cap = self.BLOCK.replace('- Max review rounds: 4\n', '')
-        self.assertEqual(self.lines(block=no_cap)[-1], 'rounds: 3')
-        for rounds in ('0', '11', 'x'):
-            with self.subTest(rounds=rounds):
-                self.assertEqual(self.resolve(f'rounds={rounds}').returncode, 2)
+    def test_the_project_file_overrides_the_user_file_key_by_key(self):
+        project = '- Rev: codex,model-a,xhigh\n- Max review rounds: 2\n'
+        self.assertEqual(self.lines(roles='rev,sec', user=self.USER, project=project), [
+            'rev: agent=codex model=model-a effort=xhigh',
+            'rev fallback 1: agent=claude model=model-b effort=medium',
+            'sec: agent=claude model=default effort=default',
+            'rounds: 2',
+        ])
+        self.assertEqual(self.lines(user=self.USER, project='- Rev fallback: none\n'),
+                         ['rev: agent=gemini model=default effort=high', 'rounds: 4'])
+        self.assertEqual(self.lines(user=self.USER, project='- Rev fallback: gemini\n')[1],
+                         'rev fallback 1: agent=gemini model=default effort=default')
+        self.assertEqual(self.lines('rounds=1', project=project)[-1], 'rounds: 1')
+
+    def test_fallbacks_keep_their_order_follow_models_and_survive_arguments(self):
+        project = ('- Rev: codex,model-a,xhigh\n- Rev fallback: claude,model-b,medium\n'
+                   '* Rev fallback: gemini\n  - rev FALLBACK: opencode,ollama/llama3:8b\n- Models: auto\n')
+        expected = ['rev fallback 1: agent=claude model=model-b effort=medium',
+                    'rev fallback 2: agent=gemini model=auto effort=auto',
+                    'rev fallback 3: agent=opencode model=ollama/llama3:8b effort=auto']
+        self.assertEqual(self.lines(project=project)[1:4], expected)
+        self.assertEqual(self.lines('rev=gemini,,low', project=project)[:4],
+                         ['rev: agent=gemini model=default effort=low', *expected])
+        self.assertEqual(self.lines('rev-model=opus', project=project)[0],
+                         'rev: agent=codex model=opus effort=xhigh')
+
+    def test_invalid_settings_are_rejected(self):
+        for text, message in [
+            ('- Reviewer: codex\n', 'unknown key'),
+            ('- Note: prose belongs in comments\n', 'unknown key'),
+            ('- Rev fallback 1: claude\n', 'unknown key'),
+            ('- Rev: codex\n- Rev: gemini\n', 'more than once'),
+            ('- Rev:\n', 'Rev is empty'),
+            ('- Rev: robot\n', 'unknown agent'),
+            ('- Rev: claude-code,model-b\n', 'unknown agent'),
+            ('- Rev: codex,--yolo\n', 'invalid model'),
+            ('- Rev: codex,gpt 5\n', 'invalid model'),
+            ('- Rev: codex,,HIGH\n', 'invalid effort'),
+            ('- Rev: codex,a,b,c\n', 'agent[,model[,effort]]'),
+            ('- Rev fallback: claude\n' * 4, 'at most 3'),
+            ('- Rev fallback: none\n- Rev fallback: claude\n', 'none cannot be combined'),
+            ('- Rev fallback: claude\n- Rev fallback: none\n', 'none cannot be combined'),
+            ('- Models: best\n', 'default or auto'),
+            ('- Max review rounds: 11\n', 'rounds must be'),
+        ]:
+            with self.subTest(text=text):
+                r = self.resolve(project=text)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn(message, r.stderr)
+                self.assertEqual(r.stdout, '')
+        r = self.resolve(user='- Sec: robot\n')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(str(self.user_file), r.stderr)
 
     def test_invalid_arguments_are_rejected(self):
         for args, message in [
             (('rev=codex,a,b,c',), 'agent[,model[,effort]]'),
             (('rev=robot',), 'unknown agent'),
+            (('rev=codex,--yolo',), 'invalid model'),
+            (('rev-effort=HIGH',), 'invalid effort'),
             (('rev=codex', 'rev-effort=high'), 'either rev='),
             (('rev-effort=high', 'rev=codex'), 'either rev='),
             (('reviewer=codex',), 'use rev-agent= or rev='),
@@ -1477,37 +1611,167 @@ class ResolveRoles(unittest.TestCase):
                 self.assertIn(message, r.stderr)
                 self.assertEqual(r.stdout, '')
 
+    def test_rounds_default_and_range(self):
+        self.assertEqual(self.lines()[-1], 'rounds: 4')
+        self.assertEqual(self.lines('rounds=2')[-1], 'rounds: 2')
+        no_cap = self.BLOCK.replace('- Max review rounds: 4\n', '')
+        self.assertEqual(self.lines(block=no_cap)[-1], 'rounds: 3')
+        for rounds in ('0', '11', 'x'):
+            with self.subTest(rounds=rounds):
+                self.assertEqual(self.resolve(f'rounds={rounds}').returncode, 2)
+
+    def test_role_keys_left_in_the_block_count_last_with_a_warning(self):
+        r = self.resolve(block=self.OLD_BLOCK, roles='test,rev,sec,fix')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [
+            'test: agent=self model=default effort=default',
+            'rev: agent=gemini model=default effort=high',
+            'sec: agent=claude model=default effort=default',
+            'fix: agent=self model=default effort=default',
+            'rounds: 4',
+        ])
+        self.assertIn('warning: the wf block of AGENTS.md still sets Rev agent, Rev effort, Sec agent;', r.stderr)
+        self.assertIn('development/wf-settings.md', r.stderr)
+        self.assertEqual(self.lines('models=auto', block=self.OLD_BLOCK)[0],
+                         'rev: agent=gemini model=auto effort=high')
+        # The personal settings beat the block.
+        self.assertEqual(self.lines(block=self.OLD_BLOCK, user='- Rev: codex\n')[0],
+                         'rev: agent=codex model=default effort=default')
+        self.user_file.unlink()
+        defaults = self.OLD_BLOCK.replace('gemini', 'self').replace('high', 'default').replace('claude', 'self')
+        r = self.resolve(block=defaults)
+        self.assertEqual((r.returncode, r.stderr), (0, ''), 'default role lines need no warning')
+        r = self.resolve(block=self.OLD_BLOCK.replace('- Rev agent: gemini', '- Rev agent: robot'))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('unknown agent', r.stderr)
+
     def test_block_is_required_and_old_keys_are_rejected(self):
         r = self.resolve(block='# Project\n')
         self.assertEqual(r.returncode, 2)
         self.assertIn('wf init', r.stderr)
-        r = self.resolve(block=self.BLOCK.replace('- Rev agent:', '- Reviewer:'))
+        r = self.resolve(block=self.OLD_BLOCK.replace('- Rev agent:', '- Reviewer:'))
         self.assertEqual(r.returncode, 2)
-        self.assertIn('"Rev agent"', r.stderr)
+        self.assertIn('"Rev"', r.stderr)
+        self.assertIn('development/wf-settings.md', r.stderr)
 
     def test_spec_and_roadmap_reviews_run_before_wf_init(self):
         defaults = ['rev: agent=self model=default effort=default', 'rounds: 3']
         self.assertEqual(self.lines('--before-init', block='# Project\n'), defaults)
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp)
-        r = subprocess.run([sys.executable, str(RESOLVE_ROLES), '--agents-md', str(tmp / 'AGENTS.md'),
-                            '--roles', 'rev', '--before-init', 'rev=codex'], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines()[0], 'rev: agent=codex model=default effort=default')
+        missing = str(self.tmp / 'AGENTS.md')
+        self.assertEqual(self.lines('--before-init', 'rev=codex', agents_md=missing)[0],
+                         'rev: agent=codex model=default effort=default')
+        self.assertEqual(self.lines('--before-init', agents_md=missing, user=self.USER)[:2],
+                         ['rev: agent=gemini model=default effort=high',
+                          'rev fallback 1: agent=claude model=model-b effort=medium'])
         # An existing block is still validated.
-        r = self.resolve('--before-init', block=self.BLOCK.replace('- Rev agent:', '- Reviewer:'))
+        r = self.resolve('--before-init', block=self.OLD_BLOCK.replace('- Rev agent:', '- Reviewer:'))
         self.assertEqual(r.returncode, 2)
+
+    def test_the_project_file_is_found_in_development_of_the_repository(self):
+        repo = self.tmp / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        (repo / 'development').mkdir()
+        (repo / 'development' / 'wf-settings.md').write_text('- Rev: codex,,high\n')
+        expected = 'rev: agent=codex model=default effort=high'
+        self.assertEqual(self.lines(cwd=repo / 'src', explicit_project=False)[0], expected)
+        worktree = self.tmp / 'worktree'
+        subprocess.run(['git', 'init', '-q', str(worktree)], check=True)
+        (worktree / 'development').symlink_to(repo / 'development', target_is_directory=True)
+        self.assertEqual(self.lines(cwd=worktree, explicit_project=False)[0], expected,
+                         'a task worktree reads the main worktree\'s settings through its link')
+        outside = self.tmp / 'outside'
+        outside.mkdir()
+        r = self.resolve(cwd=outside, explicit_project=False, env={'GIT_CEILING_DIRECTORIES': str(self.tmp)})
+        self.assertEqual(r.stdout.splitlines()[0], 'rev: agent=self model=default effort=default')
 
     def test_reads_the_block_that_wf_init_writes(self):
         template = (SKILLS / 'wf-init' / 'SKILL.md').read_text()
         block = re.search(r'<!-- wf:begin.*?<!-- wf:end -->', template, flags=re.DOTALL)[0]
-        self.assertEqual(self.lines(block=block, roles='test,rev,sec,fix'),
+        r = self.resolve(block=block, roles='test,rev,sec,fix')
+        self.assertEqual((r.returncode, r.stderr), (0, ''))
+        self.assertEqual(r.stdout.splitlines(), [f'{role}: agent=self model=default effort=default'
+                                                 for role in ('test', 'rev', 'sec', 'fix')] + ['rounds: 3'])
+
+    def test_the_settings_template_sets_nothing_until_lines_are_uncommented(self):
+        template = (SKILLS / 'wf-init' / 'templates' / 'wf-settings.md').read_text()
+        self.assertEqual(self.lines(project=template, roles='test,rev,sec,fix')[:-1],
                          [f'{role}: agent=self model=default effort=default'
-                          for role in ('test', 'rev', 'sec', 'fix')] + ['rounds: 3'])
+                          for role in ('test', 'rev', 'sec', 'fix')])
+        uncommented = '\n'.join(line for line in template.splitlines() if line not in {'<!--', '-->'})
+        r = self.resolve(project=uncommented)
+        self.assertEqual(r.returncode, 2, 'the <model> placeholder is not a model name')
+        self.assertIn('invalid model', r.stderr)
+        self.assertEqual(self.lines(project=uncommented.replace('<model>', 'some-model'), roles='rev,sec'), [
+            'rev: agent=codex model=some-model effort=high',
+            'rev fallback 1: agent=claude model=some-model effort=medium',
+            'sec: agent=codex model=some-model effort=high',
+            'sec fallback 1: agent=claude model=some-model effort=high',
+            'rounds: 3',
+        ])
+
+    def test_sources_say_where_each_line_comes_from_and_whether_roles_are_set(self):
+        r = self.resolve('--sources', roles='rev,fix')
+        self.assertEqual((r.returncode, r.stderr), (0, ''))
+        self.assertEqual(r.stdout.splitlines(), [
+            'settings: none',
+            'rev: agent=self model=default effort=default  (from default)',
+            'fix: agent=self model=default effort=default  (from default)',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        template = (SKILLS / 'wf-init' / 'templates' / 'wf-settings.md').read_text()
+        self.assertEqual(self.lines('--sources', project=template)[0], 'settings: none',
+                         'a file that sets no role leaves the roles unset')
+        self.assertEqual(self.lines('--sources', project='- Max review rounds: 2\n')[::2],
+                         ['settings: none', f'rounds: 2  (from {self.project_file})'])
+        # A run argument covers one run: it does not count as a setting.
+        self.assertEqual(self.lines('--sources', 'rev=codex')[:2],
+                         ['settings: none', 'rev: agent=codex model=default effort=default  (from argument)'])
+        self.project_file.unlink()
+        # Every role counts, not only the printed ones; a path in the home directory is shown with ~.
+        env = {'HOME': str(self.tmp)}
+        self.assertEqual(self.lines('--sources', roles='test', user=self.USER, env=env), [
+            'settings: ~/config/agentic-dev-workflow/settings.md',
+            'test: agent=self model=default effort=default  (from default)',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        project = '- Rev fallback: gemini\n'
+        self.assertEqual(self.lines('--sources', user=self.USER, project=project, env=env)[:3], [
+            'settings: ~/config/agentic-dev-workflow/settings.md, ~/wf-settings.md',
+            'rev: agent=gemini model=default effort=high  (from ~/config/agentic-dev-workflow/settings.md)',
+            'rev fallback 1: agent=gemini model=default effort=default  (from ~/wf-settings.md)',
+        ])
+        self.project_file.unlink()
+        self.user_file.unlink()
+        self.assertEqual(self.lines('--sources', block=self.OLD_BLOCK)[:2],
+                         ['settings: AGENTS.md', 'rev: agent=gemini model=default effort=high  (from AGENTS.md)'])
+
+    def test_the_role_setup_asks_once_and_wf_init_confirms(self):
+        roles = ' '.join((SHARED / 'roles.md').read_text().split())
+        for phrase in ('`wf init` always runs it', 'starts with `settings: none`', 'at its first spec review',
+                       'command -v claude codex gemini opencode', 'Never invent a model name',
+                       'another model family than yours', '**Fallbacks**', 'Offer no fallback as an option',
+                       '`~/.config/agentic-dev-workflow/settings.md`', '`development/wf-settings.md`',
+                       'even for `self` with its defaults, so that the setup is not asked again',
+                       'keep them (recommended), or change some', 'never save it as a setting',
+                       'Asking the human'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, roles)
+        loop = ' '.join(LOOP.read_text().split())
+        self.assertIn('--roles rev,fix --sources', loop)
+        self.assertIn('When the first line reads `settings: none`, no role is set anywhere', loop)
+        init = ' '.join((SKILLS / 'wf-init' / 'SKILL.md').read_text().split())
+        self.assertIn('follow `references/roles.md`', init)
+        for skill in skill_dirs():
+            if (skill / 'references' / 'loop.md').exists() or skill.name == 'wf-init':
+                with self.subTest(skill=skill.name):
+                    link = skill / 'references' / 'roles.md'
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(link.resolve(), SHARED / 'roles.md')
 
     def test_skills_that_resolve_roles_link_the_script(self):
         for name in ('wf-plan-loop', 'wf-impl-loop', 'wf-wave', 'wf-spec', 'wf-roadmap', 'wf-test',
-                     'wf-security-review'):
+                     'wf-security-review', 'wf-init'):
             with self.subTest(skill=name):
                 link = SKILLS / name / 'scripts' / 'resolve-roles.py'
                 self.assertTrue(link.is_symlink())

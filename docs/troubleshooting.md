@@ -73,9 +73,13 @@ verdict by hand. The failed run's files stay as `<stage>-r<n>-attempt<k>.out.md`
 
 `scripts/run-agent.sh` exits 6 and repeats the agent's message, for example Codex's "You’ve hit your
 usage limit … try again at 9:32 PM" or Claude's "You've hit your 5-hour limit · resets 9pm". The run
-produced nothing, and the loop stops instead of retrying. Wait for the reset and ask for the same stage
-again, or name another agent and model for that run (`rev=claude,<model>`, for example); the loop asks
-again at the next limit and never switches by itself.
+produced nothing. If your settings list a fallback for the role (`- Rev fallback: claude,<model>,medium`
+in `development/wf-settings.md` or `~/.config/agentic-dev-workflow/settings.md`), the loop runs the same
+stage with it, records it in the round, and keeps it for the rest of that run. Otherwise, or when every
+fallback is limited too, it stops: wait for the reset and ask for the same stage again, or name another
+agent and model for that run (`rev=claude,<model>`, for example). It never switches to an agent you did
+not name. Exit 7 means a write stage (tests or a fix) had already changed files when it hit the limit;
+it always stops so you can look at the partial change before anything else runs.
 
 ## A review could not run a check
 
