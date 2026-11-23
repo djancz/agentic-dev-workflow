@@ -16,8 +16,9 @@
 # The agent's final message is written to <out-file>; its progress and errors go to <out-file>.log;
 # the exit code goes to <out-file>.exit when the run ends.
 #   --wait  block until the run writing <out-file> has finished (at most <seconds>, default 540), then
-#        exit with its exit code; exit 124 if it is still running. For hosts whose shell tool cannot
-#        wait 30 minutes: start the run in the background, then call --wait until it returns.
+#        exit with its exit code, repeating the runner's reason for a failure; exit 124 if it is still
+#        running. For hosts whose shell tool cannot wait 30 minutes: start the run in the background,
+#        then call --wait until it returns.
 #
 # Environment:
 #   WF_AGENT_TIMEOUT           seconds before the run is killed (default 1800)
@@ -41,14 +42,20 @@
 set -eu
 
 usage() {
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
+}
+
+# A message for the caller, also appended to the log so that --wait repeats it for a background run.
+say() {
+    echo "run-agent: $*" >&2
+    if [ -n "${log:-}" ]; then printf 'run-agent: %s\n' "$*" >>"$log" 2>/dev/null || true; fi
 }
 
 die() {
     code=$1
     shift
-    echo "run-agent: $*" >&2
+    say "$*"
     exit "$code"
 }
 
@@ -108,6 +115,9 @@ if [ "${1:-}" = "--wait" ]; then
         waited=$((waited + 5))
     done
     code=$(cat "$out.exit")
+    if [ "$code" != 0 ]; then
+        grep '^run-agent: ' "$out.log" 2>/dev/null | tail -n 3 >&2 || true
+    fi
     echo "run-agent: finished with exit $code — $out" >&2
     exit "$code"
 fi
@@ -227,32 +237,35 @@ records() {
     printf '%s\n' "$paths" | git hash-object --stdin-paths
 }
 
-# git status and git diff HEAD do not see an edit to a file that was untracked already: hash their contents.
-untracked() {
-    git ls-files --others --exclude-standard | while IFS= read -r path; do
-        if [ -L "$path" ]; then
-            printf 'link %s %s\n' "$path" "$(readlink "$path")"
-        elif [ -f "$path" ]; then
-            printf 'file %s %s\n' "$path" "$(git hash-object -- "$path")"
-        fi
-    done
+# The working tree as a git tree, built in a temporary index with every file that is not ignored. Unlike
+# git status and git diff HEAD, it sees an edit to a file that was untracked already, file modes and
+# links, whatever the file names. It writes git objects, but no ref, index or file of the repository.
+worktree_tree() {
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/run-agent.XXXXXX") || return 1
+    cp "$(git rev-parse --git-path index)" "$scratch/index" 2>/dev/null || :
+    snapshot_rc=0
+    tree=$(GIT_INDEX_FILE=$scratch/index git add -A >/dev/null 2>&1 &&
+        GIT_INDEX_FILE=$scratch/index git write-tree) || snapshot_rc=1
+    rm -rf "$scratch"
+    [ "$snapshot_rc" = 0 ] && printf '%s\n' "$tree"
 }
 
 fingerprint() {
+    tree=$(worktree_tree) || return 1
     {
         git rev-parse HEAD 2>/dev/null || true
         git status --porcelain=v1 --untracked-files=all
-        git diff HEAD --binary 2>/dev/null || true
-        untracked
+        printf '%s\n' "$tree"
         records
     } | git hash-object --stdin
 }
 
-# The personal role settings decide which agents later stages run; no delegated run may change them.
-case ${XDG_CONFIG_HOME:-} in
-    /*) user_settings=$XDG_CONFIG_HOME/agentic-dev-workflow/settings.md ;;
-    *) user_settings=${HOME:-}/.config/agentic-dev-workflow/settings.md ;;
-esac
+# A snapshot that cannot be taken after the run counts as a change.
+changed() {
+    after=$(fingerprint) || return 0
+    [ "$after" != "$before" ]
+}
+
 file_hash() {
     if [ -f "$1" ]; then
         git hash-object --stdin <"$1"
@@ -272,8 +285,16 @@ else
 fi
 set -- "$timeout_cmd" -k 30 "$timeout_s" "$@"
 
-before=$(fingerprint)
-project_settings_before=$(file_hash development/wf-settings.md)
+# The personal role settings decide which agents later stages run; no delegated run may change them.
+# resolve-roles.py, next to this script, knows where they are.
+here=$(cd "$(dirname "$0")" && pwd)
+settings_paths=$(python3 "$here/resolve-roles.py" --paths) ||
+    die 4 "cannot locate the role settings: python3 and resolve-roles.py next to run-agent.sh are required"
+user_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^user: //p')
+project_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^project: //p')
+
+before=$(fingerprint) || die 2 "cannot take a snapshot of the working tree"
+project_settings_before=$(file_hash "$project_settings")
 user_settings_before=$(file_hash "$user_settings")
 : >"$out"
 rc=0
@@ -283,19 +304,17 @@ else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
 fi
 
-for settings_file in development/wf-settings.md "$user_settings"; do
-    case $settings_file in
-        development/*) settings_before=$project_settings_before ;;
-        *) settings_before=$user_settings_before ;;
-    esac
+for settings_file in "$project_settings" "$user_settings"; do
+    settings_before=$user_settings_before
+    [ "$settings_file" = "$project_settings" ] && settings_before=$project_settings_before
     if [ "$(file_hash "$settings_file")" != "$settings_before" ]; then
-        echo "run-agent: the role settings changed during the run: $settings_file;" \
-            "the human must check them before any further run" >&2
+        say "the role settings changed during the run: $settings_file;" \
+            "the human must check them before any further run"
         exit 3
     fi
 done
-if [ "$expect_clean" = 1 ] && [ "$(fingerprint)" != "$before" ]; then
-    echo "run-agent: the working tree changed during a run that must not modify it:" >&2
+if [ "$expect_clean" = 1 ] && changed; then
+    say "the working tree changed during a run that must not modify it"
     git status --short >&2
     exit 3
 fi
@@ -308,17 +327,17 @@ if [ "$rc" -ne 0 ]; then
         limit_line=$({ tail -n 50 "$log"; head -n 5 "$out"; } 2>/dev/null | grep -E "$limit_re" |
             grep -vxF -f "$prompt" | sed -n 1p)
         if [ -n "$limit_line" ]; then
-            echo "run-agent: $agent reached its usage limit: $limit_line" >&2
-            if [ "$(fingerprint)" != "$before" ]; then
-                echo "run-agent: the run had already changed the tree, HEAD or the records;" \
-                    "no other agent may continue it" >&2
+            say "$agent reached its usage limit: $limit_line"
+            if changed; then
+                say "the run had already changed the tree, HEAD or the records;" \
+                    "no other agent may continue it"
                 exit 7
             fi
             exit 6
         fi
     fi
-    echo "run-agent: $agent exited with $rc (124 = timeout); last lines of $log:" >&2
     tail -n 20 "$log" >&2 || true
+    say "$agent exited with $rc (124 = timeout); the last lines of $log are above"
     exit 5
 fi
 [ -s "$out" ] || die 5 "$agent produced no output; see $log"

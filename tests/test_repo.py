@@ -812,6 +812,9 @@ You've hit your usage limit, the finding quotes." ;;
     echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
   settings) echo '- Rev: gemini' >> development/wf-settings.md ;;
   user-settings) echo '- Rev: gemini' >> "$XDG_CONFIG_HOME/agentic-dev-workflow/settings.md" ;;
+  home-settings) echo '- Rev: gemini' >> "$HOME/.config/agentic-dev-workflow/settings.md" ;;
+  untracked-mode) chmod +x notes.txt ;;
+  untracked-tab) printf 'more\n' >> "$(printf 'tab\tname.txt')" ;;
   untracked) echo more >> notes.txt ;;
   untracked-then-limit) echo more >> notes.txt
     echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
@@ -1040,6 +1043,20 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn(f'the role settings changed during the run: {user}', r.stderr)
         self.assertIn('the human must check them before any further run', r.stderr)
+        waited = self.run_agent('--wait', str(self.out), '10')
+        self.assertEqual(waited.returncode, 3)
+        self.assertIn(f'the role settings changed during the run: {user}', waited.stderr,
+                      '--wait repeats the reason for a run started in the background')
+        # Without XDG_CONFIG_HOME, the runner guards the same file in ~/.config as the resolver reads.
+        home = self.tmp / 'home'
+        (home / '.config' / 'agentic-dev-workflow').mkdir(parents=True)
+        r = self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='user-settings',
+                           XDG_CONFIG_HOME=str(home / '.config'), HOME=str(home))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        r = self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='home-settings',
+                           XDG_CONFIG_HOME='', HOME=str(home))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn(str(home / '.config' / 'agentic-dev-workflow' / 'settings.md'), r.stderr)
 
     def test_an_edit_of_an_untracked_file_is_a_change(self):
         (self.repo / 'notes.txt').write_text('draft\n')
@@ -1049,6 +1066,12 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 7, r.stderr)
         r = self.run_agent('codex', 'rw', str(self.prompt), str(self.out), mode='limit')
         self.assertEqual(r.returncode, 6, 'an untracked file that stays as it was is no change')
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='untracked-mode')
+        self.assertEqual(r.returncode, 3, 'a new file mode of an untracked file is a change')
+        (self.repo / 'notes.txt').chmod(0o644)
+        (self.repo / 'tab\tname.txt').write_text('draft\n')
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='untracked-tab')
+        self.assertEqual(r.returncode, 3, 'an untracked file with a tab in its name is seen too')
 
     def test_a_model_that_could_pass_as_an_option_is_rejected(self):
         for model in ('--dangerously-skip-permissions', 'gpt 5'):
@@ -1242,7 +1265,10 @@ None.
         self.assertIn('run the checks it names on a `not run:` line first', wave)
         for phrase in ('**Fallback:**', '**Exit 7** is a usage limit after the run had already changed',
                        'never continue it under another agent', 'The role keeps that fallback for the rest of this run',
-                       'as exit 7 in a stage that writes', 'Discard only on an explicit yes',
+                       'A native subagent that stops on a usage limit counts as exit 7',
+                       'Skip a fallback that would start the same CLI with the same model and effort',
+                       'only a listed fallback continues exit 6, and exit 7 waits for the human',
+                       'Discard only on an explicit yes',
                        '**Settings changed.**', 'resolve no roles in this run again'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, loop)
@@ -1701,9 +1727,13 @@ class ResolveRoles(unittest.TestCase):
         (repo / 'development' / 'wf-settings.md').write_text('- Rev: codex,,high\n')
         expected = 'rev: agent=codex model=default effort=high'
         self.assertEqual(self.lines(cwd=repo / 'src', explicit_project=False)[0], expected)
-        worktree = self.tmp / 'worktree'
-        subprocess.run(['git', 'init', '-q', str(worktree)], check=True)
-        (worktree / 'development').symlink_to(repo / 'development', target_is_directory=True)
+        git = ['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        (repo / '.git' / 'info' / 'exclude').write_text('/development\n')
+        subprocess.run([*git, 'commit', '-q', '--allow-empty', '-m', 'init'], check=True)
+        worktree = self.tmp / 'repo-worktrees' / 'TASK-1'
+        subprocess.run([*git, 'worktree', 'add', '-q', '-b', 'task', str(worktree)], check=True)
+        (worktree / 'development').symlink_to(os.path.relpath(repo / 'development', worktree),
+                                              target_is_directory=True)
         self.assertEqual(self.lines(cwd=worktree, explicit_project=False)[0], expected,
                          'a task worktree reads the main worktree\'s settings through its link')
         outside = self.tmp / 'outside'
@@ -1763,12 +1793,20 @@ class ResolveRoles(unittest.TestCase):
         ])
         project = '- Rev fallback: gemini\n'
         self.assertEqual(self.lines('--sources', user=self.USER, project=project, env=env)[:3], [
-            'settings: ~/config/agentic-dev-workflow/settings.md, ~/wf-settings.md',
+            'settings: ~/config/agentic-dev-workflow/settings.md',
             'rev: agent=gemini model=default effort=high  (from ~/config/agentic-dev-workflow/settings.md)',
             'rev fallback 1: agent=gemini model=default effort=default  (from ~/wf-settings.md)',
         ])
-        self.project_file.unlink()
+        # A file that turns the fallbacks off says so; fallbacks alone are no choice of a role.
+        self.assertEqual(self.lines('--sources', user=self.USER, project='- Rev fallback: none\n', env=env)[1:3], [
+            'rev: agent=gemini model=default effort=high  (from ~/config/agentic-dev-workflow/settings.md)',
+            'rev fallback: none  (from ~/wf-settings.md)',
+        ])
         self.user_file.unlink()
+        self.assertEqual(self.lines('--sources', project='- Rev fallback: claude\n')[0], 'settings: none')
+        self.assertEqual(self.lines(project='- Rev fallback: none\n'),
+                         ['rev: agent=self model=default effort=default', 'rounds: 4'])
+        self.project_file.unlink()
         self.assertEqual(self.lines('--sources', block=self.OLD_BLOCK)[:2],
                          ['settings: AGENTS.md', 'rev: agent=gemini model=default effort=high  (from AGENTS.md)'])
 
@@ -1790,6 +1828,7 @@ class ResolveRoles(unittest.TestCase):
         init = ' '.join((SKILLS / 'wf-init' / 'SKILL.md').read_text().split())
         self.assertIn('follow `references/roles.md`', init)
         self.assertIn('without changing what takes effect', init)
+        self.assertIn("copy the block's own `<Role> agent`, `model` and `effort` values, not the resolved ones", init)
         self.assertIn('A role whose line comes from a settings file already overrides the block: move nothing', init)
         for skill in skill_dirs():
             if (skill / 'references' / 'loop.md').exists() or skill.name == 'wf-init':
@@ -1867,9 +1906,12 @@ class ResolveRoles(unittest.TestCase):
                          'rev: agent=gemini model=default effort=default  (from argument)')
 
     def test_every_layer_is_validated_where_it_counts(self):
-        r = self.resolve(user='- Max review rounds: eleven\n', project='- Max review rounds: 2\n')
-        self.assertEqual(r.returncode, 2, 'an invalid user file fails even when the project file overrides it')
-        self.assertIn(str(self.user_file), r.stderr)
+        for rounds in ('eleven', '²', '0'):
+            with self.subTest(rounds=rounds):
+                r = self.resolve(user=f'- Max review rounds: {rounds}\n', project='- Max review rounds: 2\n')
+                self.assertEqual(r.returncode, 2, 'an invalid user file fails even when the project file wins')
+                self.assertIn(f'{self.user_file}: Max review rounds must be an integer', r.stderr)
+        self.assertEqual(self.resolve('rounds=²').returncode, 2)
         self.user_file.unlink()
         robot = self.OLD_BLOCK.replace('- Rev agent: gemini', '- Rev agent: robot')
         self.assertEqual(self.lines('rev=claude', block=robot)[0], 'rev: agent=claude model=default effort=default')

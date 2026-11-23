@@ -31,10 +31,11 @@ must be 1-10. Words without `=` (task or wave IDs) are ignored. With --before-in
 reviews of a new project), a missing AGENTS.md or wf block means built-in defaults.
 
 --sources ends each line with `(from <source>)`: a settings file, AGENTS.md, argument or default; a role
-whose fields come partly from arguments reads `(from argument, <source>)`, and `; models=auto from
-<source>` names where Models came from when it filled a field. Its first line, `settings: <sources>`,
-names where the human set any role or fallback (all roles, not only the printed ones), or reads
-`settings: none` when nothing is set and the role setup should ask. --paths prints the absolute paths of
+whose fields come partly from arguments reads `(from argument, <source>)`, `; models=auto from
+<source>` names where Models came from when it filled a field, and `<role> fallback: none` shows a file
+that turned the fallbacks off. Its first line, `settings: <sources>`, names where the human set a role
+(all roles, not only the printed ones; fallbacks alone do not count), or reads `settings: none` when no
+role is set and the role setup should ask. --paths prints the absolute paths of
 the user and project files (`user: <path>`, `project: <path>|none`) and needs no --agents-md.
 A project file that git tracks is refused: the settings of one person must not reach the others.
 Exit codes: 0 resolved, 2 invalid argument, settings file or block.
@@ -89,6 +90,11 @@ def block_settings(text: str, before_init: bool = False) -> dict[str, str]:
             raise ValueError(f'the wf block uses the old key "{old}"; run wf init to move it to '
                              f'{PROJECT_SETTINGS} as "{new}"')
     return settings
+
+
+def is_rounds(value: str) -> bool:
+    """A round cap: ASCII digits only (`²` is a digit to str.isdigit), from 1 to MAX_ROUNDS."""
+    return value.isascii() and value.isdigit() and 1 <= int(value) <= MAX_ROUNDS
 
 
 def check_value(field: str, value: str, where: str) -> None:
@@ -146,7 +152,7 @@ def read_settings(text: str, where: str) -> dict:
             raise ValueError(f'{where}: {key} is set more than once')
         if key == 'Models' and value not in {'default', 'auto'}:
             raise ValueError(f'{where}: Models must be default or auto, got "{value}"')
-        if key == 'Max review rounds' and not (value.isdigit() and 1 <= int(value) <= MAX_ROUNDS):
+        if key == 'Max review rounds' and not is_rounds(value):
             raise ValueError(f'{where}: Max review rounds must be an integer from 1 to {MAX_ROUNDS}, '
                              f'got "{value}"')
         settings[key] = parse_triple(value, f'{where}: {key}') if key.lower() in ROLES else value
@@ -266,6 +272,8 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
         lines.append(line(f'{role}: {triple(values)}', source, used))
         # A fallback equal to the role's choice or to an earlier fallback would retry the same limit.
         tried = [values]
+        if sources is not None and settings.get(f'{name} fallback') == []:
+            lines.append(line(f'{role} fallback: none', origin(f'{name} fallback'), []))
         for entry in settings.get(f'{name} fallback', []):
             used = []
             fallback = {field: complete(field, part, used) for field, part in zip(FIELDS, entry)}
@@ -276,16 +284,17 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
                               origin(f'{name} fallback'), used))
     rounds = (given.get('rounds') or settings.get('Max review rounds') or block.get('Max review rounds')
               or str(DEFAULT_ROUNDS))
-    if not rounds.isdigit() or not 1 <= int(rounds) <= MAX_ROUNDS:
+    if not is_rounds(rounds):
         raise ValueError(f'rounds must be an integer from 1 to {MAX_ROUNDS}, got "{rounds}"')
     rounds_source = ('argument' if 'rounds' in given else
                      known.get('Max review rounds', 'settings') if 'Max review rounds' in settings
                      else 'AGENTS.md' if 'Max review rounds' in block else 'default')
     lines.append(line(f'rounds: {int(rounds)}', rounds_source, []))
     if sources is not None:
-        # Every role counts, not only the printed ones: the question is whether the human set any up.
-        keys = [key for role in ROLES for key in (role.capitalize(), f'{role.capitalize()} fallback')]
-        found = list(dict.fromkeys(origin(key) for key in keys if origin(key) != 'default'))
+        # Every role counts, not only the printed ones: the question is whether the human chose any role.
+        # A fallback alone is no choice of a role, so it leaves the setup to ask.
+        found = list(dict.fromkeys(origin(role.capitalize()) for role in ROLES
+                                   if origin(role.capitalize()) != 'default'))
         lines.insert(0, f'settings: {", ".join(found) if found else "none"}')
     return lines
 
