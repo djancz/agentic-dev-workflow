@@ -8,7 +8,8 @@
 #        The working tree and the private records in development/ (except runs/) are always
 #        checked afterwards.
 #   rw   the agent may edit files and run commands in the repository.
-#   In every mode, the local role settings (development/wf-settings.md) must not change during the run.
+#   In every mode, the personal role settings must not change during the run: development/wf-settings.md
+#   and agentic-dev-workflow/settings.md in $XDG_CONFIG_HOME (absolute), else in ~/.config.
 #   --expect-clean  with rw: fail with exit 3 if the tree or the records changed — for reviews that must
 #        run the project's checks but must not touch the code.
 #
@@ -40,7 +41,7 @@
 set -eu
 
 usage() {
-    sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -226,19 +227,35 @@ records() {
     printf '%s\n' "$paths" | git hash-object --stdin-paths
 }
 
+# git status and git diff HEAD do not see an edit to a file that was untracked already: hash their contents.
+untracked() {
+    git ls-files --others --exclude-standard | while IFS= read -r path; do
+        if [ -L "$path" ]; then
+            printf 'link %s %s\n' "$path" "$(readlink "$path")"
+        elif [ -f "$path" ]; then
+            printf 'file %s %s\n' "$path" "$(git hash-object -- "$path")"
+        fi
+    done
+}
+
 fingerprint() {
     {
         git rev-parse HEAD 2>/dev/null || true
         git status --porcelain=v1 --untracked-files=all
         git diff HEAD --binary 2>/dev/null || true
+        untracked
         records
     } | git hash-object --stdin
 }
 
-# The local role settings decide which agents later stages run; no delegated run may change them.
-settings_hash() {
-    if [ -f development/wf-settings.md ]; then
-        git hash-object --stdin <development/wf-settings.md
+# The personal role settings decide which agents later stages run; no delegated run may change them.
+case ${XDG_CONFIG_HOME:-} in
+    /*) user_settings=$XDG_CONFIG_HOME/agentic-dev-workflow/settings.md ;;
+    *) user_settings=${HOME:-}/.config/agentic-dev-workflow/settings.md ;;
+esac
+file_hash() {
+    if [ -f "$1" ]; then
+        git hash-object --stdin <"$1"
     else
         echo none
     fi
@@ -256,7 +273,8 @@ fi
 set -- "$timeout_cmd" -k 30 "$timeout_s" "$@"
 
 before=$(fingerprint)
-settings_before=$(settings_hash)
+project_settings_before=$(file_hash development/wf-settings.md)
+user_settings_before=$(file_hash "$user_settings")
 : >"$out"
 rc=0
 if [ "$stdout_is_output" = 1 ]; then
@@ -265,10 +283,17 @@ else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
 fi
 
-if [ "$(settings_hash)" != "$settings_before" ]; then
-    echo "run-agent: the local wf settings (development/wf-settings.md) changed during the run" >&2
-    exit 3
-fi
+for settings_file in development/wf-settings.md "$user_settings"; do
+    case $settings_file in
+        development/*) settings_before=$project_settings_before ;;
+        *) settings_before=$user_settings_before ;;
+    esac
+    if [ "$(file_hash "$settings_file")" != "$settings_before" ]; then
+        echo "run-agent: the role settings changed during the run: $settings_file;" \
+            "the human must check them before any further run" >&2
+        exit 3
+    fi
+done
 if [ "$expect_clean" = 1 ] && [ "$(fingerprint)" != "$before" ]; then
     echo "run-agent: the working tree changed during a run that must not modify it:" >&2
     git status --short >&2

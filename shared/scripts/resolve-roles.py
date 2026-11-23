@@ -14,7 +14,9 @@ development/wf-settings.md of the current repository, which overrides the user f
 `- Key: value` lines (HTML comments are ignored) are:
 
   Test, Rev, Sec, Fix: agent[,model[,effort]]   an omitted, empty or `default` part follows Models
-  <Role> fallback: agent[,model[,effort]]       up to 3 lines, tried in order after a usage limit; or none
+  <Role> fallback: agent[,model[,effort]]       up to 3 lines, tried in order after a usage limit; or none.
+                                                A fallback names its agent; one equal to the role's choice
+                                                or to an earlier fallback is left out
   Models: default | auto
   Max review rounds: 1-10
 
@@ -28,9 +30,13 @@ rounds= comes from the argument, else Max review rounds of the settings, then of
 must be 1-10. Words without `=` (task or wave IDs) are ignored. With --before-init (spec and roadmap
 reviews of a new project), a missing AGENTS.md or wf block means built-in defaults.
 
---sources ends each line with `(from <source>)`: a settings file, AGENTS.md, argument or default. Its first
-line, `settings: <sources>`, names where the human set any role or fallback (all roles, not only the
-printed ones), or reads `settings: none` when nothing is set and the role setup should ask.
+--sources ends each line with `(from <source>)`: a settings file, AGENTS.md, argument or default; a role
+whose fields come partly from arguments reads `(from argument, <source>)`, and `; models=auto from
+<source>` names where Models came from when it filled a field. Its first line, `settings: <sources>`,
+names where the human set any role or fallback (all roles, not only the printed ones), or reads
+`settings: none` when nothing is set and the role setup should ask. --paths prints the absolute paths of
+the user and project files (`user: <path>`, `project: <path>|none`) and needs no --agents-md.
+A project file that git tracks is refused: the settings of one person must not reach the others.
 Exit codes: 0 resolved, 2 invalid argument, settings file or block.
 """
 
@@ -129,7 +135,10 @@ def read_settings(text: str, where: str) -> dict:
                     raise ValueError(f'{where}: {key}: none cannot be combined with other {key} lines')
                 entries.append('none')
                 continue
-            entries.append(parse_triple(value, f'{where}: {key}'))
+            entry = parse_triple(value, f'{where}: {key}')
+            if entry[0] in {'', 'default'}:
+                raise ValueError(f'{where}: {key} must name its agent, got "{value}"')
+            entries.append(entry)
             if len(entries) > MAX_FALLBACKS:
                 raise ValueError(f'{where}: at most {MAX_FALLBACKS} {key} lines')
             continue
@@ -137,6 +146,9 @@ def read_settings(text: str, where: str) -> dict:
             raise ValueError(f'{where}: {key} is set more than once')
         if key == 'Models' and value not in {'default', 'auto'}:
             raise ValueError(f'{where}: Models must be default or auto, got "{value}"')
+        if key == 'Max review rounds' and not (value.isdigit() and 1 <= int(value) <= MAX_ROUNDS):
+            raise ValueError(f'{where}: Max review rounds must be an integer from 1 to {MAX_ROUNDS}, '
+                             f'got "{value}"')
         settings[key] = parse_triple(value, f'{where}: {key}') if key.lower() in ROLES else value
     for key, entries in settings.items():
         if key.endswith(' fallback') and entries == ['none']:
@@ -201,55 +213,75 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
     models = given.get('models') or settings.get('Models') or block.get('Models') or 'default'
     if models not in {'default', 'auto'}:
         raise ValueError(f'models must be default or auto, got "{models}"')
+    known = sources or {}
+    models_source = ('argument' if 'models' in given else
+                     known.get('Models', 'settings') if 'Models' in settings else
+                     'AGENTS.md' if 'Models' in block else 'default')
 
-    def complete(field: str, value: str) -> str:
+    def complete(field: str, value: str, used: list[bool]) -> str:
         if value in {'', 'default'}:
-            return 'self' if field == 'agent' else models
+            if field == 'agent':
+                return 'self'
+            used.append(models == 'auto')
+            return models
         return value
 
     def origin(name: str) -> str:
         """Where the role or fallback key `name` is set, apart from run arguments."""
         if name in settings:
-            return (sources or {}).get(name, 'settings')
+            return known.get(name, 'settings')
         if not name.endswith(' fallback') and any(block.get(f'{name} {field}', 'default') not in
                                                   {'', 'default', 'self'} for field in FIELDS):
             return 'AGENTS.md'
         return 'default'
 
-    def line(text: str, source: str) -> str:
-        return f'{text}  (from {source})' if sources is not None else text
+    def line(text: str, source: str, used: list[bool]) -> str:
+        if sources is None:
+            return text
+        note = f'; models=auto from {models_source}' if any(used) else ''
+        return f'{text}  (from {source}{note})'
+
+    def triple(values: dict[str, str]) -> str:
+        return ' '.join(f'{field}={values[field]}' for field in FIELDS)
 
     lines = []
     for role in roles:
         name = role.capitalize()
-        if name in settings:
-            base = dict(zip(FIELDS, settings[name]))
-        else:
-            base = {field: block.get(f'{name} {field}', '') for field in FIELDS}
-            for field, value in base.items():
-                check_value(field, value, f'the wf block\'s {name} {field}')
-        values = {}
+        from_block = name not in settings
+        base = (dict(zip(FIELDS, settings[name])) if not from_block
+                else {field: block.get(f'{name} {field}', '') for field in FIELDS})
+        values, used = {}, []
         for field in FIELDS:
             value = given.get(f'{role}-{field}')
             if value is None:
-                value = complete(field, base[field])
+                if from_block:  # an old block line counts only where no argument overrides it
+                    check_value(field, base[field], f'the wf block\'s {name} {field}')
+                value = complete(field, base[field], used)
             elif field == 'agent' and value == 'default':
                 value = 'self'
             values[field] = value
-        source = 'argument' if any(f'{role}-{field}' in given for field in FIELDS) else origin(name)
-        lines.append(line(f'{role}: ' + ' '.join(f'{field}={values[field]}' for field in FIELDS), source))
-        for number, entry in enumerate(settings.get(f'{name} fallback', []), start=1):
-            lines.append(line(f'{role} fallback {number}: ' + ' '.join(
-                f'{field}={complete(field, part)}' for field, part in zip(FIELDS, entry)),
-                origin(f'{name} fallback')))
+        overridden = [field for field in FIELDS if f'{role}-{field}' in given]
+        source = ('argument' if len(overridden) == len(FIELDS) else
+                  f'argument, {origin(name)}' if overridden else origin(name))
+        lines.append(line(f'{role}: {triple(values)}', source, used))
+        # A fallback equal to the role's choice or to an earlier fallback would retry the same limit.
+        tried = [values]
+        for entry in settings.get(f'{name} fallback', []):
+            used = []
+            fallback = {field: complete(field, part, used) for field, part in zip(FIELDS, entry)}
+            if fallback in tried:
+                continue
+            tried.append(fallback)
+            lines.append(line(f'{role} fallback {len(tried) - 1}: {triple(fallback)}',
+                              origin(f'{name} fallback'), used))
     rounds = (given.get('rounds') or settings.get('Max review rounds') or block.get('Max review rounds')
               or str(DEFAULT_ROUNDS))
     if not rounds.isdigit() or not 1 <= int(rounds) <= MAX_ROUNDS:
         raise ValueError(f'rounds must be an integer from 1 to {MAX_ROUNDS}, got "{rounds}"')
     rounds_source = ('argument' if 'rounds' in given else
-                     (sources or {}).get('Max review rounds', 'settings') if 'Max review rounds' in settings
+                     known.get('Max review rounds', 'settings') if 'Max review rounds' in settings
                      else 'AGENTS.md' if 'Max review rounds' in block else 'default')
-    lines.append(line(f'rounds: {int(rounds)}', rounds_source))
+    lines.append(line(f'rounds: {int(rounds)}', rounds_source, []))
     if sources is not None:
         # Every role counts, not only the printed ones: the question is whether the human set any up.
         keys = [key for role in ROLES for key in (role.capitalize(), f'{role.capitalize()} fallback')]
@@ -274,11 +306,27 @@ def project_settings_path() -> Path | None:
     return Path(top) / PROJECT_SETTINGS if top else None
 
 
+def tracked(path: Path) -> bool:
+    """Whether git tracks the file, or its directory (a committed development/ or link to it)."""
+    for directory, name in ((path.parent, path.name), (path.parent.parent, path.parent.name)):
+        try:
+            listed = subprocess.run(['git', '-C', str(directory), 'ls-files', '--', name],
+                                    capture_output=True, text=True)
+        except OSError:
+            return False
+        if listed.returncode == 0 and listed.stdout.strip():
+            return True
+    return False
+
+
 def load_settings(user: Path | None, project: Path | None) -> tuple[dict, dict[str, str]]:
     """The user file, overridden key by key by the project file, and the file each key came from; a
-    missing file sets nothing."""
+    missing file sets nothing, and a tracked project file is refused."""
     merged: dict = {}
     sources: dict[str, str] = {}
+    if project is not None and (project.exists() or project.is_symlink()) and tracked(project):
+        raise ValueError(f'{shown(project)} is tracked by git, but role settings are personal: remove it '
+                         'from the repository (git rm --cached) and keep it ignored')
     for path in (user, project):
         if path is not None and path.exists():
             settings = read_settings(path.read_text(encoding='utf-8'), str(path))
@@ -289,7 +337,7 @@ def load_settings(user: Path | None, project: Path | None) -> tuple[dict, dict[s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--agents-md', required=True, help='AGENTS.md with the wf block, or - for stdin')
+    parser.add_argument('--agents-md', help='AGENTS.md with the wf block, or - for stdin (required)')
     parser.add_argument('--roles', default=','.join(ROLES), help='comma-separated roles to print')
     parser.add_argument('--before-init', action='store_true',
                         help='accept a missing AGENTS.md or wf block (new project before wf init)')
@@ -300,8 +348,17 @@ def main(argv: list[str] | None = None) -> int:
                              '$XDG_CONFIG_HOME, else ~/.config)')
     parser.add_argument('--sources', action='store_true',
                         help='say where each line comes from, after a first line naming the role settings')
+    parser.add_argument('--paths', action='store_true',
+                        help='print the absolute paths of the user and project settings files, and exit')
     parser.add_argument('args', nargs='*', help='the stage arguments, for example TASK-7 rev=codex,,high')
     args = parser.parse_args(argv)
+    if args.paths:
+        user = (args.user_settings or user_settings_path()).absolute()
+        project = args.settings or project_settings_path()
+        print(f'user: {user}\nproject: {project.absolute() if project else "none"}')
+        return 0
+    if args.agents_md is None:
+        parser.error('--agents-md is required')
     roles = args.roles.split(',')
     if not set(roles) <= set(ROLES):
         parser.error(f'--roles takes {",".join(ROLES)}')

@@ -86,22 +86,24 @@ In the shorthand `<role>=agent[,model[,effort]]`, an omitted or empty part is `d
 error. An unset field comes from the project settings file, then the user file, then from
 `models=default|auto` (argument, then `Models`, then `default`); an agent falls back to `self`. In a
 settings file, an omitted part or `default` follows `Models`. A role takes up to three `fallback` lines,
-in order; `<Role> fallback: none` turns off those of the user file, and an argument for the role keeps
-them. Unknown keys and invalid values stop the stage. Role lines left in an older `AGENTS.md` block
-(`Rev agent`, …) count last, with a warning, until `wf init` moves them. `rounds=` sets the review
-rounds in this run (settings, then the block's `Max review rounds`, then 3). The stage prints the
-resolved settings, fallbacks included, before it starts.
+in order, each naming its agent; one equal to the role's choice or an earlier fallback is left out.
+`<Role> fallback: none` turns off those of the user file, and an argument for the role keeps them. A
+committed `development/wf-settings.md` is refused. Unknown keys and invalid values stop the stage. Role
+lines left in an older `AGENTS.md` block (`Rev agent`, …) count last, with a warning, until `wf init`
+moves them. `rounds=` sets the review rounds in this run (settings, then the block's `Max review rounds`,
+then 3). The stage prints the resolved settings, fallbacks included, before it starts.
 
-`default` passes no model or effort flag. `auto` chooses only a supported setting and records the
-actual value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your
-explicit request. Headless stages have a timeout. Each review has at most one retry for a transient
-execution failure, and stagnation or an unresolved reviewer dispute stops the loop. An agent's usage
-limit (`run-agent.sh` exit 6) is never retried under the same settings: the loop runs the stage with the
-role's next fallback, records it and keeps it for the rest of that run. Without a fallback left, or when
-a write stage had already changed files (exit 7), it asks whether to wait for the reset or use an agent
-you name for that run. A review round that marks a check of the `AGENTS.md` table `NOT RUN`
-counts only after the orchestrator has run that check on the reviewed commit and it passed; otherwise
-the round is not appended and the loop asks you.
+`default` passes no model or effort flag. `auto` chooses only a supported setting and records the actual
+value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your explicit
+request. Headless stages have a timeout. Each review has at most one retry for a transient execution
+failure, and stagnation or an unresolved reviewer dispute stops the loop. An agent's usage limit
+(`run-agent.sh` exit 6) is never retried under the same settings: the loop runs the stage with the role's
+next fallback, records it and keeps it for the rest of that run. Without a fallback left, or when a write
+stage had already changed files (exit 7), it asks: wait for the reset or use an agent you name for that
+run, and for exit 7 whether to keep or discard the partial change. A delegated run that changes a role
+settings file fails with exit 3, and the loop stops until you have checked it. A review round that marks a
+check of the `AGENTS.md` table `NOT RUN` counts only after the orchestrator has run that check on the
+reviewed commit and it passed; otherwise the round is not appended and the loop asks you.
 
 Examples:
 

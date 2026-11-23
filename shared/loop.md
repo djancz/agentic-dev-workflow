@@ -117,18 +117,24 @@ These rules apply to every stage you delegate, including `wf test`, `wf sec` and
   finished work. Do not work around the blocker for a single run; the one exception is a check a review
   did not run, which you run yourself to verify the round (below).
 - **Usage limit.** `run-agent.sh` exits 6 when the agent reached its usage limit and repeats the agent's
-  line, which says when it resets; a native subagent that stops on a usage limit counts the same. It is
-  not transient and produced no result: never retry it under the same settings. **Fallback:** when the
-  resolved role lists a fallback not yet tried in this run, run the same stage with the next one: keep
-  the failed run's files (*Reruns*), write the prompt again with the fallback's agent, model and effort,
-  and record `(fallback: <agent> / <model> / <effort> reached its usage limit)` where the stage records
-  its agent. Print one line saying so. The role keeps that fallback for the rest of this run; the next
-  run starts with the first choice again. Exit 7 is a usage limit after the run had already changed the
-  tree, `HEAD` or the records: never continue it under another agent. When no fallback is left, or on
-  exit 7, stop and ask the human (`conventions.md` → Asking the human): wait for the reset and rerun the
-  same prompt, or use an agent and model they name for this run. Never switch to an agent, model or
-  effort that neither the settings nor the human named. Record the answer where the stage records its
-  agent; it covers that run only.
+  line, which says when it resets. A native subagent that stops on a usage limit counts as exit 6 in a
+  review and as exit 7 in a stage that writes (`wf test`, a fix), because nothing compared its changes.
+  It is not transient and produced no result: never retry it under the same settings. **Fallback:** on
+  exit 6, when the resolved role lists a fallback not yet tried in this run (the resolver never repeats
+  the role's choice), run the same stage with the next one: keep the failed run's files (*Reruns*),
+  write the prompt again with the fallback's agent, model and effort, and record
+  `(fallback: <agent> / <model> / <effort> reached its usage limit)` where the stage records its agent.
+  Print one line saying so. The role keeps that fallback for the rest of this run; the next run starts
+  with the first choice again. When no fallback is left, stop and ask the human
+  (`conventions.md` → Asking the human): wait for the reset and rerun the same prompt, or use an agent
+  and model they name for this run. Never switch to an agent, model or effort that neither the settings
+  nor the human named. Record the answer where the stage records its agent; it covers that run only.
+- **Exit 7** is a usage limit after the run had already changed the tree, `HEAD` or the records: never
+  continue it under another agent. Show the partial change (`git status --short`, `git diff --stat`, the
+  records it touched) and ask whether to keep it and run the stage again on top of it, after the reset or
+  with an agent they name, or to discard it. Discard only on an explicit yes, as for any deletion.
+- **Settings changed.** Exit 3 that names a role settings file means a delegated run changed it. Stop,
+  name the file and ask the human to check it before any further run; resolve no roles in this run again.
 - **Reruns.** Before any rerun, keep the failed run's files: rename them to
   `<stage>-r<n>-attempt<k>.out.md` with its `.exit` and `.log` (and the prompt to
   `<stage>-r<n>-attempt<k>.prompt.md` when the rerun gets a new one), so the rerun starts with an empty

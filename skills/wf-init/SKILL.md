@@ -111,13 +111,15 @@ Project rules (may only tighten the workflow):
 
 When refreshing an existing block, keep the human's edits: `Max review rounds`, the dev server, the
 `Autopilot`, `Autopilot paths` and `Agent network` lines, and the project rules. Move role settings out
-of the block: for each role whose `<Role> agent`, `model` and `effort` lines (older names: `Reviewer`,
-`Review model`, `Review effort`, `Security reviewer`, `Security model`, `Security effort`) are not all
-`self` or `default`, add `- <Role>: <agent>,<model>,<effort>` to `development/wf-settings.md` (created
-from `templates/wf-settings.md` if missing), with an empty part for `default`, and `- Models: auto` if
-the block says so. If the file already sets that key differently, ask which to keep. Then delete every
-role line and `Models` from the block, and name the moved keys in the report: the `AGENTS.md` change
-needs a commit, and the old values stay in its history. Point out text outside the block that names
+of the block without changing what takes effect. Before you edit, run the read command of
+`references/roles.md` (rename the older keys `Reviewer`, `Review model`, `Review effort`, `Security
+reviewer`, `Security model`, `Security effort` to `Rev …` and `Sec …` first). For each role it shows
+`(from AGENTS.md)`, add `- <Role>: <agent>,<model>,<effort>` to `development/wf-settings.md` (created
+from `templates/wf-settings.md` if missing), with an empty part for `default`. Add `- Models: auto`
+only if the block says so and no settings file sets `Models`. A role whose line comes from a settings
+file already overrides the block: move nothing for it. Then delete every role line and `Models` from
+the block, and name the moved and the dropped keys in the report: the `AGENTS.md` change needs a
+commit, and the old values stay in its history. Point out text outside the block that names
 agents or models for the roles; do not edit it. Change only the rows you re-verified, and add missing
 rows. Replace a `planned` row with its command once the toolchain for it exists and the command runs.
 

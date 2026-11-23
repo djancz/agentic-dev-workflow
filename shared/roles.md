@@ -27,9 +27,11 @@ Ask as `conventions.md` → Asking the human says, at most four questions at a t
    `agent,model,effort` instead, for example to name a model.
 2. **Fallbacks**: one question for each role whose agent is not `self`. Recommend another installed agent
    with its default model, so that a usage limit does not stop the loop. Offer no fallback as an option.
-   A typed answer also takes `agent,model,effort`.
+   A typed answer also takes `agent,model,effort`; a fallback always names its agent.
 3. **Where**: all projects, `~/.config/agentic-dev-workflow/settings.md` (recommended when that file sets
    no role), or this project only, `development/wf-settings.md`. Ask it with the fallbacks when it fits.
+   Write to the exact path that `python3 scripts/resolve-roles.py --paths` prints for that choice:
+   `$XDG_CONFIG_HOME` may move the user file.
 
 Create the file if it is missing, and keep its other lines. Write one line per role,
 `- <Role>: <agent>[,<model>[,<effort>]]`, even for `self` with its defaults, so that the setup is not
