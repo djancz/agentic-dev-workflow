@@ -218,7 +218,8 @@ case $agent in
         [ "$mode" = ro ] && set -- "$@" --agent plan
         [ -n "$model" ] && set -- "$@" --model "$model"
         [ -n "$effort" ] && set -- "$@" --variant "$effort"
-        set -- "$@" --file "$prompt" "Follow the attached workflow prompt."
+        # --file takes several values and would swallow a message after it: the message goes first.
+        set -- "$@" "Follow the attached workflow prompt." --file "$prompt"
         ;;
     *) usage ;;
 esac

@@ -948,7 +948,9 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         args = self.args_of('opencode')
         self.assertIn('run --agent plan --model provider/model --variant high', args)
-        self.assertIn(f'--file {self.prompt}', args)
+        # OpenCode's --file is an array option: a message after it would be read as another file.
+        self.assertTrue(args.rstrip().endswith(f'Follow the attached workflow prompt. --file {self.prompt}'),
+                        args)
         self.assertNotIn('Run the stage.', args)
 
     def test_effort_is_passed_to_claude_and_codex(self):
