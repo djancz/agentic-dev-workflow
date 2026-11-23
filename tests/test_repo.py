@@ -869,7 +869,17 @@ You've hit your usage limit, the finding quotes." ;;
   untracked-then-limit) echo more >> notes.txt
     echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
 esac
-if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
+if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress
+elif [ "$name" = opencode ]; then
+  # OpenCode's JSON events: text before a tool call is a step of its own, the final message the last one.
+  FAKE_BODY=$body python3 -c 'import json, os, sys
+steps = [("m1", "I will look at the files first."), ("m2", None if sys.argv[1] == "no-final" else os.environ["FAKE_BODY"])]
+for mid, text in steps:
+    print(json.dumps({"type": "step_start", "part": {"messageID": mid, "type": "step-start"}}))
+    if text is not None:
+        print(json.dumps({"type": "text", "part": {"messageID": mid, "type": "text", "text": text}}))
+    print(json.dumps({"type": "step_finish", "part": {"messageID": mid, "type": "step-finish"}}))' "${FAKE_MODE:-ok}"
+else printf '%s\n' "$body"; fi
 '''
 
 
@@ -996,11 +1006,21 @@ class RunAgent(unittest.TestCase):
                            WF_AGENT_MODEL='provider/model', WF_AGENT_EFFORT='high')
         self.assertEqual(r.returncode, 0, r.stderr)
         args = self.args_of('opencode')
-        self.assertIn('run --agent plan --model provider/model --variant high', args)
+        self.assertIn('run --agent plan --model provider/model --variant high --format json', args)
         # OpenCode's --file is an array option: a message after it would be read as another file.
         self.assertTrue(args.rstrip().endswith(f'Follow the attached workflow prompt. --file {self.prompt}'),
                         args)
         self.assertNotIn('Run the stage.', args)
+
+    def test_opencode_output_is_its_final_message(self):
+        # Text the model writes between tool calls is no part of the result, as with claude -p.
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n')
+        self.assertIn('"step_start"', Path(f'{self.out}.log').read_text(), 'the events stay in the log')
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out), mode='no-final')
+        self.assertEqual(r.returncode, 5, 'a last step without text is no result')
+        self.assertIn('produced no output', r.stderr)
 
     def test_effort_is_passed_to_claude_and_codex(self):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EFFORT='high')

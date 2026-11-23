@@ -38,7 +38,8 @@ or `~/.config`). An unsupported model or effort setting stops the run rather tha
 settings. A usage limit exits 6, and the loop may continue with a fallback the settings list for the role;
 exit 7 is a usage limit after a write run had already changed files, which always stops and asks.
 Gemini CLI has no effort option; OpenCode passes a role's effort as its provider-specific `--variant`
-value.
+value. Of an OpenCode run the runner keeps only the final message, the text of its last step, as Claude and
+Codex give it; the JSON events of the whole run stay in the run's log.
 For a headless Gemini write stage, set `WF_GEMINI_SANDBOX=1`; otherwise use an interactive fresh
 session. The runner requires the sandbox before using Gemini's automatic write mode.
 For a headless Codex write stage, the runner adds the real `development/` directory as writable and,

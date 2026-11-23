@@ -221,8 +221,12 @@ case $agent in
         [ "$mode" = ro ] && set -- "$@" --agent plan
         [ -n "$model" ] && set -- "$@" --model "$model"
         [ -n "$effort" ] && set -- "$@" --variant "$effort"
+        # Its default output is the text of every step; its events go to the log and the output is the text
+        # of its last step, the final message (see opencode_final).
+        set -- "$@" --format json
         # --file takes several values and would swallow a message after it: the message goes first.
         set -- "$@" "Follow the attached workflow prompt." --file "$prompt"
+        stdout_is_output=0
         ;;
     *) usage ;;
 esac
@@ -276,6 +280,29 @@ fingerprint() {
     printf '%s\n' "$head" "$status" "$tree" "$staged" "$record_hashes" | git hash-object --stdin
 }
 
+# The final message of an OpenCode run: the text of the step that started last in its JSON events. Text the
+# model writes before a tool call belongs to an earlier step; a last step without text gives no output.
+opencode_final() {
+    python3 -c '
+import json, sys
+steps, texts = [], {}
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    part = event.get("part") if isinstance(event, dict) else None
+    if not isinstance(part, dict):
+        continue
+    if event.get("type") == "step_start":
+        steps.append(part.get("messageID"))
+    elif event.get("type") == "text" and isinstance(part.get("text"), str):
+        texts.setdefault(part.get("messageID"), []).append(part["text"])
+text = "\n".join(texts.get(steps[-1], [])).strip() if steps else ""
+sys.stdout.write(text + "\n" if text else "")
+' "$1"
+}
+
 # A snapshot that cannot be taken after the run counts as a change.
 changed() {
     after=$(fingerprint) || return 0
@@ -327,6 +354,9 @@ if [ "$stdout_is_output" = 1 ]; then
     "$@" <"$prompt" >"$out" 2>"$log" || rc=$?
 else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
+fi
+if [ "$agent" = opencode ]; then
+    opencode_final "$log" >"$out" || { rc=$?; say "cannot read the final message from the events in $log"; }
 fi
 
 for settings_file in "$project_settings" "$user_settings"; do
