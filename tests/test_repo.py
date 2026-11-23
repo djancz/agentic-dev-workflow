@@ -843,12 +843,11 @@ class RunAgent(unittest.TestCase):
         self.prompt = self.tmp / 'prompt.md'
         self.prompt.write_text('Run the stage.\n')
         self.out = self.tmp / 'out.md'
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp)
+        # A cleanup, not tearDown: a test's own cleanups, which make its directories writable again, run first.
+        self.addCleanup(shutil.rmtree, self.tmp)
 
     def run_agent(self, *args: str, mode: str = 'ok', path: str | None = None, cwd: Path | None = None,
-                  **env: str):
+                  script: str | None = None, **env: str):
         # The runner reads WF_* settings and the user's role settings: none of the caller's may leak in.
         full_env = {
             **{key: value for key, value in os.environ.items() if not key.startswith('WF_')},
@@ -858,7 +857,7 @@ class RunAgent(unittest.TestCase):
             'FAKE_LOG': str(self.logs),
             **env,
         }
-        return subprocess.run(['sh', str(RUN_AGENT), *args], cwd=cwd or self.repo, env=full_env,
+        return subprocess.run(['sh', script or str(RUN_AGENT), *args], cwd=cwd or self.repo, env=full_env,
                               capture_output=True, text=True)
 
     def args_of(self, agent: str) -> str:
@@ -1072,6 +1071,63 @@ class RunAgent(unittest.TestCase):
         (self.repo / 'tab\tname.txt').write_text('draft\n')
         r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='untracked-tab')
         self.assertEqual(r.returncode, 3, 'an untracked file with a tab in its name is seen too')
+
+    def read_only_tree(self, top: Path):
+        # Not effective for root, who may write anyway; the other checks of a test still hold.
+        dirs = [top, *(d for d in top.rglob('*') if d.is_dir())]
+        for d in dirs:
+            d.chmod(0o555)
+        self.addCleanup(lambda: [d.chmod(0o755) for d in dirs])
+
+    def test_the_snapshot_writes_nothing_into_git(self):
+        (self.repo / 'notes.txt').write_text('a draft that only this test writes\n')
+        blob = subprocess.run(['git', '-C', str(self.repo), 'hash-object', 'notes.txt'], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        self.read_only_tree(self.repo / '.git' / 'objects')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        exists = subprocess.run(['git', '-C', str(self.repo), 'cat-file', '-e', blob], capture_output=True)
+        self.assertNotEqual(exists.returncode, 0, 'the snapshot stored the untracked file in .git/objects')
+        r = self.run_agent('--expect-clean', 'claude', 'rw', str(self.prompt), str(self.out), mode='untracked')
+        self.assertEqual(r.returncode, 3, 'the snapshot still sees an edit of an untracked file')
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root reads an unreadable directory')
+    def test_records_that_cannot_be_read_fail_the_snapshot(self):
+        locked = self.repo / 'development' / 'locked'
+        locked.mkdir(parents=True)
+        (self.repo / '.git' / 'info' / 'exclude').write_text('/development/\n')
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn('cannot take a snapshot', r.stderr)
+        self.assertFalse((self.logs / 'claude.args').exists(), 'the agent ran without a snapshot')
+
+    def test_a_relative_runner_path_from_a_subdirectory_finds_its_resolver(self):
+        scripts = self.repo / 'tools' / 'scripts'
+        scripts.mkdir(parents=True)
+        for name in ('run-agent.sh', 'resolve-roles.py'):
+            shutil.copy(RUN_AGENT.parent / name, scripts / name)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), cwd=self.repo / 'tools',
+                           script='scripts/run-agent.sh')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_rejected_output_path_gets_no_message(self):
+        victim = self.tmp / 'victim.txt'
+        victim.write_text('ORIGINAL\n')
+        Path(f'{self.out}.log').symlink_to(victim)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('must not be symlinks', r.stderr)
+        self.assertEqual(victim.read_text(), 'ORIGINAL\n')
+        (self.repo / '.git/info/exclude').write_text('/review.md\n/review.md.tmp\n/review.md.exit\n')
+        log = self.repo / 'review.md.log'
+        log.write_text('ORIGINAL\n')
+        subprocess.run(['git', '-C', str(self.repo), 'add', 'review.md.log'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.repo / 'review.md'))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('tracked', r.stderr)
+        self.assertEqual(log.read_text(), 'ORIGINAL\n')
 
     def test_a_model_that_could_pass_as_an_option_is_rejected(self):
         for model in ('--dangerously-skip-permissions', 'gpt 5'):
@@ -1819,7 +1875,9 @@ class ResolveRoles(unittest.TestCase):
                        'even for `self` with its defaults, so that the setup is not asked again',
                        'keep them (recommended), or change some', 'never save it as a setting',
                        'scripts/resolve-roles.py --paths', 'a fallback always names its agent',
-                       'Asking the human'):
+                       'Asking the human', 'the first option keeps them',
+                       'replace all its `- <Role> fallback:` lines in that file, `none` included',
+                       'now read as chosen', 'the other file decides'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, roles)
         loop = ' '.join(LOOP.read_text().split())

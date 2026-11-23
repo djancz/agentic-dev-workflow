@@ -46,10 +46,11 @@ usage() {
     exit 2
 }
 
-# A message for the caller, also appended to the log so that --wait repeats it for a background run.
+# A message for the caller. Once the output paths are checked, it is also appended to the log, so that
+# --wait repeats it for a background run.
 say() {
     echo "run-agent: $*" >&2
-    if [ -n "${log:-}" ]; then printf 'run-agent: %s\n' "$*" >>"$log" 2>/dev/null || true; fi
+    if [ -n "${say_log:-}" ]; then printf 'run-agent: %s\n' "$*" >>"$say_log" 2>/dev/null || true; fi
 }
 
 die() {
@@ -128,6 +129,8 @@ if [ "${1:-}" = "--expect-clean" ]; then
     shift
 fi
 [ $# -eq 4 ] || usage
+# This script's own directory, before the cd below: resolve-roles.py lies next to it.
+here=$(cd "$(dirname "$0")" && pwd) || die 2 "cannot find the directory of $0"
 agent=$1
 mode=$2
 prompt=$(abspath "$3")
@@ -149,6 +152,8 @@ for output_path in "$out" "$log" "$out.tmp" "$out.exit"; do
 done
 rm -f "$out.exit"
 trap 'echo $? >"$out.exit"' EXIT
+: >"$log"
+say_log=$log
 
 case $mode in
     ro) expect_clean=1 ;;
@@ -229,35 +234,39 @@ command -v "$agent" >/dev/null 2>&1 || die 4 "$agent CLI not found on PATH"
 # except runs/, which holds the prompts and outputs, and this run's own output files.
 records() {
     [ -d development ] || return 0
-    paths=$(find -L development -path '*/runs' -prune -o -type f -print | LC_ALL=C sort |
-        grep -vxF -e "${out#"$root"/}" -e "${log#"$root"/}" -e "${out#"$root"/}.tmp" \
+    found=$(find -L development -path '*/runs' -prune -o -type f -print) || return 1
+    paths=$(printf '%s\n' "$found" | LC_ALL=C sort |
+        grep -vxF -e '' -e "${out#"$root"/}" -e "${log#"$root"/}" -e "${out#"$root"/}.tmp" \
             -e "${out#"$root"/}.exit" || true)
     [ -n "$paths" ] || return 0
     printf '%s\n' "$paths"
-    printf '%s\n' "$paths" | git hash-object --stdin-paths
+    printf '%s\n' "$paths" | git hash-object --no-filters --stdin-paths
 }
 
 # The working tree as a git tree, built in a temporary index with every file that is not ignored. Unlike
 # git status and git diff HEAD, it sees an edit to a file that was untracked already, file modes and
-# links, whatever the file names. It writes git objects, but no ref, index or file of the repository.
+# links, whatever the file names. Its new objects go to a temporary object directory that reads the
+# repository's objects as an alternate: nothing in .git is written, which Codex keeps read-only.
 worktree_tree() {
+    objects=$(cd "$(git rev-parse --git-path objects)" && pwd) || return 1
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/run-agent.XXXXXX") || return 1
+    mkdir -p "$scratch/objects/info" && printf '%s\n' "$objects" >"$scratch/objects/info/alternates" ||
+        { rm -rf "$scratch"; return 1; }
     cp "$(git rev-parse --git-path index)" "$scratch/index" 2>/dev/null || :
     snapshot_rc=0
-    tree=$(GIT_INDEX_FILE=$scratch/index git add -A >/dev/null 2>&1 &&
-        GIT_INDEX_FILE=$scratch/index git write-tree) || snapshot_rc=1
+    tree=$(export GIT_INDEX_FILE="$scratch/index" GIT_OBJECT_DIRECTORY="$scratch/objects"
+        git add -A >/dev/null 2>&1 && git write-tree) || snapshot_rc=1
     rm -rf "$scratch"
     [ "$snapshot_rc" = 0 ] && printf '%s\n' "$tree"
 }
 
+# Each part is taken on its own, so that a part that fails fails the snapshot.
 fingerprint() {
     tree=$(worktree_tree) || return 1
-    {
-        git rev-parse HEAD 2>/dev/null || true
-        git status --porcelain=v1 --untracked-files=all
-        printf '%s\n' "$tree"
-        records
-    } | git hash-object --stdin
+    head=$(git rev-parse HEAD 2>/dev/null) || head=none
+    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) || return 1
+    record_hashes=$(records) || return 1
+    printf '%s\n' "$head" "$status" "$tree" "$record_hashes" | git hash-object --stdin
 }
 
 # A snapshot that cannot be taken after the run counts as a change.
@@ -287,7 +296,6 @@ set -- "$timeout_cmd" -k 30 "$timeout_s" "$@"
 
 # The personal role settings decide which agents later stages run; no delegated run may change them.
 # resolve-roles.py, next to this script, knows where they are.
-here=$(cd "$(dirname "$0")" && pwd)
 settings_paths=$(python3 "$here/resolve-roles.py" --paths) ||
     die 4 "cannot locate the role settings: python3 and resolve-roles.py next to run-agent.sh are required"
 user_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^user: //p')

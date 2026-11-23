@@ -25,9 +25,10 @@ Ask as `conventions.md` → Asking the human says, at most four questions at a t
    and `sec`, recommend an installed agent of another model family than yours, so that the review is
    independent; without one, recommend `self`. Each option's description says the human may type
    `agent,model,effort` instead, for example to name a model.
-2. **Fallbacks**: one question for each role whose agent is not `self`. Recommend another installed agent
-   with its default model, so that a usage limit does not stop the loop. Offer no fallback as an option.
-   A typed answer also takes `agent,model,effort`; a fallback always names its agent.
+2. **Fallbacks**: one question for each role whose agent is not `self`. When the read output lists
+   fallbacks for the role already, or `none`, the first option keeps them. Recommend another installed
+   agent with its default model, so that a usage limit does not stop the loop. Offer no fallback as an
+   option. A typed answer also takes `agent,model,effort`; a fallback always names its agent.
 3. **Where**: all projects, `~/.config/agentic-dev-workflow/settings.md` (recommended when that file sets
    no role), or this project only, `development/wf-settings.md`. Ask it with the fallbacks when it fits.
    Write to the exact path that `python3 scripts/resolve-roles.py --paths` prints for that choice:
@@ -35,13 +36,17 @@ Ask as `conventions.md` → Asking the human says, at most four questions at a t
 
 Create the file if it is missing, and keep its other lines. Write one line per role,
 `- <Role>: <agent>[,<model>[,<effort>]]`, even for `self` with its defaults, so that the setup is not
-asked again. Add one `- <Role> fallback: …` line for each fallback, in the order given. Run the read
-command again. If it exits 2, fix the line it names. Show the role lines to the human.
+asked again. For each role whose fallbacks change, replace all its `- <Role> fallback:` lines in that
+file, `none` included, with one line for each fallback in the order given. Run the read command
+again. If it exits 2, fix the line it names. Check that each role and its fallbacks now read as chosen.
+If not, the other file decides: a project line overrides the user file, and `- <Role> fallback: none` in
+the project file turns off the user file's fallbacks. Change that file only when the human agrees. Show
+the role and fallback lines to the human.
 
 ## Something set (`wf init` only)
 
 Show the role and fallback lines with their sources. Ask one question: keep them (recommended), or
 change some. For a change, ask which roles (several may be chosen). Ask only those, as in *Nothing set*,
-with the current value as the first option. Save each change in the file its line came from. Ask
-*Where* when the line came from `default`, or when the human may mean this project only. A run argument
-(`rev=…`) covers one run; never save it as a setting.
+with the current value as the first option. Save each change in the file its line came from, and write
+and check it as there. Ask *Where* when the line came from `default`, or when the human may mean this
+project only. A run argument (`rev=…`) covers one run; never save it as a setting.
