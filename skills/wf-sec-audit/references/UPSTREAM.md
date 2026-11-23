@@ -24,8 +24,10 @@ Changes to the upstream text and contract:
 - Delegation runs through `audit.py prompt` and `run-agent.sh`, with the roles `hunt` (reconnaissance,
   hunters) and `verify` (critics, verifiers). Every run is a fresh headless session in this clone, so the
   agent CLIs load the project's agent configuration (including a linked configuration root and Codex's
-  `.agents/skills`): the audit gate lists it, and committed configuration needs the human's explicit
-  `--trust-agent-config`. Each run is pinned to the audited commit. The
+  `.agents/skills`, in any case of their names): the audit gate lists it, and committed configuration
+  needs the human's explicit `--trust-agent-config`. Each run is pinned to the audited commit and runs
+  without network (`WF_AGENT_NETWORK=0`, whatever the wf block says), and the roles never come from the
+  committed wf block: the audited repository chooses neither its auditors nor their network. The
   tree check of `run-agent.sh` detects a write outside `runs/` after the run; Write isolation in
   `AUDIT.md` says what it does not cover. `run-agent.sh` drops one code fence that opens and closes
   around a whole message before `audit.py apply` reads it; anything else around the JSON object discards
@@ -51,8 +53,11 @@ Changes to the upstream text and contract:
   with its size. A Python launcher inside the finished sandbox starts the command with exactly its
   environment, which acts on nothing before, and reports the start only once the exec succeeded: a check
   whose command never started within its time limit, or whose exec failed (a missing interpreter, for
-  example), leaves no record. No `--tool` may cover a credential store of the home directory, or the
-  destination of one that is a link. The export is made only of directories it created and removed through
+  example), leaves no record. The launch pipe is no descriptor that bwrap's pid 1 keeps, and the launcher
+  is not dumpable, so the command cannot reach it through `/proc`; bwrap starts with an empty environment.
+  No `--tool` may cover a credential store of the home directory, those that toolchains keep beside their
+  caches included (mount `~/.gradle/caches`, not `~/.gradle`), or the destination of one that is a link,
+  nor the repository's git directory, its other worktrees or its records. The export is made only of directories it created and removed through
   its own descriptor and only in those; by name only an empty directory goes, so a directory moved into its
   place stays.
 - A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`

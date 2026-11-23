@@ -2051,6 +2051,26 @@ class ResolveRoles(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn('--roles takes test,rev,sec,fix,hunt,verify', r.stderr)
 
+    def test_the_audited_repository_does_not_choose_its_auditors(self):
+        # The wf block is committed: its role keys and Models reach the core roles (deprecated, with a
+        # warning) but never the audit roles, which stay at the default, so the audit asks the human.
+        block = self.OLD_BLOCK.replace(
+            '- Models: default <!-- default | auto -->',
+            '- Models: auto\n- Hunt agent: codex\n- Hunt model: some/model\n- Verify agent: opencode\n'
+            '- Verify model: cheap/model\n- Verify effort: low')
+        self.assertEqual(self.lines('--sources', block=block, roles='hunt,verify,rev'), [
+            'settings: AGENTS.md',
+            'hunt: agent=self model=default effort=default  (from default)',
+            'verify: agent=self model=default effort=default  (from default)',
+            'rev: agent=gemini model=auto effort=high  (from AGENTS.md; models=auto from AGENTS.md)',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        # Settings and arguments still apply, and so does Models from them.
+        self.assertEqual(self.lines('models=auto', block=block, roles='hunt', project='- Verify: claude\n'), [
+            'hunt: agent=self model=auto effort=auto',
+            'rounds: 4',
+        ])
+
     def test_sources_say_where_each_line_comes_from_and_whether_roles_are_set(self):
         r = self.resolve('--sources', roles='rev,fix')
         self.assertEqual((r.returncode, r.stderr), (0, ''))

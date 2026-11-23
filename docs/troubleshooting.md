@@ -144,6 +144,14 @@ itself that breaks these rules, or leads out of `/etc` and `/usr`, stays out, an
 on stderr: `/etc/java-21-openjdk stays out of the sandbox: it holds …/jmxremote.password, which not every
 user may read`. Make the file readable by every user, or move it, when the toolchain needs that entry.
 
+## A check is refused with "--tool must not expose"
+
+A `--tool` must not hold or lie in a credential store of the home directory: the keys of your CLIs, and
+those that toolchains keep beside their caches, such as `~/.gradle/gradle.properties` or
+`~/.m2/settings.xml` (`HOME_SECRETS` in `sandbox-run.py`). Mount the part the check needs instead,
+`--tool ~/.gradle/caches` or `--tool ~/.m2/repository`. The repository, its git directory, its other
+worktrees and its records under `development/` cannot be mounted either.
+
 ## A check is refused with "the command did not start"
 
 Its exec failed inside the sandbox: the command is not on its `PATH`, is not executable, or names an

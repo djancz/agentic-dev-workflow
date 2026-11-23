@@ -63,4 +63,5 @@ them with `--roles hunt,verify --sources`. Ask only for a role whose line ends `
 2. **Verify**: recommend an installed agent of another model family than `hunt`, so that no model
    verifies its own candidates.
 3. **Fallbacks** and **Where** as in *Nothing set*.
-Write and check the lines as there. A run argument (`hunt=…`) covers one audit only.
+Write and check the lines as there. A run argument (`hunt=…`) covers one audit only. The audit roles
+never come from the wf block of `AGENTS.md`, which the audited repository commits.

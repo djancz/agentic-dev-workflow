@@ -75,11 +75,14 @@ KINDS = {  # kind: (role, run-agent mode, --expect-clean)
     'recon': ('hunt', 'ro', False), 'hunter': ('hunt', 'rw', True), 'critic': ('verify', 'ro', False),
     'candidate': ('verify', 'rw', True), 'record': ('verify', 'ro', False),
 }
-# A configuration root itself counts too: a committed link `.claude` leads the CLI to settings elsewhere.
-AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini|agents)(/.+)?', re.DOTALL)
+# A configuration root itself counts too: a committed link `.claude` leads the CLI to settings elsewhere. Any
+# case: on a file system that ignores case (macOS by default), the CLI that opens .claude/settings.json
+# reads a committed .Claude/settings.json.
+AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini|agents)(/.+)?',
+                          re.DOTALL | re.IGNORECASE)
 AGENT_CONFIG_PATHS = ('opencode.json', 'opencode.jsonc', '.mcp.json', '.opencode', '.claude', '.codex', '.gemini',
                       '.agents')
-SKILL_LINK = re.compile(r'\.(claude|opencode|gemini|agents)/skills/(wf-[^/]+)')
+SKILL_LINK = re.compile(r'\.(claude|opencode|gemini|agents)/skills/(wf-[^/]+)', re.IGNORECASE)
 CAP_REASONS = ('wave_cap_reached', 'stagnation', 'budget_cannot_reserve_critics_and_validation',
                'critic_budget_exhausted')
 REPORTS = ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md')
@@ -347,7 +350,7 @@ def committed_agent_config(root: Path, ref: str) -> list[str]:
 def local_agent_config(root: Path) -> list[str]:
     """Agent configuration in this clone that git ignores: yours, not the target's, but loaded the same way."""
     listing = git('-C', str(root), 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--',
-                  *AGENT_CONFIG_PATHS).split('\0')
+                  *(f':(icase){path}' for path in AGENT_CONFIG_PATHS)).split('\0')
     return [display_path(path) for path in listing if path and AGENT_CONFIG.fullmatch(path)
             and not ((root / path).is_symlink() and installer_link(path, os.readlink(root / path)))]
 
@@ -1069,7 +1072,10 @@ def write_prompt(run: Run, agent: str, kind: str, text: str, override: str | Non
         run.state['events'].append({'at': now(), 'agent': agent, 'role': role, 'ran_as': override})
     parts = (value.split(',') + ['', ''])[:3]
     cli = run.meta['host'] if parts[0] == 'self' else parts[0]
-    env = [f'WF_AGENT_TIMEOUT={run.meta["agent_timeout"]}', f'WF_AGENT_EXPECT_HEAD={run.meta["source_ref"]}']
+    # No network for what an agent runs: the audited repository's wf block (`Agent network: on`) must not
+    # open the Codex sandbox, and the variable overrides it.
+    env = [f'WF_AGENT_TIMEOUT={run.meta["agent_timeout"]}', f'WF_AGENT_EXPECT_HEAD={run.meta["source_ref"]}',
+           'WF_AGENT_NETWORK=0']
     if parts[1] and parts[1] != 'default':
         env.append(f'WF_AGENT_MODEL={shlex.quote(parts[1])}')
     if parts[2] and parts[2] != 'default':

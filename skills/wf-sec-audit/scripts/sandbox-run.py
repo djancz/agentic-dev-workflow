@@ -19,9 +19,11 @@ run     (hunters and candidate verifiers) runs <command> with no external networ
         The source is a fresh export of the committed bytes of <commit> for this run (no .gitattributes of
         the target applies), written by this script into a new <scratch>/src/<random>/, mounted read-only
         at /src and removed afterwards; submodules are not exported. --inputs <dir under scratch> is mounted
-        read-only at /input. A --tool is a directory that must not hold a socket or FIFO, nor lie in the
-        home directory's credential stores, the repository, a runtime directory such as /run or /tmp, or
-        /src, /work or /input; what is asked for in /etc or leads there may be a file too and must be
+        read-only at /input. A --tool is a directory that must not hold a socket or FIFO, nor lie in or
+        hold the home directory's credential stores (those toolchains keep beside their caches too, such as
+        ~/.gradle/gradle.properties), the repository, its git directory, its other worktrees or its
+        records, a runtime directory such as /run or /tmp, or /src, /work or /input; what is asked for in
+        /etc or leads there may be a file too and must be
         readable by every user throughout, and passwd, group, hosts, hostname and machine-id are the
         sandbox's own; --inputs holds no socket or FIFO either. Tools, inputs and the source are
         mounted by descriptor: what was checked is what the command sees. Limits: a cgroup v2
@@ -43,7 +45,9 @@ promote (the parent only, after the agent run has ended) copies each allowlisted
         JSON line per allowed path (promoted, missing or rejected with the reason). Exit 0 when nothing was
         rejected, 1 when something was, 3 when a run still holds the scratch directory, 125 on invalid use.
 
-The tools are taken from fixed system paths (/usr/bin/bwrap, /usr/bin/systemd-run), never from PATH.
+The tools are taken from fixed system paths (/usr/bin/bwrap, /usr/bin/systemd-run, /usr/bin/env), never
+from PATH. bwrap starts with an empty environment. The sandbox's mount table (/proc/self/mountinfo) shows
+the host path of each mount's source, that of the export included, which names where the repository is.
 """
 
 from __future__ import annotations
@@ -72,6 +76,7 @@ from pathlib import Path
 BWRAP = '/usr/bin/bwrap'
 SYSTEMD_RUN = '/usr/bin/systemd-run'
 SYSTEMCTL = '/usr/bin/systemctl'
+ENV = '/usr/bin/env'
 GIT = shutil.which('git', path='/usr/bin:/bin:/usr/local/bin') or '/usr/bin/git'
 CONTROLS = ('no-network', 'empty-environment', 'read-only-target-and-toolchain', 'scratch-only-writes',
             'process-limit', 'memory-limit', 'cpu-limit', 'file-size-limit', 'disk-limit', 'wall-clock-limit',
@@ -96,10 +101,16 @@ FIXED_ENV = {'HOME': '/work/home', 'TMPDIR': '/work/tmp', 'LANG': 'C.UTF-8'}
 DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin'
 COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 COMPONENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
-# Credential stores under the home directory that no --tool may expose.
+# Credential stores under the home directory that no --tool may expose, nor a directory that holds one: the
+# keys and tokens of the user and their CLIs, those that toolchains keep next to their caches (mount
+# ~/.gradle/caches, not ~/.gradle), and the profiles of browsers and sandboxed applications.
 HOME_SECRETS = ('.ssh', '.gnupg', '.aws', '.azure', '.config', '.docker', '.kube', '.netrc', '.git-credentials',
                 '.local/share', '.claude', '.codex', '.gemini', '.password-store', '.pki', '.npmrc', '.pypirc',
-                '.cargo/credentials', '.cargo/credentials.toml')
+                '.cargo/credentials', '.cargo/credentials.toml', '.gradle/gradle.properties', '.gradle/init.d',
+                '.gradle/init.gradle', '.gradle/init.gradle.kts', '.m2/settings.xml', '.m2/settings-security.xml',
+                '.gem/credentials', '.bundle/config', '.nuget/NuGet', '.sbt/.credentials', '.ivy2/.credentials',
+                '.terraform.d/credentials.tfrc.json', '.android/adbkey', '.subversion/auth', '.oci', '.mozilla',
+                '.thunderbird', 'snap', '.var/app')
 # Where host services keep sockets and runtime state. A socket reached through a read-only bind still
 # connects (the user bus could start a process outside the sandbox), so no --tool may lie below these.
 RUNTIME_ROOTS = ('/run', '/var/run', '/tmp', '/var/tmp', '/dev', '/proc', '/sys')
@@ -210,22 +221,22 @@ def identity_fds() -> list[tuple[int, str]]:
 
 
 # Runs inside the finished sandbox and starts the command (python3 -I -S, with an empty environment of its
-# own, so that nothing the command is given acts on this step). Its standard input is the launch pipe. It
-# gives the command /dev/null instead and execs it with exactly the environment it got as arguments (after
-# their count), finding it on that PATH as execvp does. A watcher it forked first reports on the launch pipe
-# once the exec is decided: "." when the pipe that the exec closes ended, "!" and the error when the exec
-# failed. So "." comes only after the command started, or after this step died, and a run counts only
-# when "." came before any kill of the runner. Python ignores SIGPIPE and SIGXFSZ; the command gets the
-# defaults, which an exec keeps otherwise. Python 3.6 syntax: the sandbox's Python is the host's under /usr.
+# own, so that nothing the command is given acts on this step). The launch pipe is the descriptor its first
+# argument names, which bwrap passes on and its pid 1 does not keep; standard input is /dev/null. It execs
+# the command with exactly the environment it got as arguments (after their count), finding it on that PATH
+# as execvp does. A watcher it forked first reports on the launch pipe once the exec is decided: "." when
+# the pipe that the exec closes ended, "!" and the error when the exec failed. So "." comes only after the
+# command started, or after this step died, and a run counts only when "." came before any kill of the
+# runner. Both are not dumpable, so that the command cannot open the launch pipe through /proc; the exec
+# makes the command dumpable again. Python ignores SIGPIPE and SIGXFSZ; the command gets the defaults, which
+# an exec keeps otherwise. Python 3.6 syntax: the sandbox's Python is the host's under /usr.
 LAUNCHER = r"""
 import errno, os, signal, sys
-count = int(sys.argv[1])
-env = dict(item.split("=", 1) for item in sys.argv[2:2 + count])
-argv = sys.argv[2 + count:]
-ack = os.dup(0)
-null = os.open("/dev/null", os.O_RDONLY)
-os.dup2(null, 0)
-os.close(null)
+ack = os.dup(int(sys.argv[1]))
+os.close(int(sys.argv[1]))
+count = int(sys.argv[2])
+env = dict(item.split("=", 1) for item in sys.argv[3:3 + count])
+argv = sys.argv[3 + count:]
 for name in ("SIGPIPE", "SIGXFSZ"):
     signal.signal(getattr(signal, name), signal.SIG_DFL)
 
@@ -235,6 +246,12 @@ def refuse(message):
     os._exit(127)
 
 
+try:
+    import ctypes
+    if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+except Exception as exc:
+    refuse("cannot keep the launch pipe from the command: %s" % exc)
 done, exec_end = os.pipe()
 try:
     child = os.fork()
@@ -301,10 +318,11 @@ def launcher_python() -> str:
 
 
 def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str | int, str]], chdir: str,
-               status_fd: int, etc: list[tuple[int, str]] = (), identity: list[tuple[int, str]] = (),
-               python: str = '/usr/bin/python3') -> list[str]:
+               status_fd: int, launch_fd: int, etc: list[tuple[int, str]] = (),
+               identity: list[tuple[int, str]] = (), python: str = '/usr/bin/python3') -> list[str]:
     """A bind's source is a path, or an open descriptor that keeps its identity until bwrap mounts it. The
-    command follows the returned arguments; env is its environment, handed to the launcher, not to bwrap."""
+    command follows the returned arguments; env is its environment, handed to the launcher, not to bwrap, and
+    launch_fd the write end of the launch pipe."""
     # The status descriptor gets an "exit-code" line only when the command itself ran and ended.
     args = [BWRAP, '--json-status-fd', str(status_fd), '--unshare-all', '--unshare-user', '--disable-userns',
             '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv', '--hostname', HOSTNAME,
@@ -316,7 +334,7 @@ def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str | 
         args += ['--ro-bind-fd', str(source), target] if isinstance(source, int) else ['--ro-bind', source, target]
     # bwrap leaves its root and its /dev writable: only /work and /dev/shm, which have a size, may take writes.
     args += ['--remount-ro', '/dev', '--remount-ro', '/', '--chdir', chdir, '--']
-    return args + [python, '-I', '-S', '-c', LAUNCHER, str(len(env)),
+    return args + [python, '-I', '-S', '-c', LAUNCHER, str(launch_fd), str(len(env)),
                    *(f'{name}={value}' for name, value in env.items())]
 
 
@@ -407,7 +425,7 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
 
     Without guard (the probe only) the command starts even when a cgroup limit does not hold, so that the
     probe can test the other controls on their own; run always keeps it."""
-    for tool in (BWRAP, SYSTEMD_RUN):
+    for tool in (BWRAP, SYSTEMD_RUN, ENV):
         if not os.access(tool, os.X_OK):
             raise Refused(f'{tool} is not installed')
     cgroup = {'tasks': limits['tasks'], 'memory_mb': limits['memory_mb'], 'cpu_percent': limits['cpu_percent']}
@@ -416,15 +434,18 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
     status_read, status_write = os.pipe()
     launch_read, launch_write = os.pipe()
     etc, identity = etc_mounts(), identity_fds()
-    argv = scope + (guard_args(**cgroup) if guard else []) + bwrap_args(
+    # bwrap starts with an empty environment: its pid 1 shows the environment it started with in
+    # /proc/1/environ, and the scope's (the user bus, the runtime directory) is the host's.
+    argv = scope + (guard_args(**cgroup) if guard else []) + [ENV, '-i'] + bwrap_args(
         work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds, chdir=chdir, status_fd=status_write,
-        etc=etc, identity=identity, python=python) + command
+        launch_fd=launch_write, etc=etc, identity=identity, python=python) + command
     bind_fds = tuple(source for source, _ in binds if isinstance(source, int)) + tuple(fd for fd, _ in etc + identity)
     started = time.monotonic()
     try:
-        process = subprocess.Popen(argv, stdin=launch_write, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Not as standard input, which bwrap's pid 1 keeps open for the command to find through /proc.
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    cwd=cwd, start_new_session=True, close_fds=True,
-                                   pass_fds=(status_write, *bind_fds), env=scope_env(),
+                                   pass_fds=(status_write, launch_write, *bind_fds), env=scope_env(),
                                    preexec_fn=rlimits(limits['cpu_seconds'], limits['file_mb'] * 1024 * 1024,
                                                       limits['nofile'], as_bytes))
     except OSError as exc:
@@ -689,7 +710,24 @@ def public_fd(real: Path, what: str) -> int:
     return fd
 
 
-def check_tool(path: str, repo: Path) -> tuple[str, int]:
+def protected_paths(repo: Path) -> list[Path]:
+    """What no --tool may expose besides the worktree being audited: the repository's git directory, every
+    worktree of it (the main one of a linked worktree among them) and the records under development/, which
+    may lead elsewhere."""
+    paths = []
+    common = git(repo, 'rev-parse', '--git-common-dir', capture_output=True, text=True)
+    if common.returncode == 0 and common.stdout.strip():
+        paths.append((repo / common.stdout.strip()).resolve())
+    listing = git(repo, 'worktree', 'list', '--porcelain', capture_output=True, text=True)
+    if listing.returncode == 0:
+        paths += [Path(line[len('worktree '):]).resolve() for line in listing.stdout.splitlines()
+                  if line.startswith('worktree ')]
+    if (repo / 'development').exists():
+        paths.append((repo / 'development').resolve())
+    return list(dict.fromkeys(path for path in paths if path != repo))
+
+
+def check_tool(path: str, repo: Path, protected: list[Path] | tuple[Path, ...] = ()) -> tuple[str, int]:
     """The mount point of a --tool and a descriptor of what was checked. A toolchain is a directory, mounted
     at its real path. What is asked for in /etc, or leads there, follows the rules of the sandbox's own /etc
     (public_fd), whichever way it is named: it is a directory or a file, mounted where it was asked for in
@@ -703,6 +741,10 @@ def check_tool(path: str, repo: Path) -> tuple[str, int]:
     etc = within(given, Path('/etc')) or within(real, Path('/etc'))
     if real == Path('/') or within(home, real) or within(repo, real) or within(real, repo):
         raise Refused(f'--tool must not expose the home directory or the repository: {path}')
+    for other in protected:
+        if within(other, real) or within(real, other):
+            raise Refused(f'--tool must not expose the git directory, another worktree or the records of the '
+                          f'repository: {other}: {path}')
     if Path('/etc') in (real, given):
         raise Refused('--tool must not mount all of /etc, which holds host credentials too: mount the entry a '
                       f'toolchain needs, --tool /etc/<name>: {path}')
@@ -956,7 +998,8 @@ def cmd_run(args) -> int:
         repo = Path(repo_out.stdout.strip()).resolve()
         limits = limit_values(args)
         env = parse_env(args.env)
-        checked = [check_tool(tool, repo) for tool in args.tool]
+        protected = protected_paths(repo) if args.tool else []
+        checked = [check_tool(tool, repo, protected) for tool in args.tool]
         tools = [path for path, _ in checked]
         binds: list[tuple[str | int, str]] = [(fd, path) for path, fd in checked]
         scratch_fd = open_real(scratch, '--scratch')

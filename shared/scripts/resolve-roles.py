@@ -29,8 +29,10 @@ of the wf block in AGENTS.md (a warning on stderr names those that are not defau
 models=default|auto (argument, then settings, then the block's Models) for a model or effort, and `self`
 for an agent. Fallbacks come only from the settings files; an argument for the role keeps them.
 rounds= comes from the argument, else Max review rounds of the settings, then of the block, else 3, and
-must be 1-10. Words without `=` (task or wave IDs) are ignored. With --before-init (spec and roadmap
-reviews of a new project), a missing AGENTS.md or wf block means built-in defaults.
+must be 1-10. The audit roles never read the wf block, neither role keys nor Models: it is committed,
+and a repository must not choose who audits it. Words without `=` (task or wave IDs) are ignored. With
+--before-init (spec and roadmap reviews of a new project), a missing AGENTS.md or wf block means built-in
+defaults.
 
 --sources ends each line with `(from <source>)`: a settings file, AGENTS.md, argument or default; a role
 whose fields come partly from arguments reads `(from argument, <source>)`, `; models=auto from
@@ -222,15 +224,23 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
             sources: dict[str, str] | None = None) -> list[str]:
     """The role, fallback and rounds lines; with sources (key -> file), each line says where it came from
     and a first `settings:` line names the sources of all role settings, or says none is set."""
-    models = given.get('models') or settings.get('Models') or block.get('Models') or 'default'
-    if models not in {'default', 'auto'}:
-        raise ValueError(f'models must be default or auto, got "{models}"')
     known = sources or {}
-    models_source = ('argument' if 'models' in given else
-                     known.get('Models', 'settings') if 'Models' in settings else
-                     'AGENTS.md' if 'Models' in block else 'default')
 
-    def complete(field: str, value: str, used: list[bool]) -> str:
+    def view(role: str) -> dict[str, str]:
+        """The wf block as a role reads it. The block is committed, so the audit roles, which treat the
+        repository as untrusted, never read it: a repository must not choose its own auditors."""
+        return block if role in CORE_ROLES else {}
+
+    def models_of(keys: dict[str, str]) -> tuple[str, str]:
+        """Models and where it came from."""
+        models = given.get('models') or settings.get('Models') or keys.get('Models') or 'default'
+        if models not in {'default', 'auto'}:
+            raise ValueError(f'models must be default or auto, got "{models}"')
+        return models, ('argument' if 'models' in given else
+                        known.get('Models', 'settings') if 'Models' in settings else
+                        'AGENTS.md' if 'Models' in keys else 'default')
+
+    def complete(field: str, value: str, used: list[bool], models: str) -> str:
         if value in {'', 'default'}:
             if field == 'agent':
                 return 'self'
@@ -238,16 +248,16 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
             return models
         return value
 
-    def origin(name: str) -> str:
+    def origin(name: str, keys: dict[str, str]) -> str:
         """Where the role or fallback key `name` is set, apart from run arguments."""
         if name in settings:
             return known.get(name, 'settings')
-        if not name.endswith(' fallback') and any(block.get(f'{name} {field}', 'default') not in
+        if not name.endswith(' fallback') and any(keys.get(f'{name} {field}', 'default') not in
                                                   {'', 'default', 'self'} for field in FIELDS):
             return 'AGENTS.md'
         return 'default'
 
-    def line(text: str, source: str, used: list[bool]) -> str:
+    def line(text: str, source: str, used: list[bool], models_source: str = '') -> str:
         if sources is None:
             return text
         note = f'; models=auto from {models_source}' if any(used) else ''
@@ -256,38 +266,40 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
     def triple(values: dict[str, str]) -> str:
         return ' '.join(f'{field}={values[field]}' for field in FIELDS)
 
+    models_of(block)  # an invalid Models of the block is an error whichever roles are printed
     lines = []
     for role in roles:
-        name = role.capitalize()
+        name, keys = role.capitalize(), view(role)
+        models, models_source = models_of(keys)
         from_block = name not in settings
         base = (dict(zip(FIELDS, settings[name])) if not from_block
-                else {field: block.get(f'{name} {field}', '') for field in FIELDS})
+                else {field: keys.get(f'{name} {field}', '') for field in FIELDS})
         values, used = {}, []
         for field in FIELDS:
             value = given.get(f'{role}-{field}')
             if value is None:
                 if from_block:  # an old block line counts only where no argument overrides it
                     check_value(field, base[field], f'the wf block\'s {name} {field}')
-                value = complete(field, base[field], used)
+                value = complete(field, base[field], used, models)
             elif field == 'agent' and value == 'default':
                 value = 'self'
             values[field] = value
         overridden = [field for field in FIELDS if f'{role}-{field}' in given]
         source = ('argument' if len(overridden) == len(FIELDS) else
-                  f'argument, {origin(name)}' if overridden else origin(name))
-        lines.append(line(f'{role}: {triple(values)}', source, used))
+                  f'argument, {origin(name, keys)}' if overridden else origin(name, keys))
+        lines.append(line(f'{role}: {triple(values)}', source, used, models_source))
         # A fallback equal to the role's choice or to an earlier fallback would retry the same limit.
         tried = [values]
         if sources is not None and settings.get(f'{name} fallback') == []:
-            lines.append(line(f'{role} fallback: none', origin(f'{name} fallback'), []))
+            lines.append(line(f'{role} fallback: none', origin(f'{name} fallback', keys), []))
         for entry in settings.get(f'{name} fallback', []):
             used = []
-            fallback = {field: complete(field, part, used) for field, part in zip(FIELDS, entry)}
+            fallback = {field: complete(field, part, used, models) for field, part in zip(FIELDS, entry)}
             if fallback in tried:
                 continue
             tried.append(fallback)
             lines.append(line(f'{role} fallback {len(tried) - 1}: {triple(fallback)}',
-                              origin(f'{name} fallback'), used))
+                              origin(f'{name} fallback', keys), used, models_source))
     rounds = (given.get('rounds') or settings.get('Max review rounds') or block.get('Max review rounds')
               or str(DEFAULT_ROUNDS))
     if not is_rounds(rounds):
@@ -300,8 +312,8 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
         # Every core role counts, not only the printed ones: the question is whether the human chose any
         # role. A fallback alone is no choice of a role, and neither is an audit role, so they leave the
         # setup to ask.
-        found = list(dict.fromkeys(origin(role.capitalize()) for role in CORE_ROLES
-                                   if origin(role.capitalize()) != 'default'))
+        found = list(dict.fromkeys(origin(role.capitalize(), block) for role in CORE_ROLES
+                                   if origin(role.capitalize(), block) != 'default'))
         lines.insert(0, f'settings: {", ".join(found) if found else "none"}')
     return lines
 

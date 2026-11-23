@@ -43,8 +43,8 @@ Codex give it; the JSON events of the whole run stay in the run's log.
 For a headless Gemini write stage, set `WF_GEMINI_SANDBOX=1`; otherwise use an interactive fresh
 session. The runner requires the sandbox before using Gemini's automatic write mode.
 For a headless Codex write stage, the runner adds the real `development/` directory as writable and,
-with `Agent network: on` in the `wf` block (or `WF_AGENT_NETWORK=1`), enables network in the sandbox.
-Codex cannot commit there; the delegating session commits. See [troubleshooting](troubleshooting.md).
+with `Agent network: on` in the `wf` block (or `WF_AGENT_NETWORK=1`), enables network in the sandbox;
+`wf sec audit` runs always without it. Codex cannot commit there; the delegating session commits. See [troubleshooting](troubleshooting.md).
 
 Agent skill discovery and CLI flags may change. Check your installed CLI's help if a stage reports an
 unsupported option. Use a manual fresh session and read the named skill if headless mode is not

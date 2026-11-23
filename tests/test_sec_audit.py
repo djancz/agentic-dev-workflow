@@ -307,7 +307,8 @@ class SandboxGuards(unittest.TestCase):
     def test_the_sandbox_takes_writes_only_in_work_and_shared_memory_and_hides_the_host_name(self):
         sandbox = load_sandbox()
         args = sandbox.bwrap_args(work_bytes=1024, env={'DUMMY_USER': 'alice'}, binds=[('/opt/tool', '/opt/tool')],
-                                  chdir='/', status_fd=9, etc=[(7, '/etc/ssl/certs')], python='/usr/bin/python3.99')
+                                  chdir='/', status_fd=9, launch_fd=11, etc=[(7, '/etc/ssl/certs')],
+                                  python='/usr/bin/python3.99')
         tail = args[args.index('--remount-ro'):]
         self.assertEqual(tail[:4], ['--remount-ro', '/dev', '--remount-ro', '/'], 'after every mount')
         self.assertLess(args.index('/opt/tool'), args.index('--remount-ro'))
@@ -321,7 +322,7 @@ class SandboxGuards(unittest.TestCase):
         self.assertIn(['--ro-bind-fd', '7', '/etc/ssl/certs'], [args[n:n + 3] for n in range(len(args))])
         self.assertNotIn('--setenv', args, 'the environment acts on the command, not on the step that starts it')
         self.assertEqual(args[args.index('--') + 1:],
-                         ['/usr/bin/python3.99', '-I', '-S', '-c', sandbox.LAUNCHER, '1', 'DUMMY_USER=alice'])
+                         ['/usr/bin/python3.99', '-I', '-S', '-c', sandbox.LAUNCHER, '11', '1', 'DUMMY_USER=alice'])
 
     def test_an_etc_entry_goes_in_only_inside_etc_and_usr_and_readable_by_every_user(self):
         from unittest import mock
@@ -628,6 +629,51 @@ while True:
                     sandbox.check_tool(str(tool), REPO)
                 self.assertIn('.ssh', str(caught.exception))
 
+    def test_no_tool_exposes_the_credentials_toolchains_keep_beside_their_caches(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        sandbox.RUNTIME_ROOTS = ()  # the temporary directory stands in for a home outside /tmp
+        home = tmp / 'home'
+        for directory in ('.gradle/caches', '.gradle/wrapper', '.m2/repository', '.gem', 'snap/firefox',
+                          '.mozilla/firefox', '.var/app/org.example'):
+            (home / directory).mkdir(parents=True)
+        (home / '.gradle' / 'gradle.properties').write_text('signing.password=secret\n')
+        (home / '.m2' / 'settings.xml').write_text('<password>secret</password>\n')
+        (home / '.gem' / 'credentials').write_text('---\n:rubygems_api_key: secret\n')
+        with mock.patch.dict(os.environ, {'HOME': str(home)}):
+            for tool in ('.gradle', '.m2', '.gem', 'snap', 'snap/firefox', '.mozilla', '.var/app/org.example'):
+                with self.subTest(tool=tool), self.assertRaises(sandbox.Refused) as caught:
+                    sandbox.check_tool(str(home / tool), REPO)
+                self.assertIn('must not expose', str(caught.exception))
+            for tool in ('.gradle/caches', '.gradle/wrapper', '.m2/repository'):
+                with self.subTest(tool=tool):
+                    _, fd = sandbox.check_tool(str(home / tool), REPO)
+                    os.close(fd)
+
+    def test_no_tool_exposes_another_worktree_the_git_directory_or_the_records(self):
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        sandbox.RUNTIME_ROOTS = ()  # the temporary directory stands in for a checkout outside /tmp
+        main, linked, records = tmp / 'main', tmp / 'linked', tmp / 'records'
+        main.mkdir()
+        git(main, 'init', '-q')
+        (main / 'tools').mkdir()
+        (main / 'tools' / 'README').write_text('x\n')
+        git(main, 'add', '-A')
+        git(main, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'init')
+        git(main, 'worktree', 'add', '-q', str(linked))
+        records.mkdir()
+        (linked / 'development').symlink_to(records, target_is_directory=True)
+        protected = sandbox.protected_paths(linked)
+        self.assertEqual(set(protected), {main / '.git', main, records})
+        for tool in (main, main / 'tools', main / '.git', records, tmp):
+            with self.subTest(tool=tool), self.assertRaises(sandbox.Refused) as caught:
+                sandbox.check_tool(str(tool), linked, protected)
+            self.assertIn('must not expose', str(caught.exception))
+
     def test_directories_open_without_o_path_too(self):
         # macOS has no O_PATH; promotion, which a source-only audit also runs, must still open its roots.
         tmp = Path(tempfile.mkdtemp()).resolve()
@@ -914,6 +960,34 @@ class SandboxRun(unittest.TestCase):
         result = sandbox.sandboxed(['/opt/t/no-interpreter-line'], env=env, binds=[(str(tools), '/opt/t')], chdir='/',
                                    limits=limits)
         self.assertEqual(result['stdout'], b'ran as a shell script\n', 'as execvp runs it')
+
+    def test_the_command_reaches_neither_the_launch_pipe_nor_the_callers_environment(self):
+        sandbox = load_sandbox()
+        limits = {name: default for name, (default, _) in sandbox.LIMITS.items()}
+        env = {'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}
+        # bwrap's pid 1 keeps its standard input, which the command can open through /proc: a byte written
+        # there must not turn a run that happened into one that did not start.
+        result = sandbox.sandboxed(['/bin/sh', '-c', 'echo ran; printf x > /proc/1/fd/0; readlink /proc/1/fd/0'],
+                                   env=env, binds=[], chdir='/', limits=limits)
+        self.assertEqual((result['status'], result['stdout']), (0, b'ran\n/dev/null\n'), result['stderr'])
+        # bwrap started with nothing of the caller: its pid 1 shows the environment it started with.
+        os.environ['WF_TEST_CALLER_ONLY'] = 'host value'
+        self.addCleanup(os.environ.pop, 'WF_TEST_CALLER_ONLY')
+        result = sandbox.sandboxed(['/bin/sh', '-c', 'wc -c < /proc/1/environ'], env=env, binds=[], chdir='/',
+                                   limits=limits)
+        self.assertEqual(result['stdout'].strip(), b'0', result['stderr'])
+        # The launcher and its watcher cannot be read through /proc while they hold the pipe.
+        late = sandbox.LAUNCHER.replace('report = os.read(done, 512)', 'time.sleep(2)\n        report = b""')
+        late = late.replace('import errno,', 'import time, errno,')
+        self.assertNotEqual(late, sandbox.LAUNCHER)
+        from unittest import mock
+        probe = ('for d in /proc/[0-9]*; do [ "$d" = /proc/$$ ] || [ "$d" = /proc/1 ] || '
+                 'ls -l "$d/fd/" 2>&1 | grep -c pipe: ; done; sleep 3')  # until the watcher has reported
+        with mock.patch.object(sandbox, 'LAUNCHER', late):
+            result = sandbox.sandboxed(['/bin/sh', '-c', probe], env=env, binds=[], chdir='/', limits=limits)
+        self.assertNotIn(b'pipe:', result['stdout'])
+        self.assertTrue(result['stdout'].strip(), 'the watcher was there to look at')
+        self.assertEqual(set(result['stdout'].split()), {b'0'}, result['stdout'])
 
     def test_refused_calls_run_nothing_and_leave_no_evidence(self):
         cases = [
@@ -1606,6 +1680,9 @@ class AuditTool(unittest.TestCase):
         out = self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-002').stdout
         self.assertIn('--expect-clean claude rw', out)
         self.assertIn(f'WF_AGENT_EXPECT_HEAD={self.ref}', out, 'every run is pinned to the audited commit')
+        # The audited repository's wf block cannot open the network of a Codex run (run-agent.sh lets the
+        # variable override the block).
+        self.assertIn('WF_AGENT_NETWORK=0 ', out)
         # A verifier whose sandbox failed cannot reproduce a decisive local result: nothing settles.
         self.result(run, 'record-002', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'fail: no-network'})
         self.assertEqual(self.audit('apply', str(run), 'record', '--agent', 'record-002', ok=False).returncode, 4)
@@ -1715,6 +1792,23 @@ class AuditTool(unittest.TestCase):
                           '.claude/skills/two\\\\nlines/SKILL.md', '.codex/a\\tb.toml',
                           *(['.codex/\\x85.toml'] if b'.codex/\x85.toml' in raw else []), '.codex/\\u0085.toml',
                           *(['.codex/\\xff.toml'] if b'.codex/\xff.toml' in raw else []), '.gemini'])
+
+    def test_agent_configuration_in_any_case_is_agent_configuration(self):
+        # Where the file system ignores case, the CLI that opens .claude/settings.json reads these.
+        (self.repo / '.Claude').mkdir()
+        (self.repo / '.Claude' / 'settings.json').write_text('{"hooks": {}}\n')
+        (self.repo / '.MCP.json').write_text('{}\n')
+        (self.repo / 'OpenCode.json').write_text('{}\n')
+        (self.repo / '.gitignore').write_text('/development\n/.CODEX/\n')
+        self.commit('configuration in other cases')
+        (self.repo / '.CODEX').mkdir()
+        (self.repo / '.CODEX' / 'config.toml').write_text('# mine\n')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude')
+        meta = json.loads((Path(r.stdout.strip()) / 'run-metadata.json').read_text())
+        self.assertEqual(meta['agent_config'], ['.Claude/settings.json', '.MCP.json', 'OpenCode.json'])
+        self.assertEqual(meta['local_agent_config'], ['.CODEX/config.toml'])
+        r = self.audit('approve', r.stdout.strip(), '--words', 'start', ok=False)
+        self.assertIn('--trust-agent-config', r.stderr)
 
     def test_the_records_are_where_the_installer_keeps_them_also_with_a_separate_git_dir(self):
         main = self.tmp / 'main'
