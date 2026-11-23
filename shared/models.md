@@ -2,7 +2,7 @@
 
 Read this when a resolved model or effort is not `default` (`loop.md` → Arguments). `default` passes
 nothing, so the selected agent uses its own configuration. Each role (`test`, `rev`, `sec`, `fix`) has its
-own model and effort. An explicit argument overrides project defaults and `models=auto`.
+own model and effort. An explicit argument overrides the personal settings and `models=auto`.
 
 ## Applying a setting
 
@@ -14,12 +14,13 @@ own model and effort. An explicit argument overrides project defaults and `model
   `default` means no setting was passed. Do not claim a setting was applied if it was not.
 - Gemini CLI has no portable effort flag. OpenCode maps `effort` to the provider-specific `--variant`
   flag; a rejected variant is a failed stage. A failed model or effort choice requires a new human
-  selection, never a silent fallback.
+  selection, never a silent fallback. The only switch without a new selection is to a usage-limit
+  fallback that the human listed in the settings (`loop.md` → Delegated runs), and it is recorded.
 
 ## auto
 
 Choose from the task's `Size`, `Sensitivity`, and current finding severity. Prefer the selected CLI's
-configured default model unless a supported model is explicitly named in project settings. Do not make
+configured default model unless a supported model is explicitly named in the settings. Do not make
 network calls merely to enumerate models. Choose an effort only when the selected CLI supports it:
 
 | Stage | Normal S | M or L, or open Major | High sensitivity or Blocker |

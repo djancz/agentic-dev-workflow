@@ -8,14 +8,17 @@
 #        The working tree and the private records in development/ (except runs/) are always
 #        checked afterwards.
 #   rw   the agent may edit files and run commands in the repository.
+#   In every mode, the personal role settings must not change during the run: development/wf-settings.md
+#   and agentic-dev-workflow/settings.md in $XDG_CONFIG_HOME (absolute), else in ~/.config.
 #   --expect-clean  with rw: fail with exit 3 if the tree or the records changed — for reviews that must
 #        run the project's checks but must not touch the code.
 #
 # The agent's final message is written to <out-file>; its progress and errors go to <out-file>.log;
 # the exit code goes to <out-file>.exit when the run ends.
 #   --wait  block until the run writing <out-file> has finished (at most <seconds>, default 540), then
-#        exit with its exit code; exit 124 if it is still running. For hosts whose shell tool cannot
-#        wait 30 minutes: start the run in the background, then call --wait until it returns.
+#        exit with its exit code, repeating the runner's reason for a failure; exit 124 if it is still
+#        running. For hosts whose shell tool cannot wait 30 minutes: start the run in the background,
+#        then call --wait until it returns.
 #
 # Environment:
 #   WF_AGENT_TIMEOUT           seconds before the run is killed (default 1800)
@@ -32,20 +35,28 @@
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #
-# Exit codes: 0 ok, 2 usage, 3 tree or records changed, 4 required executable not found,
+# Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
-#             6 the agent reached its usage limit (its message, repeated on stderr, says when it resets)
+#             6 the agent reached its usage limit (its message, repeated on stderr, says when it resets),
+#             7 the same, but the run had already changed the tree, HEAD or the records
 set -eu
 
 usage() {
-    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
+}
+
+# A message for the caller. Once the output paths are checked, it is also appended to the log, so that
+# --wait repeats it for a background run.
+say() {
+    echo "run-agent: $*" >&2
+    if [ -n "${say_log:-}" ]; then printf 'run-agent: %s\n' "$*" >>"$say_log" 2>/dev/null || true; fi
 }
 
 die() {
     code=$1
     shift
-    echo "run-agent: $*" >&2
+    say "$*"
     exit "$code"
 }
 
@@ -105,6 +116,9 @@ if [ "${1:-}" = "--wait" ]; then
         waited=$((waited + 5))
     done
     code=$(cat "$out.exit")
+    if [ "$code" != 0 ]; then
+        grep '^run-agent: ' "$out.log" 2>/dev/null | tail -n 3 >&2 || true
+    fi
     echo "run-agent: finished with exit $code — $out" >&2
     exit "$code"
 fi
@@ -115,6 +129,8 @@ if [ "${1:-}" = "--expect-clean" ]; then
     shift
 fi
 [ $# -eq 4 ] || usage
+# This script's own directory, before the cd below: resolve-roles.py lies next to it.
+here=$(cd "$(dirname "$0")" && pwd) || die 2 "cannot find the directory of $0"
 agent=$1
 mode=$2
 prompt=$(abspath "$3")
@@ -136,6 +152,8 @@ for output_path in "$out" "$log" "$out.tmp" "$out.exit"; do
 done
 rm -f "$out.exit"
 trap 'echo $? >"$out.exit"' EXIT
+: >"$log"
+say_log=$log
 
 case $mode in
     ro) expect_clean=1 ;;
@@ -146,6 +164,9 @@ esac
 
 model=${WF_AGENT_MODEL:-}
 effort=${WF_AGENT_EFFORT:-}
+case $model in
+    -*|*[[:space:]]*) die 2 "WF_AGENT_MODEL must be a name without spaces, not starting with -: $model" ;;
+esac
 case $effort in
     *[!a-z]*) die 2 "WF_AGENT_EFFORT must be a lowercase level such as high: $effort" ;;
 esac
@@ -213,21 +234,55 @@ command -v "$agent" >/dev/null 2>&1 || die 4 "$agent CLI not found on PATH"
 # except runs/, which holds the prompts and outputs, and this run's own output files.
 records() {
     [ -d development ] || return 0
-    paths=$(find -L development -path '*/runs' -prune -o -type f -print | LC_ALL=C sort |
-        grep -vxF -e "${out#"$root"/}" -e "${log#"$root"/}" -e "${out#"$root"/}.tmp" \
+    found=$(find -L development -path '*/runs' -prune -o -type f -print) || return 1
+    paths=$(printf '%s\n' "$found" | LC_ALL=C sort |
+        grep -vxF -e '' -e "${out#"$root"/}" -e "${log#"$root"/}" -e "${out#"$root"/}.tmp" \
             -e "${out#"$root"/}.exit" || true)
     [ -n "$paths" ] || return 0
     printf '%s\n' "$paths"
-    printf '%s\n' "$paths" | git hash-object --stdin-paths
+    printf '%s\n' "$paths" | git hash-object --no-filters --stdin-paths
 }
 
+# The working tree as a git tree, built in a temporary index with every file that is not ignored. Unlike
+# git status and git diff HEAD, it sees an edit to a file that was untracked already, file modes and
+# links, whatever the file names. Its new objects go to a temporary object directory that reads the
+# repository's objects as an alternate: nothing in .git is written, which Codex keeps read-only.
+worktree_tree() {
+    objects=$(cd "$(git rev-parse --git-path objects)" && pwd) || return 1
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/run-agent.XXXXXX") || return 1
+    mkdir -p "$scratch/objects/info" && printf '%s\n' "$objects" >"$scratch/objects/info/alternates" ||
+        { rm -rf "$scratch"; return 1; }
+    cp "$(git rev-parse --git-path index)" "$scratch/index" 2>/dev/null || :
+    snapshot_rc=0
+    tree=$(export GIT_INDEX_FILE="$scratch/index" GIT_OBJECT_DIRECTORY="$scratch/objects"
+        git add -A >/dev/null 2>&1 && git write-tree) || snapshot_rc=1
+    rm -rf "$scratch"
+    [ "$snapshot_rc" = 0 ] && printf '%s\n' "$tree"
+}
+
+# Each part is taken on its own, so that a part that fails fails the snapshot. The tree holds what is on
+# disk; the real index entries add what is staged, which can differ.
 fingerprint() {
-    {
-        git rev-parse HEAD 2>/dev/null || true
-        git status --porcelain=v1 --untracked-files=all
-        git diff HEAD --binary 2>/dev/null || true
-        records
-    } | git hash-object --stdin
+    tree=$(worktree_tree) || return 1
+    head=$(git rev-parse HEAD 2>/dev/null) || head=none
+    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) || return 1
+    staged=$(git ls-files --stage) || return 1
+    record_hashes=$(records) || return 1
+    printf '%s\n' "$head" "$status" "$tree" "$staged" "$record_hashes" | git hash-object --stdin
+}
+
+# A snapshot that cannot be taken after the run counts as a change.
+changed() {
+    after=$(fingerprint) || return 0
+    [ "$after" != "$before" ]
+}
+
+file_hash() {
+    if [ -f "$1" ]; then
+        git hash-object --stdin <"$1"
+    else
+        echo none
+    fi
 }
 
 timeout_s=${WF_AGENT_TIMEOUT:-1800}
@@ -241,7 +296,16 @@ else
 fi
 set -- "$timeout_cmd" -k 30 "$timeout_s" "$@"
 
-before=$(fingerprint)
+# The personal role settings decide which agents later stages run; no delegated run may change them.
+# resolve-roles.py, next to this script, knows where they are.
+settings_paths=$(python3 "$here/resolve-roles.py" --paths) ||
+    die 4 "cannot locate the role settings: python3 and resolve-roles.py next to run-agent.sh are required"
+user_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^user: //p')
+project_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^project: //p')
+
+before=$(fingerprint) || die 2 "cannot take a snapshot of the working tree"
+project_settings_before=$(file_hash "$project_settings")
+user_settings_before=$(file_hash "$user_settings")
 : >"$out"
 rc=0
 if [ "$stdout_is_output" = 1 ]; then
@@ -250,8 +314,17 @@ else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
 fi
 
-if [ "$expect_clean" = 1 ] && [ "$(fingerprint)" != "$before" ]; then
-    echo "run-agent: the working tree changed during a run that must not modify it:" >&2
+for settings_file in "$project_settings" "$user_settings"; do
+    settings_before=$user_settings_before
+    [ "$settings_file" = "$project_settings" ] && settings_before=$project_settings_before
+    if [ "$(file_hash "$settings_file")" != "$settings_before" ]; then
+        say "the role settings changed during the run: $settings_file;" \
+            "the human must check them before any further run"
+        exit 3
+    fi
+done
+if [ "$expect_clean" = 1 ] && changed; then
+    say "the working tree changed during a run that must not modify it"
     git status --short >&2
     exit 3
 fi
@@ -264,12 +337,17 @@ if [ "$rc" -ne 0 ]; then
         limit_line=$({ tail -n 50 "$log"; head -n 5 "$out"; } 2>/dev/null | grep -E "$limit_re" |
             grep -vxF -f "$prompt" | sed -n 1p)
         if [ -n "$limit_line" ]; then
-            echo "run-agent: $agent reached its usage limit: $limit_line" >&2
+            say "$agent reached its usage limit: $limit_line"
+            if changed; then
+                say "the run had already changed the tree, HEAD or the records;" \
+                    "no other agent may continue it"
+                exit 7
+            fi
             exit 6
         fi
     fi
-    echo "run-agent: $agent exited with $rc (124 = timeout); last lines of $log:" >&2
     tail -n 20 "$log" >&2 || true
+    say "$agent exited with $rc (124 = timeout); the last lines of $log are above"
     exit 5
 fi
 [ -s "$out" ] || die 5 "$agent produced no output; see $log"

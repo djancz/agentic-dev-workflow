@@ -26,7 +26,7 @@ to až do PR"), ask once whether to run the autopilot and record the reply that 
 authorization (`references/autopilot.md` → Authorization).
 Role options pass to every stage that takes them (`references/loop.md` → Arguments). A reviewer from
 another model family (for example `rev=codex`) is recommended, because nobody else reads the code before
-the PR.
+the PR; the same holds for the `rev` and `sec` fallbacks in the personal settings.
 
 ## Before the first stage
 

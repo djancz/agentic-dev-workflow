@@ -32,9 +32,13 @@ Gemini sandboxes write only inside the directory they start in. See
 
 The review runner is `shared/scripts/run-agent.sh`. It uses the selected CLI, a timeout, and output
 validation. For a review it checks that neither the working tree nor the private `development/` records
-(outside `runs/`) changed. An unsupported model or
-effort setting stops the run rather than silently changing settings. Gemini CLI has no effort option;
-OpenCode passes a role's effort as its provider-specific `--variant` value.
+(outside `runs/`) changed, contents of untracked files included. In every mode, it fails with exit 3 when
+the personal role settings changed (`development/wf-settings.md` and the user file in `$XDG_CONFIG_HOME`
+or `~/.config`). An unsupported model or effort setting stops the run rather than silently changing
+settings. A usage limit exits 6, and the loop may continue with a fallback the settings list for the role;
+exit 7 is a usage limit after a write run had already changed files, which always stops and asks.
+Gemini CLI has no effort option; OpenCode passes a role's effort as its provider-specific `--variant`
+value.
 For a headless Gemini write stage, set `WF_GEMINI_SANDBOX=1`; otherwise use an interactive fresh
 session. The runner requires the sandbox before using Gemini's automatic write mode.
 For a headless Codex write stage, the runner adds the real `development/` directory as writable and,

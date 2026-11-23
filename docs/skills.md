@@ -12,7 +12,7 @@ more than one task or wave could match.
 | `wf prototype [focus]` | Optional, after the spec: build a runnable prototype on its own branch; feedback revises it | Human confirms scope, then tries it |
 | `wf prototype done` | Adopt the prototype as the baseline, keep it as a reference, or discard it; later, clean it up | `wf roadmap`, or `wf prd` / `wf spec` when its learnings change them |
 | `wf roadmap` | Plan milestones, tasks, and waves; bounded fresh review | Human approves roadmap |
-| `wf init` | Detect and configure project checks | Review managed project instructions |
+| `wf init` | Detect and configure project checks; ask for or confirm your agent roles | Review managed project instructions |
 | `wf milestone M1` | Create milestone tasks; `done` verifies exit criteria | Task plans |
 | `wf task <goal>` | Create a standalone task or revise task scope | Task plan |
 | `wf plan TASK-N` | Plan behavior, tests, code, security, and commits | `wf plan loop` |
@@ -55,32 +55,55 @@ Review loops also run internal stages you do not type: `wf wave fix` (fixes afte
 
 ## Agent and model options
 
-Set project defaults in the managed `AGENTS.md` block. Per-run arguments override them. Agent values
-are `self`, `claude`, `codex`, `gemini`, and `opencode`. `self` means a fresh subagent of the current
-host or a fresh run of its CLI. Agent CLI authentication is the user's responsibility.
+Role settings are personal and never committed. `~/.config/agentic-dev-workflow/settings.md` (in
+`$XDG_CONFIG_HOME` when set) applies to all your projects; `development/wf-settings.md`, private to the
+clone and shared by its worktrees, overrides it key by key; per-run arguments override both. While no
+role is set anywhere, the first stage that resolves roles (`wf init`, or a new project's spec review)
+asks for them and for fallbacks (`shared/roles.md`), and saves the answers where you choose. `wf init`
+also shows existing roles and asks whether to keep or change them. The file format is in
+`skills/wf-init/templates/wf-settings.md`. Agent values are `self`,
+`claude`, `codex`, `gemini`, and `opencode`. `self` means a fresh subagent of the current host or a fresh
+run of its CLI. Agent CLI authentication is the user's responsibility.
 
-| Role | Shorthand | Long form | Block keys | Applies to |
+| Role | Shorthand | Long form | Settings keys | Applies to |
 |---|---|---|---|---|
-| test | `test=a,m,e` | `test-agent=`, `test-model=`, `test-effort=` | `Test agent`, `Test model`, `Test effort` | `wf test` |
-| rev | `rev=a,m,e` | `rev-agent=`, `rev-model=`, `rev-effort=` | `Rev agent`, `Rev model`, `Rev effort` | Spec, roadmap, plan, implementation, wave reviews |
-| sec | `sec=a,m,e` | `sec-agent=`, `sec-model=`, `sec-effort=` | `Sec agent`, `Sec model`, `Sec effort` | `wf sec`, in `wf impl loop` or standalone |
-| fix | `fix=a,m,e` | `fix-agent=`, `fix-model=`, `fix-effort=` | `Fix agent`, `Fix model`, `Fix effort` | Plan, implementation, wave fixes |
+| test | `test=a,m,e` | `test-agent=`, `test-model=`, `test-effort=` | `Test`, `Test fallback` | `wf test` |
+| rev | `rev=a,m,e` | `rev-agent=`, `rev-model=`, `rev-effort=` | `Rev`, `Rev fallback` | Spec, roadmap, plan, implementation, wave reviews |
+| sec | `sec=a,m,e` | `sec-agent=`, `sec-model=`, `sec-effort=` | `Sec`, `Sec fallback` | `wf sec`, in `wf impl loop` or standalone |
+| fix | `fix=a,m,e` | `fix-agent=`, `fix-model=`, `fix-effort=` | `Fix`, `Fix fallback` | Plan, implementation, wave fixes |
+
+```markdown
+- Rev: codex,<model>,xhigh
+- Rev fallback: claude,<model>,medium
+- Rev fallback: gemini
+- Models: default
+- Max review rounds: 3
+```
 
 In the shorthand `<role>=agent[,model[,effort]]`, an omitted or empty part is `default`: `rev=codex`,
 `rev=codex,gpt-5`, `rev=codex,,high`. Model names may contain `:` or `/`
 (`rev=opencode,ollama/llama3:8b,high`). Use one form per role; `rev=codex rev-effort=high` is an
-error. An unset field comes from the block, then from `models=default|auto` (argument, then `Models`,
-then `default`); an agent falls back to `self`. `rounds=` sets the review rounds in this run (project
-`Max review rounds`, then 3). The stage prints the resolved settings before it starts.
+error. An unset field comes from the project settings file, then the user file, then from
+`models=default|auto` (argument, then `Models`, then `default`); an agent falls back to `self`. In a
+settings file, an omitted part or `default` follows `Models`. A role takes up to three `fallback` lines,
+in order, each naming its agent; one equal to the role's choice or an earlier fallback is left out.
+`<Role> fallback: none` turns off those of the user file, and an argument for the role keeps them. A
+committed `development/wf-settings.md` is refused. Unknown keys and invalid values stop the stage. Role
+lines left in an older `AGENTS.md` block (`Rev agent`, …) count last, with a warning, until `wf init`
+moves them. `rounds=` sets the review rounds in this run (settings, then the block's `Max review rounds`,
+then 3). The stage prints the resolved settings, fallbacks included, before it starts.
 
-`default` passes no model or effort flag. `auto` chooses only a supported setting and records the
-actual value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your
-explicit request. Headless stages have a timeout. Each review has at most one retry for a transient
-execution failure, and stagnation or an unresolved reviewer dispute stops the loop. An agent's usage
-limit (`run-agent.sh` exit 6) is never retried: the loop asks whether to wait for the reset or use an
-agent you name for that run. A review round that marks a check of the `AGENTS.md` table `NOT RUN`
-counts only after the orchestrator has run that check on the reviewed commit and it passed; otherwise
-the round is not appended and the loop asks you.
+`default` passes no model or effort flag. `auto` chooses only a supported setting and records the actual
+value. Unsupported settings stop the stage. `rounds` must be 1–10; a new run requires your explicit
+request. Headless stages have a timeout. Each review has at most one retry for a transient execution
+failure, and stagnation or an unresolved reviewer dispute stops the loop. An agent's usage limit
+(`run-agent.sh` exit 6) is never retried under the same settings: the loop runs the stage with the role's
+next fallback, records it and keeps it for the rest of that run. Without a fallback left, or when a write
+stage had already changed files (exit 7), it asks: wait for the reset or use an agent you name for that
+run, and for exit 7 whether to keep or discard the partial change. A delegated run that changes a role
+settings file fails with exit 3, and the loop stops until you have checked it. A review round that marks a
+check of the `AGENTS.md` table `NOT RUN` counts only after the orchestrator has run that check on the
+reviewed commit and it passed; otherwise the round is not appended and the loop asks you.
 
 Examples:
 
