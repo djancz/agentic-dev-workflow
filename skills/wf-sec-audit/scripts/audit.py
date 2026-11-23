@@ -49,6 +49,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 9):
+    sys.exit('audit: Python 3.9 or later is required')
 HERE = Path(__file__).resolve().parent
 SKILL = HERE.parent
 CLASSES = SKILL / 'references' / 'classes'
@@ -71,7 +73,8 @@ KINDS = {  # kind: (role, run-agent mode, --expect-clean)
     'candidate': ('verify', 'rw', True), 'record': ('verify', 'ro', False),
 }
 AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini)/.+')
-WF_SKILL_LINK = re.compile(r'(^|/)skills/wf-[^/]+(/|$)')
+AGENT_CONFIG_PATHS = ('opencode.json', 'opencode.jsonc', '.mcp.json', '.opencode', '.claude', '.codex', '.gemini')
+SKILL_LINK = re.compile(r'\.(claude|opencode|codex|gemini)/skills/(wf-[^/]+)')
 CAP_REASONS = ('wave_cap_reached', 'stagnation', 'budget_cannot_reserve_critics_and_validation',
                'critic_budget_exhausted')
 REPORTS = ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md')
@@ -124,6 +127,13 @@ def write_json(path: Path, value) -> None:
 
 
 class Run:
+    def require_open(self) -> None:
+        """Refuse a state change once final has run: the reports derive from that state."""
+        if self.meta['run_status'] != 'in_progress':
+            raise Refused(f'the run is {self.meta["run_status"]}')
+        if self.meta['phase'] == 'report':
+            raise Refused('the findings are final: write the reports, then done (or run final again)')
+
     def __init__(self, path: str | Path):
         self.dir = Path(path).resolve()
         if not (self.dir / 'run-metadata.json').is_file():
@@ -258,11 +268,33 @@ def schema_branch(verdict: str) -> dict:
 # --------------------------------------------------------------------------- init, approve, status
 
 
+def installer_link(path: str, target: str) -> bool:
+    """A skill link the wf installer made: <agent dir>/skills/wf-<name> leading to this skill set."""
+    match = SKILL_LINK.fullmatch(path)
+    return bool(match) and Path(target) == SKILL.parent / match.group(2)
+
+
 def committed_agent_config(root: Path, ref: str) -> list[str]:
     """Committed files an agent CLI loads from the project when it starts (settings with hooks, plugins, MCP
     servers): target content that runs, or steers, every agent of the audit outside the sandbox."""
-    listing = git('-C', str(root), 'ls-tree', '-r', '--name-only', '--full-tree', ref).splitlines()
-    return [path for path in listing if AGENT_CONFIG.fullmatch(path) and not WF_SKILL_LINK.search(path)]
+    found = []
+    for line in git('-C', str(root), 'ls-tree', '-r', '--full-tree', ref).splitlines():
+        meta, _, path = line.partition('\t')
+        if not AGENT_CONFIG.fullmatch(path):
+            continue
+        mode, _, oid = meta.split()
+        if mode == '120000' and installer_link(path, git('-C', str(root), 'cat-file', 'blob', oid)):
+            continue
+        found.append(path)
+    return found
+
+
+def local_agent_config(root: Path) -> list[str]:
+    """Agent configuration in this clone that git ignores: yours, not the target's, but loaded the same way."""
+    listing = git('-C', str(root), 'ls-files', '--others', '--ignored', '--exclude-standard', '--',
+                  *AGENT_CONFIG_PATHS).splitlines()
+    return [path for path in listing if AGENT_CONFIG.fullmatch(path)
+            and not ((root / path).is_symlink() and installer_link(path, os.readlink(root / path)))]
 
 
 def cmd_init(args) -> int:
@@ -295,16 +327,25 @@ def cmd_init(args) -> int:
             raise Refused(f'scope paths are existing repository-relative paths: {path}')
     since = git('-C', str(root), 'rev-parse', '--verify', f'{args.since}^{{commit}}') if args.since else None
     head = git('-C', str(root), 'rev-parse', 'HEAD')
-    audits = root / 'development' / 'audits'
+    development = root / 'development'
+    if development.is_symlink():
+        common = root / git('-C', str(root), 'rev-parse', '--git-common-dir')  # an absolute path replaces root
+        main_records = common.resolve().parent / 'development'
+        if main_records.is_symlink() or not main_records.is_dir() or development.resolve() != main_records.resolve():
+            raise Refused(f'development/ links to {development.resolve()}, not to the records of the main worktree '
+                          f'({main_records}): the audit records stay there')
+    audits = development / 'audits'
     if audits.is_symlink():
         raise Refused('development/audits is a link: the audit records stay in development/ itself')
     audits.mkdir(parents=True, exist_ok=True)
     since_paths = git('-C', str(root), 'diff', '--name-only', '--no-renames', since, head).splitlines() if since else []
-    agent_config = committed_agent_config(root, head)
-    if agent_config:
-        print(f'audit: the target commits agent configuration that an agent CLI loads at startup, outside the '
-              f'sandbox: {", ".join(agent_config[:20])}' + (f' and {len(agent_config) - 20} more'
-                                                            if len(agent_config) > 20 else ''), file=sys.stderr)
+    agent_config, local_config = committed_agent_config(root, head), local_agent_config(root)
+    for files, what in ((agent_config, 'the target commits agent configuration'),
+                        (local_config, 'this clone has ignored agent configuration')):
+        if files:
+            print(f'audit: {what} that an agent CLI loads at startup, outside the sandbox: '
+                  f'{", ".join(files[:20])}' + (f' and {len(files) - 20} more' if len(files) > 20 else ''),
+                  file=sys.stderr)
     stem = f'sec-audit-{datetime.date.today().isoformat()}'
     run_dir, n = audits / stem, 1
     while run_dir.exists():
@@ -316,7 +357,7 @@ def cmd_init(args) -> int:
     repo_name = Path(remote.rstrip('/')).stem if remote else root.name
     meta = {
         'run_id': run_dir.name, 'repo': repo_name, 'target': str(root),
-        'source_ref': head, 'dirty': False, 'agent_config': agent_config,
+        'source_ref': head, 'dirty': False, 'agent_config': agent_config, 'local_agent_config': local_config,
         'profile': args.profile, 'scope_paths': args.scope, 'since': since, 'since_paths': since_paths,
         'budget': budget,
         'waves': waves, 'parallel': args.parallel, 'execution_policy': 'sandboxed-source-and-local-only',
@@ -338,6 +379,7 @@ def cmd_init(args) -> int:
 
 def cmd_approve(args) -> int:
     run = Run(args.run)
+    run.require_open()
     if not args.words.strip():
         raise Refused('record the human\'s own words')
     if run.meta['approved']:
@@ -349,7 +391,11 @@ def cmd_approve(args) -> int:
         run.save()
         print(f'Source-only from now on: {run.meta["run_id"]} — "{args.words.strip()}"')
         return 0
-    run.meta['approved'] = {'at': now(), 'words': args.words.strip()}
+    if run.meta.get('agent_config') and not args.trust_agent_config:
+        raise Refused('the target commits agent configuration that every agent CLI runs at startup, outside the '
+                      f'sandbox ({", ".join(run.meta["agent_config"][:5])}…): approve with --trust-agent-config only '
+                      'when the human chose to run the audit with it; otherwise audit a clone without it')
+    run.meta['approved'] = {'at': now(), 'words': args.words.strip(), 'trust_agent_config': args.trust_agent_config}
     run.meta['source_only'] = args.source_only
     run.meta['phase'] = 'recon'
     run.save()
@@ -360,6 +406,7 @@ def cmd_approve(args) -> int:
 def cmd_budget(args) -> int:
     """Only the human raises the budget, with a number of their own; it never shrinks below what is spent."""
     run = Run(args.run)
+    run.require_open()
     if not args.words.strip():
         raise Refused('record the human\'s own words')
     if not run.meta['budget'] < args.set <= MAX_BUDGET:
@@ -406,9 +453,9 @@ def cmd_status(args) -> int:
           f'status: {run.meta["run_status"]}')
     print(f'commit: {run.meta["source_ref"]}  approved: '
           f'{run.meta["approved"]["at"] if run.meta["approved"] else "no"}')
-    if run.meta.get('agent_config'):
-        print(f'agent configuration committed in the target ({len(run.meta["agent_config"])} file(s)): '
-              + ', '.join(run.meta['agent_config'][:20]))
+    for key, what in (('agent_config', 'committed in the target'), ('local_agent_config', 'ignored in this clone')):
+        if run.meta.get(key):
+            print(f'agent configuration {what} ({len(run.meta[key])} file(s)): ' + ', '.join(run.meta[key][:20]))
     print(f'budget: {run.spent()} of {run.meta["budget"]} spent, {run.remaining()} left, '
           f'{reserves(run)} reserved for critics and verifiers')
     print('units: ' + (', '.join(f'{k} {v}' for k, v in sorted(counts(run).items())) or 'none'))
@@ -421,7 +468,7 @@ def cmd_status(args) -> int:
     applied = set(run.state.get('applied', []))
     ended = [p.name[:-len('.prompt.md')] for p in sorted(run.runs.glob('*.prompt.md'))
              if (run.runs / f'{p.name[:-len(".prompt.md")]}.out.md.exit').exists()
-             and p.name[:-len('.prompt.md')] not in applied]
+             and p.name[:-len('.prompt.md')] not in applied | set_aside]
     print('ended, not applied: ' + (', '.join(ended) or 'none'))
     for name in ('uncovered', 'missing_units'):
         for entry in run.state[name]:
@@ -472,13 +519,14 @@ def new_unit(spec: dict, status: str, reason: str | None, wave: int = 1) -> dict
 
 def cmd_seed(args) -> int:
     run = Run(args.run)
+    run.require_open()
     specs = read_json(Path(args.units))
     if not isinstance(specs, list):
         raise Refused('units.json must hold a JSON array of units')
     if (args.status == 'planned') != (args.reason is None):
         raise Refused('--reason goes with --status deferred, out_of_scope or not_applicable, and only then')
     # A unit found after a wave's coverage critic belongs to the next wave.
-    wave = 1 + max((c['wave'] for c in run.state['critics'] if c.get('applied')), default=0)
+    wave = next_wave(run)
     if args.status == 'planned' and wave > run.meta['waves'] and specs:
         raise Refused(f'these units would be wave {wave}, past the cap of {run.meta["waves"]}: seed them with '
                       '--status deferred --reason wave_cap_reached')
@@ -506,6 +554,7 @@ def cmd_seed(args) -> int:
 
 def cmd_defer(args, status: str) -> int:
     run = Run(args.run)
+    run.require_open()
     for coverage_id in args.units.split(','):
         unit = run.unit(coverage_id)
         if unit['status'] != 'planned':
@@ -517,14 +566,21 @@ def cmd_defer(args, status: str) -> int:
     return 0
 
 
-def reopen(run: Run, unit: dict, reason: str) -> str:
-    """Archive a terminal attempt and plan a fresh one; past the cap, or in quick, defer instead."""
+def next_wave(run: Run) -> int:
+    """The first wave whose coverage critic has not been applied yet."""
+    return 1 + max((c['wave'] for c in run.state['critics'] if c.get('applied')), default=0)
+
+
+def reopen(run: Run, unit: dict, reason: str, after_wave: int) -> str:
+    """Archive a terminal attempt and plan a fresh one in the wave after after_wave (and after the unit's own
+    last wave); past the cap, or in quick, defer instead."""
     if unit['status'] not in ('blocked', 'covered', 'candidate'):
         raise Refused(f'{unit["coverage_id"]} is {unit["status"]}; only blocked, covered or candidate units reopen')
     unit['attempts'].append({key: unit[key] for key in ('wave', 'status', 'agent_id', 'reviewed_paths',
                                                        'local_checks', 'result_fingerprints', 'unresolved')}
                             | {'reassignment_reason': reason})
-    unit.update(wave=unit['wave'] + 1, agent_id=None, reviewed_paths=[], local_checks=[], result_fingerprints=[])
+    unit.update(wave=max(unit['wave'], after_wave) + 1, agent_id=None, reviewed_paths=[], local_checks=[],
+                result_fingerprints=[])
     if run.meta['profile'] == 'quick':
         unit.update(status='deferred', unresolved=['quick_profile_final_critic'])
         return 'deferred'
@@ -540,14 +596,16 @@ def reopen(run: Run, unit: dict, reason: str) -> str:
 
 def cmd_reopen(args) -> int:
     run = Run(args.run)
+    run.require_open()
     for coverage_id in args.units.split(','):
-        print(f'{coverage_id}: {reopen(run, run.unit(coverage_id), args.reason)}')
+        print(f'{coverage_id}: {reopen(run, run.unit(coverage_id), args.reason, next_wave(run) - 1)}')
     run.save(ledger=True)
     return 0
 
 
 def cmd_prior(args) -> int:
     run = Run(args.run)
+    run.require_open()
     head = run.meta['source_ref']
     for prior in args.prior:
         prior_dir = Path(prior).resolve()
@@ -588,6 +646,7 @@ def cmd_carry(args) -> int:
     """A prior confirmed or needs_validation record whose source is unchanged becomes a current candidate of
     its planned unit; the fresh verifier that re-checks it becomes the unit's owner."""
     run = Run(args.run)
+    run.require_open()
     prior = Path(args.source).resolve()
     if str(prior) not in run.meta['prior_runs']:
         raise Refused('read the prior run with prior first')
@@ -617,8 +676,9 @@ def cmd_resume(args) -> int:
     if run.meta['run_status'] != 'in_progress':
         raise Refused(f'the run is {run.meta["run_status"]}')
     applied = set(run.state.get('applied', []))
-    abandoned = [agent for agent in run.state.get('launched', {})
-                 if agent not in applied and not (run.runs / f'{agent}.out.md.exit').exists()]
+    set_aside = set(run.state.get('abandoned', []))
+    abandoned = [agent for agent in run.state.get('launched', {}) if agent not in applied
+                 and agent not in set_aside and not (run.runs / f'{agent}.out.md.exit').exists()]
     for unit in run.ledger:
         if unit['status'] == 'in_progress' and unit['agent_id'] in abandoned:
             unit.update(status='planned', agent_id=None)
@@ -736,10 +796,7 @@ def unit_view(unit: dict) -> dict:
 def require_launch(run: Run, kind: str, agent: str, hunter_wave: int | None = None) -> None:
     if not run.meta['approved']:
         raise Refused('the audit gate is not approved: show it and record the human\'s answer with approve')
-    if run.meta['run_status'] != 'in_progress':
-        raise Refused(f'the run is {run.meta["run_status"]}')
-    if run.meta['phase'] == 'report':
-        raise Refused('the findings are final: write the reports, then done')
+    run.require_open()
     # Agents read the working tree, so it must still be the approved commit, unchanged.
     head = git('-C', str(run.root), 'rev-parse', 'HEAD')
     if head != run.meta['source_ref']:
@@ -779,7 +836,7 @@ def write_prompt(run: Run, agent: str, kind: str, text: str, override: str | Non
         run.state['events'].append({'at': now(), 'agent': agent, 'role': role, 'ran_as': override})
     parts = (value.split(',') + ['', ''])[:3]
     cli = run.meta['host'] if parts[0] == 'self' else parts[0]
-    env = [f'WF_AGENT_TIMEOUT={run.meta["agent_timeout"]}']
+    env = [f'WF_AGENT_TIMEOUT={run.meta["agent_timeout"]}', f'WF_AGENT_EXPECT_HEAD={run.meta["source_ref"]}']
     if parts[1] and parts[1] != 'default':
         env.append(f'WF_AGENT_MODEL={parts[1]}')
     if parts[2] and parts[2] != 'default':
@@ -995,6 +1052,19 @@ def phase5_checks() -> str:
     return text[start:end].strip() + '\n'
 
 
+def fingerprint_checks(candidate: dict, units: list[dict], fp: str) -> list[dict]:
+    """Every check behind one fingerprint: of the attempts (live or archived) that linked it, and of its
+    candidate verifier, once each."""
+    attempts = [a for unit in units for a in [unit, *unit['attempts']] if fp in a['result_fingerprints']]
+    checks, seen = [], set()
+    for check in [c for a in attempts for c in a['local_checks']] + candidate.get('checks', []):
+        key = json.dumps(check, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            checks.append(check)
+    return checks
+
+
 def prompt_record(run: Run, args) -> str:
     candidate, units = candidate_context(run, args.fingerprint)
     reverify = candidate['state'] == 'needs_reverification'
@@ -1013,7 +1083,7 @@ def prompt_record(run: Run, args) -> str:
     candidate.setdefault('verifiers', []).append(args.agent)
     if reverify:
         allow(run, args.agent)
-    checks = [check for unit in units for check in unit['local_checks']]
+    checks = fingerprint_checks(candidate, units, args.fingerprint)
     branches = {v: schema_branch(v) for v in ('confirmed', 'needs_validation', 'rejected')}
     body = header(run, args.agent, 'record verifier', reverify) + f'''
 ## Record {args.fingerprint}
@@ -1022,7 +1092,8 @@ def prompt_record(run: Run, args) -> str:
 {json.dumps(record, indent=2, ensure_ascii=False)}
 ```
 
-The checks of its linked coverage units ({", ".join(candidate["units"]) or "none"}); artifact paths are
+The checks behind it, of its linked coverage units ({", ".join(candidate["units"]) or "none"}) and its
+candidate verifier; artifact paths are
 relative to the audit run directory {run.rel(run.dir)}/ and you may read those files, to check an observed
 local result against its evidence:
 
@@ -1157,8 +1228,9 @@ def check_checks(checks, where: str, owner: str | None, run: Run, errors: list[s
         if owner and check['agent_id'] != owner:
             errors.append(f'{at}.agent_id: must be {owner}')
         if not isinstance(check['reviewed_paths'], list) or not check['reviewed_paths'] or \
-                not all(is_path(p) for p in check['reviewed_paths']):
-            errors.append(f'{at}.reviewed_paths: expected nonempty repository-relative paths')
+                not all(is_path(p) for p in check['reviewed_paths']) or \
+                len(set(check['reviewed_paths'])) != len(check['reviewed_paths']):
+            errors.append(f'{at}.reviewed_paths: expected nonempty, distinct repository-relative paths')
         else:
             paths.update(check['reviewed_paths'])
         for field in ('invariant', 'result'):
@@ -1375,7 +1447,7 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
             'units': candidate['units'], 'hunters': [agent], 'title': record['title']})
         candidate['events'] = candidate.get('events', []) + [f'{agent} found another root cause']
         return []
-    candidate.update(record=record, decision=decision, validated_by=agent,
+    candidate.update(record=record, decision=decision, validated_by=agent, checks=result['checks'],
                      state='final' if run.meta['profile'] == 'quick' else 'validated')
     for coverage_id in candidate['units']:
         unit = run.unit(coverage_id)
@@ -1399,6 +1471,16 @@ def apply_record(run: Run, agent: str, result: dict) -> list[str]:
     candidate = run.state['candidates'][fp]
     current = candidate['replacement'] if candidate['state'] == 'needs_reverification' else candidate['record']
     reverify = candidate['state'] == 'needs_reverification'
+    if reverify and not run.meta['source_only']:
+        probe = result.get('sandbox_probe')
+        if not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail')):
+            return ['sandbox_probe: expected "pass" or "fail: <missing controls>"']
+        if probe != 'pass':
+            # It could not reproduce a decisive local result: the replacement waits for a verifier that can.
+            candidate['verifiers'].pop()
+            candidate.setdefault('failed_verifiers', []).append(agent)
+            run.state['events'].append({'at': now(), 'agent': agent, 'event': 'sandbox probe failed', 'probe': probe})
+            return []
     if result.get('decision') == 'verified':
         keys = {'decision', 'fingerprint'} | ({'sandbox_probe'} if reverify else set())
         if set(result) != keys or result['fingerprint'] != fp:
@@ -1467,7 +1549,7 @@ def apply_critic(run: Run, agent: str, result: dict) -> list[str]:
         if unit['status'] not in ('blocked', 'covered', 'candidate'):
             outcome['ignored'].append(coverage_id)
             continue
-        state = reopen(run, unit, f'coverage critic {agent}: reassigned')
+        state = reopen(run, unit, f'coverage critic {agent}: reassigned', critic['wave'])
         outcome['reopened' if state == 'planned' else 'deferred'].append(coverage_id)
     run.state['missing_units'] += [u | {'from': agent, 'wave': critic['wave']} for u in result['missing_units']]
     critic.update(missing=len(result['missing_units']), reassigned=len(result['reassign_ids']),
@@ -1484,6 +1566,7 @@ def apply_critic(run: Run, agent: str, result: dict) -> list[str]:
 
 def cmd_apply(args) -> int:
     run = Run(args.run)
+    run.require_open()
     launched = run.state.get('launched', {}).get(args.agent)
     if launched is None or launched['kind'] != args.kind:
         raise Refused(f'{args.agent} was not launched as a {args.kind}')
@@ -1545,6 +1628,13 @@ def cmd_apply(args) -> int:
         run = Run(args.run)
         run.state['allowlists'].pop(args.agent, None)
         errors = [f'the result has an unexpected shape ({type(exc).__name__}: {str(exc)[:120]})']
+    if not errors:
+        # The ledger as the result would leave it: an invalid one discards the result like any contract error.
+        ledger_errors = VL.validate_document(run.ledger)
+        if ledger_errors:
+            run = Run(args.run)
+            run.state['allowlists'].pop(args.agent, None)
+            errors = ['the ledger would be invalid: ' + e for e in ledger_errors[:10]]
     if errors:
         reset_units()
         return failed(run, role, args.agent, 'the result does not match its contract', errors)
@@ -1585,6 +1675,10 @@ def cmd_final(args) -> int:
                       '; verify them, or finish with --incomplete validation_budget_exhausted (or another reason)')
     if not reason and planned:
         raise Refused(f'{len(planned)} unit(s) are still planned or in progress: assign, defer or finish incomplete')
+    pending = len(run.state['uncovered']) + len(run.state['missing_units'])
+    if not reason and pending:
+        raise Refused(f'{pending} unit(s) that hunters or critics proposed are not seeded yet: seed them (in quick '
+                      'as deferred), or finish incomplete')
     if not reason and run.meta['profile'] != 'quick' and not any(c['kind'] == 'final-clean' and c.get('clean')
                                                                 for c in run.state['critics']):
         raise Refused('no clean final-clean critic pass: run one, or finish incomplete')
@@ -1608,7 +1702,8 @@ def cmd_final(args) -> int:
     # The run ends only when the reports exist too (`done`): until then it stays in progress and resumable.
     status = 'incomplete' if reason else 'complete'
     digest = hashlib.sha256((run.dir / 'findings.json').read_bytes()).hexdigest()
-    run.meta.update(phase='report', final_status=status, findings_sha256=digest)
+    ledger_digest = hashlib.sha256((run.dir / 'coverage-ledger.json').read_bytes()).hexdigest()
+    run.meta.update(phase='report', final_status=status, findings_sha256=digest, ledger_sha256=ledger_digest)
     run.meta.pop('incomplete_reason', None)
     run.meta.pop('unvalidated', None)
     if reason:
@@ -1634,8 +1729,9 @@ def cmd_done(args) -> int:
                or not (run.dir / name).read_text(encoding='utf-8').strip()]
     if missing:
         raise Refused(f'write {", ".join(missing)} first')
-    if hashlib.sha256((run.dir / 'findings.json').read_bytes()).hexdigest() != run.meta['findings_sha256']:
-        raise Refused('findings.json changed after final: the reports derive from the final records; run final again')
+    for name, key in (('findings.json', 'findings_sha256'), ('coverage-ledger.json', 'ledger_sha256')):
+        if hashlib.sha256((run.dir / name).read_bytes()).hexdigest() != run.meta[key]:
+            raise Refused(f'{name} changed after final: the reports derive from the final records; run final again')
     run.meta.update(run_status=run.meta.pop('final_status'), finished=now())
     run.save()
     print(f'{run.meta["run_id"]}: {run.meta["run_status"]}'
@@ -1667,6 +1763,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('run')
     p.add_argument('--words', required=True)
     p.add_argument('--source-only', action='store_true', help='the human chose a run without local checks')
+    p.add_argument('--trust-agent-config', action='store_true',
+                   help='the human chose to run the audit with the agent configuration the target commits')
     for name in ('status', 'resume', 'final', 'done'):
         p = sub.add_parser(name)
         p.add_argument('run')

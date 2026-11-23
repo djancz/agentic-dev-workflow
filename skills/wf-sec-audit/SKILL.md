@@ -55,14 +55,15 @@ hunter waves (1, 3, 6; at most 10); `parallel` is how many runs go at once (2; a
 4. **Audit gate (stop here).** Show the commit, profile, scope, budget, waves, parallel, the roles and
    fallbacks, the probe lines marked *host only*, prior runs in `development/audits/`, `<run>`, and that
    no other wf work may run in this clone meanwhile (its record changes fail the running agents). Show the
-   agent configuration the target commits, as `init` lists it: every agent CLI loads it at startup,
-   outside the sandbox, so audit an untrusted repository only from a clone without it. Warn
+   agent configuration `init` lists (committed in the target, ignored in this clone): every agent CLI
+   loads it at startup, outside the sandbox, so audit an untrusted repository from a clone without it. Warn
    when `verify` is Codex: its sandbox blocks the user bus the audit sandbox needs. When the probe failed, the
    choice is to fix the environment (its line says what is missing) or to run source-only, where every
    candidate that needs a local result stays `needs_validation`. Ask as `conventions.md` → Asking the
    human says, with no recommended option: start, change the settings, or not now. On an explicit yes,
-   `python3 scripts/audit.py approve <run> --words "<their words>" [--source-only]`. Never approve it
-   yourself; `wf auto` never passes it.
+   `python3 scripts/audit.py approve <run> --words "<their words>" [--source-only]`, plus
+   `--trust-agent-config` only when the target commits agent configuration and they chose to run with it.
+   Never approve it yourself; `wf auto` never passes it.
 
 ## 2. Running agents
 
@@ -83,8 +84,8 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
 - Each run gets a new agent id (`recon-1a`, `hunt-w1-01`, `critic-w1`, `critic-final-w2`, `verify-001`,
   `record-001`). A rerun is a fresh agent with a new id and never sees the failed attempt.
 - `apply` validates the result without repairing it (`run-agent.sh` only drops one code fence around the
-  whole message). A discarded result may get one fresh rerun. Every `prompt` checks that `HEAD` is still
-  the approved commit and the tree is unchanged.
+  whole message). A discarded result may get one fresh rerun. Every run is pinned to the approved commit:
+  `prompt` and `run-agent.sh` (`WF_AGENT_EXPECT_HEAD`) refuse another `HEAD` or a changed tree.
 - Exit 6, 7 or 3 of `run-agent.sh`: follow `loop.md` → Delegated runs, with `prompt … --ran-as <a,m,e>`
   for a fallback or the human's choice. `apply` exit 4 (**STOP**): two discarded results in a row from one
   role, or a sandbox probe that failed inside a run: ask the human, then `prompt … --after-human-answer`;

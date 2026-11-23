@@ -109,7 +109,7 @@ If no prior ledger exists, say so in the final coverage statement. Never imply t
 
 ### Run profiles and scope
 
-During full audit setup, pick a profile from the user's request or propose one from the target's size and stakes. Record it in `run-metadata.json` (`profile`, `scope_paths`) and state it in the report. The default is `standard`. Every profile has a finite wave cap: `quick` 1, `standard` 3 and `deep` 6 by default (`waves=` up to 10). A unit the cap leaves unhunted is `deferred` with reason `wave_cap_reached`, and the run then ends `incomplete`.
+During full audit setup, pick a profile from the user's request or propose one from the target's size and stakes. Record it in `run-metadata.json` (`profile`, `scope_paths`) and state it in the report. The default is `standard`. Every profile has a finite wave cap: `quick` 1, `standard` 3 and `deep` 6 by default (`waves=` up to 10). A unit the cap leaves unhunted is `deferred` with reason `wave_cap_reached`, and the run then ends `incomplete`. The `quick` profile's pre-declared deferrals (`quick_profile_final_critic`) are the exception: a quick run can end `complete`, and its report presents partial coverage.
 
 - **`quick`** — a bounded pass for small targets, re-runs, or a fast first look. Coarsen ledger units to surface × boundary × attack class (subsystem uses the fixed canonical `profile/quick/all-in-scope-subsystems` identifier), run exactly one hunter wave followed by exactly one final coverage-critic pass, and use one fresh verifier per candidate for both candidate validation and final record verification. Do not launch a follow-up hunter wave: record the critic's accepted discoveries and reassignments as `deferred`.
 - **`standard`** — the workflow as written.

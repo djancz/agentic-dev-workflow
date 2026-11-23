@@ -123,7 +123,7 @@ share delivered behavior and test evidence. Do not commit raw workflow records o
 `sandbox-run.py probe` lists every control with what is missing. No bubblewrap: install it (`bubblewrap`
 package). `bwrap: setting up uid map: Permission denied` on Ubuntu: AppArmor restricts unprivileged user
 namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`); the distribution's bubblewrap package ships
-the profile that allows it, a bwrap from elsewhere does not. A cgroup limit that is missing means systemd
+the profile that allows it, a bwrap from elsewhere does not. The cgroup limits need cgroup v2. A cgroup limit that is missing means systemd
 does not delegate that controller to your user session. Inside a delegated run the probe can fail although
 it passes on the host: Codex's sandbox blocks the user session bus (`Failed to connect to user scope
 bus`), and a Claude sandbox can block namespaces; the audit then stops and asks. A source-only run

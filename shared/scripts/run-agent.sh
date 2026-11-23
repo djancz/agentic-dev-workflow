@@ -34,6 +34,8 @@
 # repository (a task worktree links it to the main worktree). Codex keeps .git read-only, so a delegated
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
+#   WF_AGENT_EXPECT_HEAD       a full commit id: start only when HEAD is that commit and the working tree
+#                              has no change, else exit 3 (wf sec audit pins its agents to the audited commit)
 #
 # Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
@@ -42,7 +44,7 @@
 set -eu
 
 usage() {
-    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -304,6 +306,13 @@ settings_paths=$(python3 "$here/resolve-roles.py" --paths) ||
 user_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^user: //p')
 project_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^project: //p')
 
+if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
+    actual=$(git rev-parse HEAD 2>/dev/null) || actual=none
+    [ "$actual" = "$WF_AGENT_EXPECT_HEAD" ] ||
+        die 3 "HEAD is $actual, but this run is pinned to $WF_AGENT_EXPECT_HEAD; nothing ran"
+    [ -z "$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1)" ] ||
+        die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"
+fi
 before=$(fingerprint) || die 2 "cannot take a snapshot of the working tree"
 project_settings_before=$(file_hash "$project_settings")
 user_settings_before=$(file_hash "$user_settings")
@@ -353,10 +362,11 @@ if [ "$rc" -ne 0 ]; then
 fi
 [ -s "$out" ] || die 5 "$agent produced no output; see $log"
 
-# Strip a stray code fence wrapped around the whole message.
-if head -n 1 "$out" | grep -q '^```'; then
+# Strip a stray code fence wrapped around the whole message: an opening and a closing line, nothing else.
+if [ "$(awk 'END { print NR }' "$out")" -ge 2 ] && head -n 1 "$out" | grep -q '^```' &&
+    tail -n 1 "$out" | grep -q '^```[[:space:]]*$'; then
     tmp="$out.tmp"
-    sed -e '1d' -e '${/^```[[:space:]]*$/d;}' "$out" >"$tmp" && mv "$tmp" "$out"
+    sed -e '1d' -e '$d' "$out" >"$tmp" && mv "$tmp" "$out"
 fi
 
 echo "run-agent: ok — $out" >&2

@@ -200,6 +200,38 @@ class SandboxGuards(unittest.TestCase):
         os.mkfifo(tmp / 'pipe')
         self.assertEqual(sandbox.first_channel(tmp), str(tmp / 'pipe'))
 
+    def test_no_tool_covers_a_mount_point_of_the_sandbox(self):
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        sandbox.RESERVED_MOUNTS = (str(tmp / 'src'),)  # stands in for /src, which this host may not have
+        (tmp / 'src' / 'lib').mkdir(parents=True)
+        for tool in (tmp / 'src', tmp / 'src' / 'lib', tmp):
+            with self.subTest(tool=tool), self.assertRaises(sandbox.Refused) as caught:
+                sandbox.check_tool(str(tool), REPO)
+            self.assertIn('must not cover', str(caught.exception))
+
+    def test_a_refused_export_stops_git_and_leaves_nothing(self):
+        # A blob larger than the pipe buffer: git blocks writing it once the export is refused.
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        repo, ref = make_repo(tmp)
+        (repo / 'big.bin').write_bytes(os.urandom(1 << 20))
+        git(repo, 'add', 'big.bin')
+        git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'big')
+        ref = git(repo, 'rev-parse', 'HEAD').strip()
+        scratch = tmp / 'scratch'
+        scratch.mkdir()
+        script = ('import sys, os, importlib.util as u; s = u.spec_from_file_location("s", sys.argv[1]); '
+                  'm = u.module_from_spec(s); s.loader.exec_module(m); m.SOURCE_MAX_BYTES = 1000; '
+                  'fd = os.open(sys.argv[3], os.O_RDONLY | os.O_DIRECTORY)\n'
+                  'try:\n    m.export_source(m.Path(sys.argv[2]), sys.argv[4], fd)\n'
+                  'except m.Refused as e:\n    print(e)')
+        r = subprocess.run([sys.executable, '-c', script, str(SANDBOX), str(repo), str(scratch), ref],
+                           capture_output=True, text=True, timeout=60)
+        self.assertIn('exceeds 1000 bytes', r.stdout, r.stderr)
+        self.assertEqual(list((scratch / 'src').iterdir()), [], 'the partial copy is removed')
+
     def test_the_guard_starts_nothing_without_the_limits(self):
         sandbox = load_sandbox()
         r = subprocess.run(sandbox.guard_args(tasks=7, memory_mb=1, cpu_percent=1) + ['echo', 'started'],
@@ -324,6 +356,10 @@ class SandboxRun(unittest.TestCase):
         self.assertIn('ro', r.stdout)
         r = self.run_check('c15', 'true', options=('--inputs', '../../..'))
         self.assertEqual(r.returncode, 125)
+        os.mkfifo(self.scratch / 'inputs' / 'pipe')
+        r = self.run_check('c26', 'true', options=('--inputs', 'inputs'))
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('must not hold a socket or FIFO', r.stderr)
 
     def test_probe_reports_every_control(self):
         r = subprocess.run([sys.executable, str(SANDBOX), 'probe'], capture_output=True, text=True)
@@ -546,6 +582,11 @@ class AuditTool(unittest.TestCase):
         (self.repo / '.claude' / 'skills').mkdir(parents=True)
         (self.repo / '.claude' / 'skills' / 'wf-sec-audit').symlink_to(REPO / 'skills' / 'wf-sec-audit')
         self.commit('agent configuration')
+        audit = load_script(AUDIT)
+        # Only the installer's link is exempt: a committed wf-named skill directory is the target's content.
+        self.assertTrue(audit.installer_link('.claude/skills/wf-sec-audit', str(REPO / 'skills' / 'wf-sec-audit')))
+        self.assertFalse(audit.installer_link('.claude/skills/wf-evil', str(self.repo / 'evil')))
+        self.assertFalse(audit.installer_link('.claude/skills/wf-sec-audit/hook.js', str(REPO / 'skills')))
         args = ['init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude']
         r = self.audit(*args)
         self.assertIn('.opencode/plugin/start.js', r.stderr)
@@ -553,6 +594,25 @@ class AuditTool(unittest.TestCase):
         meta = json.loads((run / 'run-metadata.json').read_text())
         self.assertEqual(meta['agent_config'], ['.opencode/plugin/start.js'], 'an installed wf skill link is no config')
         self.assertIn('agent configuration committed in the target (1 file(s))', self.audit('status', str(run)).stdout)
+        r = self.audit('approve', str(run), '--words', 'start', ok=False)
+        self.assertIn('--trust-agent-config', r.stderr, 'committed startup code needs the human\'s explicit choice')
+        self.audit('approve', str(run), '--words', 'start, I trust that plugin', '--trust-agent-config')
+        # An ignored plugin is this clone's, not the target's, but the gate shows it too.
+        (self.repo / '.gitignore').write_text('/development\n/.opencode/plugins/\n')
+        self.commit('ignore local plugins')
+        (self.repo / '.opencode' / 'plugins').mkdir()
+        (self.repo / '.opencode' / 'plugins' / 'local.js').write_text('// mine\n')
+        r = self.audit(*args)
+        self.assertIn('ignored agent configuration', r.stderr)
+        self.assertEqual(json.loads((Path(r.stdout.strip()) / 'run-metadata.json').read_text())['local_agent_config'],
+                         ['.opencode/plugins/local.js'])
+        records = self.repo / 'development'
+        records.rename(self.tmp / 'records')
+        (self.tmp / 'elsewhere').mkdir()
+        records.symlink_to(self.tmp / 'elsewhere', target_is_directory=True)
+        self.assertIn('not to the records of the main worktree', self.audit(*args, ok=False).stderr)
+        records.unlink()
+        (self.tmp / 'records').rename(records)
         shutil.rmtree(self.repo / 'development' / 'audits')
         (self.repo / 'development' / 'audits').symlink_to(self.tmp, target_is_directory=True)
         self.assertIn('development/audits is a link', self.audit(*args, ok=False).stderr)
@@ -615,6 +675,36 @@ class AuditTool(unittest.TestCase):
         self.assertIn('deferred by a cap or the budget', r.stderr)
         self.assertIn('incomplete: no records', self.audit('final', str(run), '--incomplete', 'wave_cap_reached').stdout)
 
+    def test_a_reassigned_unit_waits_for_the_wave_after_its_critic(self):
+        run = self.start(profile='standard', budget=40)
+        first = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', first, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        missing = {k: v for k, v in unit_spec('b.py#x').items() if k in ('surface', 'boundary', 'subsystem',
+                                                                        'attack_class', 'starting_paths')}
+        self.result(run, 'critic-w1', {'missing_units': [missing | {'reason': 'Another entry.'}], 'reassign_ids': [],
+                                       'resolved_prior_leads': [], 'stop': False})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        self.assertIn('not seeded yet', self.audit('final', str(run), ok=False).stderr)
+        units = self.tmp / 'units-2.json'
+        units.write_text(json.dumps([unit_spec('b.py#x')]))
+        self.audit('seed', str(run), str(units), '--clear-pending')
+        second = next(u['coverage_id'] for u in self.ledger(run) if u['coverage_id'] != first)
+        self.audit('prompt', str(run), 'hunter', '--units', second, '--wave', '2', '--agent', 'hunt-w2-01')
+        result = self.hunter_result(run, 'hunt-w2-01')
+        result['units'][0]['coverage_id'] = second
+        self.result(run, 'hunt-w2-01', result)
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w2-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '2', '--agent', 'critic-w2')
+        self.result(run, 'critic-w2', {'missing_units': [], 'reassign_ids': [first], 'resolved_prior_leads': [],
+                                       'stop': False})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w2')
+        unit = next(u for u in self.ledger(run) if u['coverage_id'] == first)
+        self.assertEqual((unit['status'], unit['wave']), ('planned', 3), 'hunted in 1, reassigned after wave 2')
+        self.audit('prompt', str(run), 'hunter', '--units', first, '--wave', '3', '--agent', 'hunt-w3-01')
+
     def test_results_of_an_unexpected_shape_are_discarded_and_source_only_runs_no_check(self):
         run = self.start()
         cid = self.coverage_id(run)
@@ -627,7 +717,15 @@ class AuditTool(unittest.TestCase):
         self.assertIn('discarded hunt-w1-01', r.stdout)
         self.assertNotIn('Traceback', r.stderr)
         self.assertEqual(self.ledger(run)[0]['status'], 'planned')
-        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01b',
+                   '--after-human-answer')
+        twice = self.hunter_result(run, 'hunt-w1-01b')
+        twice['units'][0]['checks'][0]['reviewed_paths'] = ['app.py', 'app.py']
+        self.result(run, 'hunt-w1-01b', twice)
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01b', ok=False)
+        self.assertIn('distinct repository-relative paths', r.stdout)
+        self.assertEqual(self.ledger(run)[0]['status'], 'planned', 'the unit is planned again, not stuck')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1', '--after-human-answer')
         self.result(run, 'critic-w1', {'missing_units': [], 'reassign_ids': [[cid]], 'resolved_prior_leads': [],
                                        'stop': False})
         r = self.audit('apply', str(run), 'critic', '--agent', 'critic-w1', ok=False)
@@ -658,6 +756,8 @@ class AuditTool(unittest.TestCase):
         self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02')
         self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
         self.audit('resume', str(run))
+        self.assertIn('0 interrupted run(s) set aside', self.audit('resume', str(run)).stdout, 'resume is idempotent')
+        self.assertIn('ended, not applied: none', self.audit('status', str(run)).stdout)
         self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1b')
 
     def test_blocks_are_copied_verbatim_and_listed(self):
@@ -705,6 +805,9 @@ class AuditTool(unittest.TestCase):
         forged = self.hunter_result(run, 'hunt-w1-02')
         forged['units'][0]['checks'].append(source_check('hunt-w1-02') | {
             'method': 'local', 'artifact': 'agents/hunt-w1-02/artifacts/evidence/c02.json'})
+        planted = run / 'agents' / 'hunt-w1-02' / 'artifacts' / 'evidence'
+        planted.mkdir(parents=True)
+        (planted / 'c02.json').write_text('{"status": 0}\n')  # exists, but this apply did not promote it
         self.result(run, 'hunt-w1-02', forged)
         r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02', ok=False)
         self.assertEqual(r.returncode, 4)
@@ -787,6 +890,9 @@ class AuditTool(unittest.TestCase):
         self.assertEqual((meta['run_status'], meta['phase']), ('in_progress', 'report'))
         r = self.audit('prompt', str(run), 'recon', '--focus', 'more', '--agent', 'recon-late', ok=False)
         self.assertIn('findings are final', r.stderr)
+        units = self.tmp / 'late.json'
+        units.write_text(json.dumps([unit_spec('late.py#x')]))
+        self.assertIn('findings are final', self.audit('seed', str(run), str(units), ok=False).stderr)
         self.assertIn('write REPORT.md, FINDINGS-DETAIL.md, NEEDS-VALIDATION.md',
                       self.audit('done', str(run), ok=False).stderr)
         for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
@@ -829,14 +935,31 @@ class AuditTool(unittest.TestCase):
         self.assertIn('use --reverify', r.stderr)
         out = self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-002').stdout
         self.assertIn('--expect-clean claude rw', out)
-        self.result(run, 'record-002', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass'})
-        self.audit('apply', str(run), 'record', '--agent', 'record-002')
+        self.assertIn(f'WF_AGENT_EXPECT_HEAD={self.ref}', out, 'every run is pinned to the audited commit')
+        # A verifier whose sandbox failed cannot reproduce a decisive local result: nothing settles.
+        self.result(run, 'record-002', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'fail: no-network'})
+        self.assertEqual(self.audit('apply', str(run), 'record', '--agent', 'record-002', ok=False).returncode, 4)
+        state = json.loads((run / 'state.json').read_text())
+        self.assertEqual(state['candidates'][fp]['state'], 'needs_reverification')
+        self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-003')
+        self.result(run, 'record-003', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass'})
+        self.audit('apply', str(run), 'record', '--agent', 'record-003')
         out = self.audit('final', str(run)).stdout
         self.assertIn('complete: confirmed 1', out)
         self.assertEqual(self.ledger(run)[0]['decisions'], {fp: 'confirmed'}, 'the ledger follows the final verdict')
         prompt = (run / 'runs' / 'record-001.prompt.md').read_text()
-        self.assertIn('The checks of its linked coverage units', prompt)
+        self.assertIn('The checks behind it', prompt)
         self.assertIn('"agent_id": "verify-001"', prompt, 'the record verifier sees the evidence it checks')
+
+    def test_the_record_verifier_sees_archived_and_verifier_checks(self):
+        audit = load_script(AUDIT)
+        fp = 'fp-1'
+        archived = {'result_fingerprints': [fp], 'local_checks': [source_check('hunt-w1-01')]}
+        unit = {'result_fingerprints': [], 'local_checks': [source_check('hunt-w2-01')], 'attempts': [archived]}
+        candidate = {'checks': [source_check('verify-001'), source_check('hunt-w1-01')]}
+        checks = audit.fingerprint_checks(candidate, [unit], fp)
+        self.assertEqual([c['agent_id'] for c in checks], ['hunt-w1-01', 'verify-001'],
+                         'the archived attempt and the verifier, once each; not the new attempt that dropped it')
 
     def test_a_changed_condition_or_instruction_is_material(self):
         audit = load_script(AUDIT)

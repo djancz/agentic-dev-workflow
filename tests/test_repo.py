@@ -846,6 +846,7 @@ case ${FAKE_MODE:-ok} in
   modify) echo changed >> tracked.txt ;;
   record) echo 'Status: Approved' >> development/tasks/TASK-1/TASK-1.md ;;
   fence) body=$(printf '```markdown\n%s\n```' "$body") ;;
+  unclosed-fence) body=$(printf '```json\n%s' "$body") ;;
   limit) echo progress; echo 'ERROR: You’ve hit your usage limit. Visit the usage page or try again at 9:32 PM.' >&2
     exit 1 ;;
   limit-output) echo "You've hit your 5-hour limit · resets 9pm (Europe/Prague)"; exit 1 ;;
@@ -1200,6 +1201,24 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.out.read_text().startswith('## Round 1'))
         self.assertNotIn('```', self.out.read_text())
+
+    def test_an_unclosed_fence_is_kept(self):
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='unclosed-fence')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.out.read_text().startswith('```json'), 'only a fence that also closes is dropped')
+
+    def test_a_pinned_run_starts_only_on_its_commit_with_an_unchanged_tree(self):
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.repo, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD='0' * 40)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('pinned to', r.stderr)
+        (self.repo / 'tracked.txt').write_text('changed\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the working tree has changes', r.stderr)
 
     def test_exit_code_is_recorded_and_wait_returns_it(self):
         self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='fail')

@@ -16,7 +16,9 @@ run     (hunters and candidate verifiers) runs <command> with no external networ
         the target applies), written by this script into a new <scratch>/src/<random>/, mounted read-only
         at /src and removed afterwards; submodules are not exported. --inputs <dir under scratch> is mounted
         read-only at /input. A --tool must not hold a socket or FIFO, nor lie in the home directory's
-        credential stores, the repository or a runtime directory such as /run or /tmp. Limits: a cgroup
+        credential stores, the repository, a runtime directory such as /run or /tmp, or /src, /work or
+        /input; --inputs holds no socket or FIFO either, and it and the source are mounted by
+        descriptor. Limits: a cgroup v2
         scope (systemd-run --user, which must not expand ${NAME} in the command) for tasks, memory and CPU
         rate, read back inside the scope before the command starts, rlimits for CPU time, file size, open
         files and core files (address space only with --as-mb), and a wall-clock timeout that kills the scope.
@@ -93,6 +95,8 @@ HOME_SECRETS = ('.ssh', '.gnupg', '.aws', '.azure', '.config', '.docker', '.kube
 # Where host services keep sockets and runtime state. A socket reached through a read-only bind still
 # connects (the user bus could start a process outside the sandbox), so no --tool may lie below these.
 RUNTIME_ROOTS = ('/run', '/var/run', '/tmp', '/var/tmp', '/dev', '/proc', '/sys')
+# The sandbox's own mount points, which a --tool (mounted at its host path) must not cover.
+RESERVED_MOUNTS = ('/src', '/work', '/input')
 TOOL_SCAN_LIMIT = 500000
 
 
@@ -120,8 +124,9 @@ def host_root_links() -> list[str]:
     return args
 
 
-def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str, str]], chdir: str,
+def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str | int, str]], chdir: str,
                status_fd: int) -> list[str]:
+    """A bind's source is a path, or an open directory descriptor that keeps its identity until bwrap mounts it."""
     # The status descriptor gets an "exit-code" line only when the command itself ran and ended.
     args = [BWRAP, '--json-status-fd', str(status_fd), '--unshare-all', '--unshare-user', '--disable-userns',
             '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv']
@@ -132,7 +137,7 @@ def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str, s
              '--size', str(work_bytes), '--tmpfs', '/work', '--dir', '/work/home', '--dir', '/work/tmp',
              '--symlink', '/work/tmp', '/tmp']
     for source, target in binds:
-        args += ['--ro-bind', source, target]
+        args += ['--ro-bind-fd', str(source), target] if isinstance(source, int) else ['--ro-bind', source, target]
     return args + ['--chdir', chdir, '--']
 
 
@@ -200,21 +205,26 @@ class Capture(threading.Thread):
                 self.data += chunk[:room]
 
 
-def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str, str]], chdir: str,
-              limits: dict[str, int], as_bytes: int | None = None, cwd: str | None = None) -> dict:
-    """Run command in the sandbox; return its result. Raises Refused before anything runs."""
+def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str | int, str]], chdir: str,
+              limits: dict[str, int], as_bytes: int | None = None, cwd: str | None = None,
+              guard: bool = True) -> dict:
+    """Run command in the sandbox; return its result. Raises Refused before anything runs.
+
+    Without guard (the probe only) the command starts even when a cgroup limit does not hold, so that the
+    probe can test the other controls on their own; run always keeps it."""
     for tool in (BWRAP, SYSTEMD_RUN):
         if not os.access(tool, os.X_OK):
             raise Refused(f'{tool} is not installed')
     cgroup = {'tasks': limits['tasks'], 'memory_mb': limits['memory_mb'], 'cpu_percent': limits['cpu_percent']}
     scope, unit = scope_args(**cgroup)
     status_read, status_write = os.pipe()
-    argv = scope + guard_args(**cgroup) + bwrap_args(work_bytes=limits['work_mb'] * 1024 * 1024, env=env,
-                                                     binds=binds, chdir=chdir, status_fd=status_write) + command
+    argv = scope + (guard_args(**cgroup) if guard else []) + bwrap_args(
+        work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds, chdir=chdir, status_fd=status_write) + command
+    bind_fds = tuple(source for source, _ in binds if isinstance(source, int))
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   cwd=cwd, start_new_session=True, close_fds=True, pass_fds=(status_write,),
+                                   cwd=cwd, start_new_session=True, close_fds=True, pass_fds=(status_write, *bind_fds),
                                    env=scope_env(),
                                    preexec_fn=rlimits(limits['cpu_seconds'], limits['file_mb'] * 1024 * 1024,
                                                       limits['nofile'], as_bytes))
@@ -306,7 +316,7 @@ def probe() -> dict[str, str]:
             try:
                 run = sandboxed(['/bin/sh', '-c', PROBE_SCRIPT, 'probe', home, tmp],
                                 env={'PATH': DEFAULT_PATH, **FIXED_ENV, 'WF_PROBE': '1'},
-                                binds=[(str(src), '/src')], chdir='/', limits=limits)
+                                binds=[(str(src), '/src')], chdir='/', limits=limits, guard=False)
             except Refused as exc:
                 missing(str(exc), *sandbox_controls)
             else:
@@ -397,6 +407,9 @@ def check_tool(path: str, repo: Path) -> str:
 
     if real == Path('/') or within(home, real) or within(repo, real) or within(real, repo):
         raise Refused(f'--tool must not expose the home directory or the repository: {path}')
+    for reserved in RESERVED_MOUNTS:
+        if within(real, Path(reserved)) or within(Path(reserved), real):
+            raise Refused(f'--tool is mounted at its own path and must not cover {reserved} of the sandbox: {path}')
     for name in HOME_SECRETS:
         secret = home / name
         if within(real, secret) or within(secret, real):
@@ -469,9 +482,9 @@ def git(repo: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run([GIT, '-C', str(repo), *args], env=env, **kwargs)
 
 
-def export_source(repo: Path, ref: str, scratch: Path, scratch_fd: int) -> tuple[Path, list[str], tuple[int, str]]:
-    """A fresh copy of the commit for one run, made by trusted code: returns it, the omitted submodules and
-    what remove_export needs.
+def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str], tuple[int, str]]:
+    """A fresh copy of the commit for one run, made by trusted code: returns a descriptor of its directory
+    (bwrap mounts that, so a later rename cannot swap it), the omitted submodules and what remove_export needs.
 
     The files are the committed bytes, read with `git cat-file`: no attribute of the target applies (git
     archive would honour its export-ignore, export-subst and filters), no line endings change, and nothing
@@ -538,12 +551,16 @@ def export_source(repo: Path, ref: str, scratch: Path, scratch_fd: int) -> tuple
                 os.close(parent)
         done = True
     finally:
-        batch.stdin.close()
-        batch.wait()
-        os.close(root)
         if not done:
+            batch.kill()  # it may be blocked writing a blob nobody reads
+        with contextlib.suppress(OSError):
+            batch.stdin.close()
+        batch.stdout.close()
+        batch.wait()
+        if not done:
+            os.close(root)
             remove_export(src_fd, name)
-    return scratch / 'src' / name, submodules, (src_fd, name)
+    return root, submodules, (src_fd, name)
 
 
 def remove_export(src_fd: int, name: str) -> None:
@@ -588,17 +605,25 @@ def cmd_run(args) -> int:
         names = [evidence / f'{args.check}.{ext}' for ext in ('out', 'err', 'json')]
         if any(path.exists() or path.is_symlink() for path in names):
             raise Refused(f'check {args.check} already has evidence; choose another --check name')
+        inputs_fd = None
         if args.inputs:
             inputs = real_dir(str(scratch / args.inputs), '--inputs')
             if scratch not in inputs.parents:
                 raise Refused('--inputs must be a directory inside the scratch directory')
-            binds.append((str(inputs), '/input'))
-        source, submodules, export = export_source(repo, args.ref, scratch, scratch_fd)
+            channel = first_channel(inputs)
+            if channel:
+                raise Refused(f'--inputs must not hold a socket or FIFO, which would reach a host process: {channel}')
+            inputs_fd = open_dir(inputs)
+            binds.append((inputs_fd, '/input'))
+        source_fd, submodules, export = export_source(repo, args.ref, scratch_fd)
         try:
-            binds.insert(0, (str(source), '/src'))
+            binds.insert(0, (source_fd, '/src'))
             as_bytes = args.as_mb * 1024 * 1024 if args.as_mb else None
             result = sandboxed(args.command, env=env, binds=binds, chdir='/src', limits=limits, as_bytes=as_bytes)
         finally:
+            os.close(source_fd)
+            if inputs_fd is not None:
+                os.close(inputs_fd)
             remove_export(*export)
     except Refused as exc:
         return fail(f'{exc}; nothing ran')
@@ -772,6 +797,8 @@ def cmd_promote(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < (3, 9):
+        return fail('Python 3.9 or later is required')
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='action', required=True)
     p = sub.add_parser('probe', help='report which controls are enforced here')
