@@ -129,15 +129,18 @@ it passes on the host: Codex's sandbox blocks the user session bus (`Failed to c
 bus`), and a Claude sandbox can block namespaces; the audit then stops and asks. A source-only run
 is your explicit choice at the audit gate.
 
-## The desktop says a wf-sandbox scope was terminated for low memory
+## A check ends with status 137, or the desktop says a wf-sandbox scope was terminated for low memory
 
-KDE and GNOME report every user unit that ends with the result `oom-kill` as "terminated by the Linux
-kernel because the system is low on memory". For a `wf-sandbox-<id>.scope` that means a check went past
-its own memory limit (`MemoryMax`, from `sandbox-run.py run --memory-mb`, default 1024 MiB), and the
-system did not run out of memory: `journalctl --user -u 'wf-sandbox-*'` shows "The kernel OOM killer
-killed some processes in this unit". The check's evidence reads `"status": 137` and `"killed": null`,
-often with empty stderr; rerun it with a larger `--memory-mb` (at most 4096) when the check needs more.
-The test suite triggers one such notification on purpose: it checks that the limit holds.
+A check went past its own memory limit (`MemoryMax`, from `sandbox-run.py run --memory-mb`, default
+1024 MiB), and the kernel killed it; the system did not run out of memory. The check's evidence reads
+`"status": 137` and `"killed": null`, often with empty stderr, and its `scope` field names the unit:
+`journalctl --user -u <scope>` shows "The kernel OOM killer killed some processes in this unit". Rerun the
+check with a larger `--memory-mb` (at most 4096) when it needs more.
+
+KDE and GNOME report every user unit that fails with the result `oom-kill` as "terminated by the Linux
+kernel because the system is low on memory". The sandbox scope continues after the kill instead
+(`OOMPolicy=continue`), so the notice no longer appears; on systemd before 253, where a scope takes no
+`OOMPolicy`, it still does, also once for every run of the test suite, which checks that the limit holds.
 
 ## The security audit discards agent results
 

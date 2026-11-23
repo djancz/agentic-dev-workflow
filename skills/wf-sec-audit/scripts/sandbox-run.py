@@ -151,10 +151,24 @@ def no_expansion() -> tuple[str, ...]:
     return ('--expand-environment=no',) if '--expand-environment' in text else ()
 
 
+@functools.lru_cache(maxsize=1)
+def oom_policy() -> tuple[str, ...]:
+    """OOMPolicy=continue, which scopes take from systemd 253. A check past its memory limit loses the process
+    the kernel killed either way; under the default, stop, the scope also fails with 'oom-kill', which KDE and
+    GNOME report as the system running low on memory. What is left of the scope ends with its command, or the
+    wall-clock limit stops it."""
+    try:
+        text = subprocess.run([SYSTEMD_RUN, '--version'], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    match = re.match(r'systemd (\d+)', text)
+    return ('-p', 'OOMPolicy=continue') if match and int(match.group(1)) >= 253 else ()
+
+
 def scope_args(*, tasks: int, memory_mb: int, cpu_percent: int) -> tuple[list[str], str]:
     unit = f'wf-sandbox-{secrets.token_hex(6)}'
     return [SYSTEMD_RUN, '--user', '--scope', '--quiet', '--collect', *no_expansion(), '--unit', unit,
-            '-p', f'TasksMax={tasks}', '-p', f'MemoryMax={memory_mb}M', '-p', 'MemorySwapMax=0',
+            '-p', f'TasksMax={tasks}', '-p', f'MemoryMax={memory_mb}M', '-p', 'MemorySwapMax=0', *oom_policy(),
             '-p', f'CPUQuota={cpu_percent}%', '--'], unit
 
 
@@ -696,7 +710,7 @@ def cmd_run(args) -> int:
         'check': args.check, 'ref': args.ref, 'command': args.command, 'limits': limits,
         'as_mb': args.as_mb, 'env_names': sorted(env), 'tools': tools, 'inputs': args.inputs,
         'network': 'loopback only', 'status': result['status'], 'killed': result['killed'],
-        'duration_s': result['duration_s'], 'submodules_omitted': submodules,
+        'duration_s': result['duration_s'], 'scope': f'{result["unit"]}.scope', 'submodules_omitted': submodules,
     }
     for stream in ('stdout', 'stderr'):
         data = result[stream]

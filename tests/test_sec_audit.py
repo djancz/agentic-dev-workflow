@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -383,6 +384,20 @@ while True:
         self.assertEqual([line.split('=', 1)[0] for line in r.stdout.splitlines()],
                          ['pids.max', 'memory.max', 'cpu.max'], 'a missing file shifts no other value')
 
+    def test_a_scope_continues_after_an_oom_kill_where_systemd_allows_it(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        cases = (('systemd 252 (252.39-1~deb12u1)\n', ()), ('systemd 253 (253.5-1)\n', ('-p', 'OOMPolicy=continue')),
+                 ('systemd 259 (259.9-0ubuntu0.1)\n+PAM +AUDIT\n', ('-p', 'OOMPolicy=continue')), ('', ()))
+        for version, expected in cases:
+            with self.subTest(version=version), mock.patch.object(
+                    sandbox.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, version, '')):
+                sandbox.oom_policy.cache_clear()
+                self.assertEqual(sandbox.oom_policy(), expected)
+                scope, _ = sandbox.scope_args(tasks=1, memory_mb=1, cpu_percent=1)
+                self.assertEqual('OOMPolicy=continue' in scope, bool(expected))
+        sandbox.oom_policy.cache_clear()
+
     def test_the_guard_starts_nothing_without_the_limits(self):
         sandbox = load_sandbox()
         r = subprocess.run(sandbox.guard_args(tasks=7, memory_mb=1, cpu_percent=1) + ['echo', 'started'],
@@ -463,10 +478,26 @@ class SandboxRun(unittest.TestCase):
         r = self.run_check('c18', 'sh', '-c', script, options=('--tasks', '64'))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('spawned', r.stdout)
+
+    def test_a_check_past_its_memory_limit_is_killed_without_failing_its_scope(self):
+        # A scope that fails with 'oom-kill' makes KDE and GNOME report that the system is low on memory.
         r = self.run_check('c17', 'python3', '-c', 'x = bytearray(400 * 1024 * 1024); print("allocated")',
                            options=('--memory-mb', '64'))
-        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(r.returncode, 128 + 9, r.stderr)
         self.assertNotIn('allocated', r.stdout)
+        if not load_sandbox().oom_policy():
+            self.skipTest('systemd before 253: a scope takes no OOMPolicy')
+        scope, log, deadline = self.evidence('c17')['scope'], '', time.monotonic() + 10
+        while 'OOM killer' not in log and time.monotonic() < deadline:
+            time.sleep(0.2)
+            log = subprocess.run(['journalctl', '--user', '-u', scope, '-o', 'cat', '--no-pager'],
+                                 capture_output=True, text=True).stdout
+        if 'OOM killer' not in log:
+            self.skipTest(f'the user journal does not show {scope}')
+        time.sleep(1)
+        log = subprocess.run(['journalctl', '--user', '-u', scope, '-o', 'cat', '--no-pager'],
+                             capture_output=True, text=True).stdout
+        self.assertNotIn("Failed with result 'oom-kill'", log)
 
     def test_refused_calls_run_nothing_and_leave_no_evidence(self):
         cases = [
