@@ -323,6 +323,34 @@ def local_agent_config(root: Path) -> list[str]:
             and not ((root / path).is_symlink() and installer_link(path, os.readlink(root / path)))]
 
 
+def config_summary(files: list[str], limit: int = 20) -> str:
+    """The agent configuration by root (.opencode/, .claude/, opencode.json, …), each with its count and its
+    files, where an installed dependency tree (node_modules/) is one entry with its count: thousands of
+    installed files must not hide a plugin or a settings file. run-metadata.json keeps every file."""
+    def count(n: int) -> str:
+        return f'{n} file' if n == 1 else f'{n} files'
+
+    roots: dict[str, dict[str, int]] = {}
+    for path in files:
+        root, slash, rest = path.partition('/')
+        entries = roots.setdefault(root + slash, {})
+        if not slash:
+            continue
+        parts = rest.split('/')
+        if 'node_modules' in parts[:-1]:
+            rest = '/'.join(parts[:parts.index('node_modules') + 1]) + '/'
+        entries[rest] = entries.get(rest, 0) + 1
+    shown = []
+    for root, entries in roots.items():
+        if not entries:
+            shown.append(root)
+            continue
+        names = [f'{name} ({count(n)})' if name.endswith('/') else name for name, n in entries.items()]
+        more = f' and {len(names) - limit} more' if len(names) > limit else ''
+        shown.append(f'{root} ({count(sum(entries.values()))}: {", ".join(names[:limit])}{more})')
+    return '; '.join(shown)
+
+
 def main_worktree(root: Path) -> Path:
     """The main worktree, first in `git worktree list` (as the installer finds it), which holds the records."""
     listing = git('-C', str(root), 'worktree', 'list', '--porcelain')
@@ -379,8 +407,7 @@ def cmd_init(args) -> int:
                         (local_config, 'this clone has ignored agent configuration')):
         if files:
             print(f'audit: {what} that an agent CLI loads at startup, outside the sandbox: '
-                  f'{", ".join(files[:20])}' + (f' and {len(files) - 20} more' if len(files) > 20 else ''),
-                  file=sys.stderr)
+                  f'{config_summary(files)}', file=sys.stderr)
     stem = f'sec-audit-{datetime.date.today().isoformat()}'
     run_dir, n = audits / stem, 1
     while run_dir.exists():
@@ -428,7 +455,7 @@ def cmd_approve(args) -> int:
         return 0
     if run.meta.get('agent_config') and not args.trust_agent_config:
         raise Refused('the target commits agent configuration that every agent CLI runs at startup, outside the '
-                      f'sandbox ({", ".join(run.meta["agent_config"][:5])}…): approve with --trust-agent-config only '
+                      f'sandbox ({config_summary(run.meta["agent_config"], 5)}): approve with --trust-agent-config only '
                       'when the human chose to run the audit with it; otherwise audit a clone without it')
     run.meta['approved'] = {'at': now(), 'words': args.words.strip(), 'trust_agent_config': args.trust_agent_config}
     run.meta['source_only'] = args.source_only
@@ -502,7 +529,7 @@ def cmd_status(args) -> int:
           f'{run.meta["approved"]["at"] if run.meta["approved"] else "no"}')
     for key, what in (('agent_config', 'committed in the target'), ('local_agent_config', 'ignored in this clone')):
         if run.meta.get(key):
-            print(f'agent configuration {what} ({len(run.meta[key])} file(s)): ' + ', '.join(run.meta[key][:20]))
+            print(f'agent configuration {what}: {config_summary(run.meta[key])}')
     print(f'budget: {run.spent()} of {run.meta["budget"]} spent, {run.remaining()} left, '
           f'{reserves(run)} reserved for critics and verifiers')
     print('units: ' + (', '.join(f'{k} {v}' for k, v in sorted(counts(run).items())) or 'none'))

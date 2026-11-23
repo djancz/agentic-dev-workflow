@@ -769,6 +769,28 @@ class AuditTool(unittest.TestCase):
         self.assertIn('takes only', self.audit('seed', str(run), str(units), ok=False).stderr)
         self.assertEqual(len(self.ledger(run)), 2, 'a refused seed writes nothing')
 
+    def test_installed_dependencies_hide_no_agent_configuration_at_the_gate(self):
+        (self.repo / '.gitignore').write_text('/development\n/.opencode/\n')
+        self.commit('ignore the local OpenCode directory')
+        for n in range(30):
+            (self.repo / '.opencode' / 'node_modules' / f'pkg{n:02d}').mkdir(parents=True)
+            (self.repo / '.opencode' / 'node_modules' / f'pkg{n:02d}' / 'index.js').write_text('')
+        (self.repo / '.opencode' / 'plugins').mkdir()
+        (self.repo / '.opencode' / 'plugins' / 'local.js').write_text('// mine\n')
+        (self.repo / '.opencode' / 'plugins' / 'node_modules').write_text('a file of that name is no tree\n')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude')
+        summary = '.opencode/ (32 files: node_modules/ (30 files), plugins/local.js, plugins/node_modules)'
+        self.assertIn(summary, r.stderr)
+        self.assertNotIn('pkg00', r.stderr)
+        run = Path(r.stdout.strip())
+        self.assertEqual(len(json.loads((run / 'run-metadata.json').read_text())['local_agent_config']), 32,
+                         'the record keeps every file')
+        self.assertIn(summary, self.audit('status', str(run)).stdout)
+        audit = load_script(AUDIT)
+        self.assertEqual(audit.config_summary(['opencode.json', '.claude/settings.json', '.claude/hooks/a.sh',
+                                               '.claude/hooks/b.sh'], limit=2),
+                         'opencode.json; .claude/ (3 files: settings.json, hooks/a.sh and 1 more)')
+
     def commit(self, message: str = 'change') -> None:
         git(self.repo, 'add', '-A')
         git(self.repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message)
@@ -786,11 +808,12 @@ class AuditTool(unittest.TestCase):
         self.assertFalse(audit.installer_link('.claude/skills/wf-sec-audit/hook.js', str(REPO / 'skills')))
         args = ['init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude']
         r = self.audit(*args)
-        self.assertIn('.opencode/plugin/start.js', r.stderr)
+        self.assertIn('outside the sandbox: .opencode/ (1 file: plugin/start.js)', r.stderr)
         run = Path(r.stdout.strip())
         meta = json.loads((run / 'run-metadata.json').read_text())
         self.assertEqual(meta['agent_config'], ['.opencode/plugin/start.js'], 'an installed wf skill link is no config')
-        self.assertIn('agent configuration committed in the target (1 file(s))', self.audit('status', str(run)).stdout)
+        self.assertIn('agent configuration committed in the target: .opencode/ (1 file: plugin/start.js)',
+                      self.audit('status', str(run)).stdout)
         r = self.audit('approve', str(run), '--words', 'start', ok=False)
         self.assertIn('--trust-agent-config', r.stderr, 'committed startup code needs the human\'s explicit choice')
         self.audit('approve', str(run), '--words', 'start, I trust that plugin', '--trust-agent-config')
