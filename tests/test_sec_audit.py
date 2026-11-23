@@ -144,6 +144,19 @@ class Promote(unittest.TestCase):
         self.assertIn('still holds the scratch directory', r.stderr)
         self.assertEqual(entries, [])
 
+    def test_a_copy_that_cannot_be_written_is_removed(self):
+        import resource
+        (self.scratch / 'evidence' / 'c01.out').write_bytes(b'x' * 100)
+        args = [sys.executable, str(SANDBOX), 'promote', '--scratch', str(self.scratch), '--artifacts',
+                str(self.artifacts), '--total', '1000', '--allow', 'evidence/c01.out:1000']
+        r = subprocess.run(args, capture_output=True, text=True, timeout=30,
+                           preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (10, 10)))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        entry = json.loads(r.stdout)
+        self.assertEqual(entry['status'], 'rejected')
+        self.assertIn('could not be written', entry['reason'])
+        self.assertFalse((self.artifacts / 'evidence' / 'c01.out').exists(), 'no partial copy stays')
+
     def test_invalid_use_exits_125(self):
         r, _ = self.promote('evidence/c01.out')
         self.assertEqual(r.returncode, 125)
@@ -153,6 +166,47 @@ class Promote(unittest.TestCase):
         self.assertEqual(r.returncode, 125)
         r = subprocess.run([sys.executable, str(SANDBOX), 'frobnicate'], capture_output=True, text=True)
         self.assertEqual(r.returncode, 125)
+
+
+def load_script(path: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(path.stem.replace('-', '_'), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_sandbox():
+    return load_script(SANDBOX)
+
+
+class SandboxGuards(unittest.TestCase):
+    """Checks of the runner that need no sandbox."""
+
+    def test_a_tool_tree_with_a_socket_or_fifo_is_refused(self):
+        import socket
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'bin').mkdir()
+        (tmp / 'bin' / 'tool').write_text('#!/bin/sh\n')
+        (tmp / 'bin' / 'elsewhere').symlink_to('/run')
+        self.assertIsNone(sandbox.first_channel(tmp))
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(tmp / 'bin' / 'service.sock'))
+        self.assertEqual(sandbox.first_channel(tmp), str(tmp / 'bin' / 'service.sock'))
+        os.unlink(tmp / 'bin' / 'service.sock')
+        os.mkfifo(tmp / 'pipe')
+        self.assertEqual(sandbox.first_channel(tmp), str(tmp / 'pipe'))
+
+    def test_the_guard_starts_nothing_without_the_limits(self):
+        sandbox = load_sandbox()
+        r = subprocess.run(sandbox.guard_args(tasks=7, memory_mb=1, cpu_percent=1) + ['echo', 'started'],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('does not limit tasks', r.stderr)
+        self.assertNotIn('started', r.stdout)
 
 
 class SandboxRun(unittest.TestCase):
@@ -276,6 +330,40 @@ class SandboxRun(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(len(r.stdout.splitlines()), 12)
         self.assertTrue(all(line.startswith('enforced: ') for line in r.stdout.splitlines()))
+
+    def test_every_run_mounts_a_fresh_export_of_the_commit(self):
+        # Whatever is left in the scratch directory, also at the old cache path, never stands in for the commit.
+        planted = self.scratch / 'src' / self.ref
+        planted.mkdir(parents=True)
+        (planted / 'app.py').write_text('print("planted")\n')
+        (self.scratch / 'src' / f'{self.ref}.complete').write_text(self.ref + '\n')
+        r = self.run_check('c20', 'python3', '/src/app.py')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, 'hello from target\n')
+        self.assertEqual(sorted(p.name for p in (self.scratch / 'src').iterdir()), [self.ref, f'{self.ref}.complete'],
+                         'the run removes its own copy')
+        shutil.rmtree(self.scratch / 'src')
+        (self.scratch / 'src').symlink_to(self.tmp, target_is_directory=True)
+        r = self.run_check('c21', 'true')
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('not a plain directory', r.stderr)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ['repo'], 'nothing is written through the link')
+
+    def test_systemd_does_not_expand_the_command(self):
+        r = self.run_check('c22', 'sh', '-c', 'echo "[${HOME}]"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, '[/work/home]\n')
+        self.assertEqual(self.evidence('c22')['command'], ['sh', '-c', 'echo "[${HOME}]"'])
+
+    def test_no_tool_exposes_a_runtime_directory(self):
+        runtime = os.environ.get('XDG_RUNTIME_DIR') or '/run'
+        scratch_tool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, scratch_tool)
+        for check, tool in (('c23', runtime), ('c24', scratch_tool), ('c25', '/run')):
+            with self.subTest(tool=tool):
+                r = self.run_check(check, 'true', options=('--tool', tool))
+                self.assertEqual(r.returncode, 125)
+                self.assertIn('where host services keep their sockets', r.stderr)
 
 
 
@@ -438,7 +526,7 @@ class AuditTool(unittest.TestCase):
         self.assertTrue(ledger[0]['coverage_id'].startswith('a.py%23y::app.py%23check_owner::app::'))
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['selected_companions'],
                          ['WEB-PROTOCOL-AND-AUTH.md'])
-        self.assertIn('seeded 0 unit(s), 2 already present', self.audit('seed', str(run), str(units)).stdout)
+        self.assertIn('seeded 0 unit(s) for wave 1, 2 already present', self.audit('seed', str(run), str(units)).stdout)
         changed = unit_spec('a.py#y') | {'starting_paths': ['other.py']}
         units.write_text(json.dumps([changed]))
         self.assertIn('canonical identity collision', self.audit('seed', str(run), str(units), ok=False).stderr)
@@ -447,6 +535,130 @@ class AuditTool(unittest.TestCase):
         units.write_text(json.dumps([unit_spec('c.py#z') | {'status': 'covered'}]))
         self.assertIn('takes only', self.audit('seed', str(run), str(units), ok=False).stderr)
         self.assertEqual(len(self.ledger(run)), 2, 'a refused seed writes nothing')
+
+    def commit(self, message: str = 'change') -> None:
+        git(self.repo, 'add', '-A')
+        git(self.repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message)
+
+    def test_init_keeps_records_private_and_lists_the_targets_agent_configuration(self):
+        (self.repo / '.opencode' / 'plugin').mkdir(parents=True)
+        (self.repo / '.opencode' / 'plugin' / 'start.js').write_text('// runs when OpenCode starts\n')
+        (self.repo / '.claude' / 'skills').mkdir(parents=True)
+        (self.repo / '.claude' / 'skills' / 'wf-sec-audit').symlink_to(REPO / 'skills' / 'wf-sec-audit')
+        self.commit('agent configuration')
+        args = ['init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude']
+        r = self.audit(*args)
+        self.assertIn('.opencode/plugin/start.js', r.stderr)
+        run = Path(r.stdout.strip())
+        meta = json.loads((run / 'run-metadata.json').read_text())
+        self.assertEqual(meta['agent_config'], ['.opencode/plugin/start.js'], 'an installed wf skill link is no config')
+        self.assertIn('agent configuration committed in the target (1 file(s))', self.audit('status', str(run)).stdout)
+        shutil.rmtree(self.repo / 'development' / 'audits')
+        (self.repo / 'development' / 'audits').symlink_to(self.tmp, target_is_directory=True)
+        self.assertIn('development/audits is a link', self.audit(*args, ok=False).stderr)
+        (self.repo / 'development' / 'audits').unlink()
+        git(self.repo, 'add', '-f', 'development/private.txt')
+        self.commit('records')
+        self.assertIn('git tracks files below development/', self.audit(*args, ok=False).stderr)
+
+    def test_agents_start_only_on_the_approved_commit_and_learn_the_scope(self):
+        (self.repo / 'app.py').write_text('print("version 2")\n')
+        self.commit('v2')
+        run = Path(self.audit('init', '--profile', 'quick', '--host', 'claude', '--hunt', 'opencode', '--verify',
+                              'claude', '--scope', 'app.py', '--since', 'HEAD~1').stdout.strip())
+        self.audit('approve', str(run), '--words', 'start')
+        self.audit('prompt', str(run), 'recon', '--recon', '1a', '--agent', 'recon-1a')
+        prompt = (run / 'runs' / 'recon-1a.prompt.md').read_text()
+        self.assertIn('in scope are the paths app.py and the changes from', prompt)
+        self.assertIn('(app.py), with the code they reach', prompt)
+        (self.repo / 'run.sh').write_text('#!/bin/sh\necho changed\n')
+        r = self.audit('prompt', str(run), 'recon', '--recon', '1b', '--agent', 'recon-1b', ok=False)
+        self.assertIn('working tree changed since the audit gate', r.stderr)
+        self.commit('later')
+        r = self.audit('prompt', str(run), 'recon', '--recon', '1b', '--agent', 'recon-1b', ok=False)
+        self.assertIn('the audit was approved for', r.stderr)
+        self.assertFalse((run / 'runs' / 'recon-1b.prompt.md').exists())
+
+    def test_a_failed_critic_runs_again_and_new_units_wait_for_the_next_wave(self):
+        run = Path(self.audit('init', '--profile', 'standard', '--waves', '1', '--budget', '30', '--host', 'claude',
+                              '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
+        self.audit('approve', str(run), '--words', 'start')
+        (run / 'architecture.md').write_text('# Architecture\n\nOne script.\n')
+        units = self.tmp / 'units.json'
+        units.write_text(json.dumps([unit_spec()]))
+        self.audit('seed', str(run), str(units))
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', 'usage limit', code=6)
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1', ok=False)
+        # A failed critic is no pass: a fresh agent, here the fallback, runs the wave's critic again.
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1b', '--ran-as', 'codex,,high')
+        missing = {k: v for k, v in unit_spec('other.py#x').items() if k in ('surface', 'boundary', 'subsystem',
+                                                                            'attack_class', 'starting_paths')}
+        self.result(run, 'critic-w1b', {'missing_units': [missing | {'reason': 'Another entry point.'}],
+                                        'reassign_ids': [], 'resolved_prior_leads': [], 'stop': False})
+        self.assertIn('work remains', self.audit('apply', str(run), 'critic', '--agent', 'critic-w1b').stdout)
+        units.write_text(json.dumps([unit_spec('other.py#x')]))
+        r = self.audit('seed', str(run), str(units), '--clear-pending', ok=False)
+        self.assertIn('wave 2, past the cap of 1', r.stderr)
+        out = self.audit('seed', str(run), str(units), '--clear-pending', '--status', 'deferred', '--reason',
+                         'wave_cap_reached').stdout
+        self.assertIn('seeded 1 unit(s) for wave 2', out)
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1')
+        self.result(run, 'critic-final-w1', {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [],
+                                             'stop': True})
+        self.assertIn('clean', self.audit('apply', str(run), 'critic', '--agent', 'critic-final-w1').stdout)
+        r = self.audit('final', str(run), ok=False)
+        self.assertIn('deferred by a cap or the budget', r.stderr)
+        self.assertIn('incomplete: no records', self.audit('final', str(run), '--incomplete', 'wave_cap_reached').stdout)
+
+    def test_results_of_an_unexpected_shape_are_discarded_and_source_only_runs_no_check(self):
+        run = self.start()
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        bad = self.hunter_result(run, 'hunt-w1-01')
+        bad['units'][0]['reviewed_paths'] = [{'path': 'app.py'}]
+        self.result(run, 'hunt-w1-01', bad)
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01', ok=False)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn('discarded hunt-w1-01', r.stdout)
+        self.assertNotIn('Traceback', r.stderr)
+        self.assertEqual(self.ledger(run)[0]['status'], 'planned')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', {'missing_units': [], 'reassign_ids': [[cid]], 'resolved_prior_leads': [],
+                                       'stop': False})
+        r = self.audit('apply', str(run), 'critic', '--agent', 'critic-w1', ok=False)
+        self.assertIn('discarded critic-w1', r.stdout)
+        self.assertNotIn('Traceback', r.stderr)
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1b')
+        # After a sandbox failure the human chose source-only: no check may claim local evidence then.
+        self.audit('approve', str(run), '--source-only', '--words', 'go on without local checks')
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-02',
+                   '--after-human-answer')
+        self.assertIn('source-only', (run / 'runs' / 'hunt-w1-02.prompt.md').read_text())
+        self.result(run, 'hunt-w1-02', self.hunter_result(run, 'hunt-w1-02', local=True))
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02', ok=False)
+        self.assertIn('this audit is source-only', r.stdout)
+
+    def test_resume_sets_interrupted_runs_aside(self):
+        run = self.start()
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.assertIn('runs without a result: hunt-w1-01', self.audit('status', str(run)).stdout)
+        self.assertIn('1 interrupted run(s) set aside', self.audit('resume', str(run)).stdout)
+        self.assertEqual(self.ledger(run)[0]['status'], 'planned')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.assertIn('set aside by resume', self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01',
+                                                        ok=False).stderr)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-02')
+        self.result(run, 'hunt-w1-02', self.hunter_result(run, 'hunt-w1-02'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.audit('resume', str(run))
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1b')
 
     def test_blocks_are_copied_verbatim_and_listed(self):
         listing = self.audit('blocks').stdout
@@ -569,7 +781,22 @@ class AuditTool(unittest.TestCase):
         self.assertIn('PASS: 1 findings valid', out)
         self.assertIn('complete: confirmed 1', out)
         self.assertEqual(json.loads((run / 'findings.json').read_text()), [record])
+        self.assertEqual(self.ledger(run)[0]['decisions'], {record['fingerprint']: 'confirmed'})
+        # The run ends only once the reports exist, derived from the final records.
+        meta = json.loads((run / 'run-metadata.json').read_text())
+        self.assertEqual((meta['run_status'], meta['phase']), ('in_progress', 'report'))
+        r = self.audit('prompt', str(run), 'recon', '--focus', 'more', '--agent', 'recon-late', ok=False)
+        self.assertIn('findings are final', r.stderr)
+        self.assertIn('write REPORT.md, FINDINGS-DETAIL.md, NEEDS-VALIDATION.md',
+                      self.audit('done', str(run), ok=False).stderr)
+        for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
+            (run / name).write_text(f'# {name}\n')
+        (run / 'findings.json').write_text('[]\n')
+        self.assertIn('changed after final', self.audit('done', str(run), ok=False).stderr)
+        self.audit('final', str(run))
+        self.assertIn('complete', self.audit('done', str(run)).stdout)
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['run_status'], 'complete')
+        self.assertIn('the run is complete', self.audit('final', str(run), ok=False).stderr)
 
     def test_a_material_replacement_goes_to_a_fresh_verifier(self):
         run = self.start(profile='standard', budget=20)
@@ -606,6 +833,22 @@ class AuditTool(unittest.TestCase):
         self.audit('apply', str(run), 'record', '--agent', 'record-002')
         out = self.audit('final', str(run)).stdout
         self.assertIn('complete: confirmed 1', out)
+        self.assertEqual(self.ledger(run)[0]['decisions'], {fp: 'confirmed'}, 'the ledger follows the final verdict')
+        prompt = (run / 'runs' / 'record-001.prompt.md').read_text()
+        self.assertIn('The checks of its linked coverage units', prompt)
+        self.assertIn('"agent_id": "verify-001"', prompt, 'the record verifier sees the evidence it checks')
+
+    def test_a_changed_condition_or_instruction_is_material(self):
+        audit = load_script(AUDIT)
+        old = confirmed()
+        self.assertFalse(audit.material(old, json.loads(json.dumps(old))))
+        self.assertTrue(audit.material(old, old | {'conditions': ['An administrator enabled sharing.']}))
+        changed = json.loads(json.dumps(old))
+        changed['execution']['instructions'] = ['Call main twice.']
+        self.assertTrue(audit.material(old, changed))
+        reworded = json.loads(json.dumps(old))
+        reworded['description'] = 'Another user\'s object can be changed.'
+        self.assertFalse(audit.material(old, reworded), 'wording alone is not material')
 
     def test_reassignment_is_capped_and_resume_refuses_another_commit(self):
         run = self.start(profile='standard', budget=40)
@@ -618,7 +861,8 @@ class AuditTool(unittest.TestCase):
             self.audit('prompt', str(run), 'critic', '--wave', str(wave), '--agent', f'critic-w{wave}')
             self.result(run, f'critic-w{wave}', {'missing_units': [], 'reassign_ids': [cid],
                                                  'resolved_prior_leads': [], 'stop': False})
-            self.audit('apply', str(run), 'critic', '--agent', f'critic-w{wave}')
+            out = self.audit('apply', str(run), 'critic', '--agent', f'critic-w{wave}').stdout
+            self.assertIn('work remains', out, 'a reassignment the cap defers is no clean pass')
         unit = self.ledger(run)[0]
         self.assertEqual((unit['status'], unit['unresolved'], len(unit['attempts'])), ('deferred', ['stagnation'], 3))
         self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'x', ok=False)

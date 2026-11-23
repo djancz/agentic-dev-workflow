@@ -12,11 +12,14 @@ probe   reports each control the audit requires as `enforced` or `missing` and e
 run     (hunters and candidate verifiers) runs <command> with no external network (only loopback), an empty
         environment plus --env NAME=VALUE, read-only /usr, /etc, toolchains (--tool) and target source, and
         writes only to a size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to /work to build).
-        The source is a clean export of the committed bytes of <commit> (no .gitattributes of the target
-        applies), written by this script into <scratch>/src/<commit>/ and mounted read-only at /src;
-        submodules are not exported. --inputs <dir under scratch> is mounted read-only at /input. Limits: a cgroup scope
-        (systemd-run --user) for tasks, memory and CPU rate, rlimits for CPU time, file size, open files
-        and core files (address space only with --as-mb), and a wall-clock timeout that kills the scope.
+        The source is a fresh export of the committed bytes of <commit> for this run (no .gitattributes of
+        the target applies), written by this script into a new <scratch>/src/<random>/, mounted read-only
+        at /src and removed afterwards; submodules are not exported. --inputs <dir under scratch> is mounted
+        read-only at /input. A --tool must not hold a socket or FIFO, nor lie in the home directory's
+        credential stores, the repository or a runtime directory such as /run or /tmp. Limits: a cgroup
+        scope (systemd-run --user, which must not expand ${NAME} in the command) for tasks, memory and CPU
+        rate, read back inside the scope before the command starts, rlimits for CPU time, file size, open
+        files and core files (address space only with --as-mb), and a wall-clock timeout that kills the scope.
         The only evidence is the command's stdout and stderr, read by this trusted process with a byte cap
         and written to <scratch>/evidence/<name>.out, .err and .json (command, limits, result, sha256).
         Target code never writes to disk outside its tmpfs. Exit: the command's status, 128+N for signal N,
@@ -39,6 +42,7 @@ import argparse
 import contextlib
 import errno
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -86,6 +90,10 @@ COMPONENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
 HOME_SECRETS = ('.ssh', '.gnupg', '.aws', '.azure', '.config', '.docker', '.kube', '.netrc', '.git-credentials',
                 '.local/share', '.claude', '.codex', '.gemini', '.password-store', '.pki', '.npmrc', '.pypirc',
                 '.cargo/credentials', '.cargo/credentials.toml')
+# Where host services keep sockets and runtime state. A socket reached through a read-only bind still
+# connects (the user bus could start a process outside the sandbox), so no --tool may lie below these.
+RUNTIME_ROOTS = ('/run', '/var/run', '/tmp', '/var/tmp', '/dev', '/proc', '/sys')
+TOOL_SCAN_LIMIT = 500000
 
 
 class Refused(Exception):
@@ -128,11 +136,38 @@ def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str, s
     return args + ['--chdir', chdir, '--']
 
 
+@functools.lru_cache(maxsize=1)
+def no_expansion() -> tuple[str, ...]:
+    """systemd-run 254+ expands ${NAME} in the command with its own environment, before the sandbox's."""
+    try:
+        text = subprocess.run([SYSTEMD_RUN, '--help'], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return ('--expand-environment=no',) if '--expand-environment' in text else ()
+
+
 def scope_args(*, tasks: int, memory_mb: int, cpu_percent: int) -> tuple[list[str], str]:
     unit = f'wf-sandbox-{secrets.token_hex(6)}'
-    return [SYSTEMD_RUN, '--user', '--scope', '--quiet', '--collect', '--unit', unit,
+    return [SYSTEMD_RUN, '--user', '--scope', '--quiet', '--collect', *no_expansion(), '--unit', unit,
             '-p', f'TasksMax={tasks}', '-p', f'MemoryMax={memory_mb}M', '-p', 'MemorySwapMax=0',
             '-p', f'CPUQuota={cpu_percent}%', '--'], unit
+
+
+# Runs inside the new scope before bwrap: systemd accepts a limit even where its controller is not delegated,
+# so the scope's own values are read back and nothing starts unless all three hold.
+GUARD_SCRIPT = r'''
+d=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
+[ "$(cat "$d/pids.max" 2>/dev/null)" = "$1" ] || { echo "the scope does not limit tasks" >&2; exit 125; }
+[ "$(cat "$d/memory.max" 2>/dev/null)" = "$2" ] || { echo "the scope does not limit memory" >&2; exit 125; }
+[ "$(cat "$d/cpu.max" 2>/dev/null)" = "$3" ] || { echo "the scope does not limit the CPU rate" >&2; exit 125; }
+shift 3
+exec "$@"
+'''
+
+
+def guard_args(*, tasks: int, memory_mb: int, cpu_percent: int) -> list[str]:
+    return ['/bin/sh', '-c', GUARD_SCRIPT, 'wf-sandbox-guard', str(tasks), str(memory_mb * 1024 * 1024),
+            f'{cpu_percent * 1000} 100000']
 
 
 def rlimits(cpu_seconds: int, file_bytes: int, nofile: int, as_bytes: int | None):
@@ -171,11 +206,11 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str,
     for tool in (BWRAP, SYSTEMD_RUN):
         if not os.access(tool, os.X_OK):
             raise Refused(f'{tool} is not installed')
-    scope, unit = scope_args(tasks=limits['tasks'], memory_mb=limits['memory_mb'],
-                             cpu_percent=limits['cpu_percent'])
+    cgroup = {'tasks': limits['tasks'], 'memory_mb': limits['memory_mb'], 'cpu_percent': limits['cpu_percent']}
+    scope, unit = scope_args(**cgroup)
     status_read, status_write = os.pipe()
-    argv = scope + bwrap_args(work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds,
-                              chdir=chdir, status_fd=status_write) + command
+    argv = scope + guard_args(**cgroup) + bwrap_args(work_bytes=limits['work_mb'] * 1024 * 1024, env=env,
+                                                     binds=binds, chdir=chdir, status_fd=status_write) + command
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -366,7 +401,39 @@ def check_tool(path: str, repo: Path) -> str:
         secret = home / name
         if within(real, secret) or within(secret, real):
             raise Refused(f'--tool must not expose {secret}: {path}')
+    runtime = [Path(p).resolve() for p in RUNTIME_ROOTS + ((os.environ['XDG_RUNTIME_DIR'],)
+                                                          if os.environ.get('XDG_RUNTIME_DIR') else ())]
+    for root in runtime:
+        if within(real, root) or within(root, real):
+            raise Refused(f'--tool must not expose {root}, where host services keep their sockets: {path}')
+    channel = first_channel(real)
+    if channel:
+        raise Refused(f'--tool must not expose a socket or FIFO, which would reach a host process: {channel}')
     return str(real)
+
+
+def first_channel(root: Path) -> str | None:
+    """The first socket or FIFO at or below root, without following links; refuses a tree too large to check."""
+    seen = 0
+    pending = [str(root)]
+    while pending:
+        path = pending.pop()
+        mode = os.lstat(path).st_mode
+        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode):
+            return path
+        if not stat.S_ISDIR(mode):
+            continue
+        try:
+            entries = list(os.scandir(path))
+        except OSError as exc:
+            raise Refused(f'--tool cannot be checked for sockets: {exc}') from None
+        for entry in entries:
+            seen += 1
+            if seen > TOOL_SCAN_LIMIT:
+                raise Refused(f'--tool has more than {TOOL_SCAN_LIMIT} entries to check; mount a narrower '
+                              f'directory: {root}')
+            pending.append(entry.path)
+    return None
 
 
 def parse_env(values: list[str]) -> dict[str, str]:
@@ -402,12 +469,15 @@ def git(repo: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run([GIT, '-C', str(repo), *args], env=env, **kwargs)
 
 
-def export_source(repo: Path, ref: str, scratch: Path) -> tuple[Path, list[str]]:
-    """A clean copy of the commit, made by trusted code; returns it and the omitted submodules.
+def export_source(repo: Path, ref: str, scratch: Path, scratch_fd: int) -> tuple[Path, list[str], tuple[int, str]]:
+    """A fresh copy of the commit for one run, made by trusted code: returns it, the omitted submodules and
+    what remove_export needs.
 
     The files are the committed bytes, read with `git cat-file`: no attribute of the target applies (git
     archive would honour its export-ignore, export-subst and filters), no line endings change, and nothing
-    is written through a link."""
+    is written through a link. Every run gets a new directory with a random name below <scratch>/src/,
+    reached from the scratch descriptor without following links and removed after the run, so nothing
+    left in the scratch directory can stand in for the commit."""
     resolved = git(repo, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}', capture_output=True, text=True)
     if resolved.returncode != 0 or resolved.stdout.strip() != ref:
         raise Refused(f'--ref must be the full id of a commit of this repository: {ref}')
@@ -427,21 +497,18 @@ def export_source(repo: Path, ref: str, scratch: Path) -> tuple[Path, list[str]]
             submodules.append(path.decode('utf-8', 'replace'))
         elif kind == 'blob':
             entries.append((mode, oid, parts))
-    dest = scratch / 'src' / ref
-    marker = scratch / 'src' / f'{ref}.complete'
-    if marker.is_file() and dest.is_dir() and not dest.is_symlink():
-        return dest, submodules
-    (scratch / 'src').mkdir(exist_ok=True)
-    if dest.is_symlink() or dest.is_file():
-        dest.unlink()
-    elif dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir()
-    root = open_dir(dest)
+    try:
+        src_fd = walk(scratch_fd, ['src'], create=True)
+    except Rejected as exc:
+        raise Refused(f'the source directory of the scratch directory: {exc}') from None
+    name = f'{ref[:12]}-{secrets.token_hex(8)}'
+    os.mkdir(name, 0o700, dir_fd=src_fd)
+    root = open_dir(name, dir_fd=src_fd)
     batch = subprocess.Popen([GIT, '-C', str(repo), 'cat-file', '--batch'], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1',
                                                           'LC_ALL': 'C'})
     total = 0
+    done = False
     try:
         for mode, oid, parts in entries:
             batch.stdin.write(oid.encode() + b'\n')
@@ -469,12 +536,27 @@ def export_source(repo: Path, ref: str, scratch: Path) -> tuple[Path, list[str]]
                 raise Refused(f'cannot export {"/".join(names)}: {exc}') from None
             finally:
                 os.close(parent)
+        done = True
     finally:
         batch.stdin.close()
         batch.wait()
         os.close(root)
-    marker.write_text(ref + '\n')
-    return dest, submodules
+        if not done:
+            remove_export(src_fd, name)
+    return scratch / 'src' / name, submodules, (src_fd, name)
+
+
+def remove_export(src_fd: int, name: str) -> None:
+    """Delete one run's source copy below the descriptor of <scratch>/src, never through a link."""
+    try:
+        if sys.version_info >= (3, 11):
+            shutil.rmtree(name, dir_fd=src_fd)
+        else:
+            shutil.rmtree(f'/proc/self/fd/{src_fd}/{name}')
+    except OSError as exc:
+        print(f'sandbox-run: the source copy {name} was not removed: {exc}', file=sys.stderr)
+    finally:
+        os.close(src_fd)
 
 
 def cmd_run(args) -> int:
@@ -506,15 +588,18 @@ def cmd_run(args) -> int:
         names = [evidence / f'{args.check}.{ext}' for ext in ('out', 'err', 'json')]
         if any(path.exists() or path.is_symlink() for path in names):
             raise Refused(f'check {args.check} already has evidence; choose another --check name')
-        source, submodules = export_source(repo, args.ref, scratch)
-        binds.insert(0, (str(source), '/src'))
         if args.inputs:
             inputs = real_dir(str(scratch / args.inputs), '--inputs')
             if scratch not in inputs.parents:
                 raise Refused('--inputs must be a directory inside the scratch directory')
             binds.append((str(inputs), '/input'))
-        as_bytes = args.as_mb * 1024 * 1024 if args.as_mb else None
-        result = sandboxed(args.command, env=env, binds=binds, chdir='/src', limits=limits, as_bytes=as_bytes)
+        source, submodules, export = export_source(repo, args.ref, scratch, scratch_fd)
+        try:
+            binds.insert(0, (str(source), '/src'))
+            as_bytes = args.as_mb * 1024 * 1024 if args.as_mb else None
+            result = sandboxed(args.command, env=env, binds=binds, chdir='/src', limits=limits, as_bytes=as_bytes)
+        finally:
+            remove_export(*export)
     except Refused as exc:
         return fail(f'{exc}; nothing ran')
     record = {
@@ -625,17 +710,26 @@ def promote_one(scratch_fd: int, artifacts_fd: int, path: str, limit: int, budge
                           dir_fd=dest_dir)
         except FileExistsError:
             raise Rejected('the destination exists already') from None
+        try:
+            info = os.fstat(out)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise Rejected('the destination is not a new regular file')
+            view = memoryview(bytes(data))
+            while view:
+                view = view[os.write(out, view):]
+        except OSError as exc:
+            # A full disk or a file-size limit: no partial copy may stay behind as if it were evidence.
+            os.close(out)
+            out = None
+            with contextlib.suppress(OSError):
+                os.unlink(parts[-1], dir_fd=dest_dir)
+            raise Rejected(f'the copy could not be written ({errno.errorcode.get(exc.errno, exc.errno)}); '
+                           'nothing was kept') from None
+        finally:
+            if out is not None:
+                os.close(out)
     finally:
         os.close(dest_dir)
-    try:
-        info = os.fstat(out)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise Rejected('the destination is not a new regular file')
-        view = memoryview(bytes(data))
-        while view:
-            view = view[os.write(out, view):]
-    finally:
-        os.close(out)
     return len(data), hashlib.sha256(data).hexdigest()
 
 
@@ -664,7 +758,7 @@ def cmd_promote(args) -> int:
             size, digest = promote_one(scratch_fd, artifacts_fd, path, limit, left)
         except FileNotFoundError:
             entry['status'] = 'missing'
-        except Rejected as exc:
+        except (Rejected, OSError) as exc:
             entry.update(status='rejected', reason=str(exc))
             rejected += 1
         else:

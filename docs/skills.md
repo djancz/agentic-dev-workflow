@@ -206,12 +206,16 @@ agent prompt and refuses a launch that the budget, the wave cap or the reserves 
 verifiers cannot fund, and only your number raises the budget; it validates each result without
 repairing it, and two discarded results in a row from one role stop the run until you answer. Every agent runs through `run-agent.sh` in a fresh session:
 reconnaissance, critics and record verifiers read only, hunters and candidate verifiers may write only to
-their scratch directory. Target code runs only through `scripts/sandbox-run.py`: bubblewrap with no
+their scratch directory (a check after each run, not a confinement: agents keep their CLI's own
+permissions, so the independent verifier is the safeguard against a forged result). Target code runs only through `scripts/sandbox-run.py`: bubblewrap with no
 network, an empty environment, read-only system and source (an export of the committed bytes), writes to a
 size-limited tmpfs only, and cgroup and rlimit limits on tasks, memory, CPU, file size and time. Its probe
 reports each control; inside Codex's sandbox it fails, for want of the user session bus. The command's bounded stdout and stderr are
 the only evidence, promoted into the run by the parent after the agent has ended. The audit gate shows the
-host probe; when it fails, you choose between fixing it and a source-only run. The end report proposes one
+host probe; when it fails, you choose between fixing it and a source-only run. It also lists the agent
+configuration the target commits (hooks, plugins, MCP servers), which every agent CLI loads at startup
+outside the sandbox: audit an untrusted repository from a clone without it. `audit.py final` writes
+`findings.json`; the run ends with `audit.py done` once the reports exist. The end report proposes one
 task per confirmed root cause (`Sensitivity: high`); you choose which to create.
 
 ## Records and recovery

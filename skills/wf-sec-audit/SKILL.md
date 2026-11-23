@@ -54,7 +54,9 @@ hunter waves (1, 3, 6; at most 10); `parallel` is how many runs go at once (2; a
    [--waves <n>] [--parallel <n>]` prints the run directory `<run>`.
 4. **Audit gate (stop here).** Show the commit, profile, scope, budget, waves, parallel, the roles and
    fallbacks, the probe lines marked *host only*, prior runs in `development/audits/`, `<run>`, and that
-   no other wf work may run in this clone meanwhile (its record changes fail the running agents). Warn
+   no other wf work may run in this clone meanwhile (its record changes fail the running agents). Show the
+   agent configuration the target commits, as `init` lists it: every agent CLI loads it at startup,
+   outside the sandbox, so audit an untrusted repository only from a clone without it. Warn
    when `verify` is Codex: its sandbox blocks the user bus the audit sandbox needs. When the probe failed, the
    choice is to fix the environment (its line says what is missing) or to run source-only, where every
    candidate that needs a local result stays `needs_validation`. Ask as `conventions.md` → Asking the
@@ -80,7 +82,9 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
 
 - Each run gets a new agent id (`recon-1a`, `hunt-w1-01`, `critic-w1`, `critic-final-w2`, `verify-001`,
   `record-001`). A rerun is a fresh agent with a new id and never sees the failed attempt.
-- `apply` validates the result without repairing it. A discarded result may get one fresh rerun.
+- `apply` validates the result without repairing it (`run-agent.sh` only drops one code fence around the
+  whole message). A discarded result may get one fresh rerun. Every `prompt` checks that `HEAD` is still
+  the approved commit and the tree is unchanged.
 - Exit 6, 7 or 3 of `run-agent.sh`: follow `loop.md` → Delegated runs, with `prompt … --ran-as <a,m,e>`
   for a fallback or the human's choice. `apply` exit 4 (**STOP**): two discarded results in a row from one
   role, or a sandbox probe that failed inside a run: ask the human, then `prompt … --after-human-answer`;
@@ -92,23 +96,26 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
    `prompt` accepts it. Write `<run>/architecture.md` (`RECONNAISSANCE.md`; about 1,000 words). Read
    prior runs with `audit.py prior <run> <prior run>…` and carry unchanged records with `audit.py carry`.
    Write the units to `<run>/units-<n>.json` and seed them with `audit.py seed <run> <file>`, which
-   derives the IDs and checks every block. When `audit.py status` shows more planned units than the
+   derives the IDs and checks every block; in a scoped run, seed proposals outside the scope with
+   `--status out_of_scope --reason "<their reason>"`. When `audit.py status` shows more planned units than the
    budget left after its reserves, ask: a narrower scope, a coarser profile, or a larger budget (the
    human's number: `audit.py budget <run> --set <n> --words "<their words>"`); defer what does not fit
    with `audit.py defer`.
 2. **Hunting waves.** Hunters per wave, closely related units of one subsystem per hunter, then the
    post-wave critic. Seed the units the critic and the hunters proposed (`status` lists them; `seed …
-   --clear-pending`; in quick with `--status deferred --reason quick_profile_final_critic`). Next wave
-   while planned units remain and the cap allows; then the final-clean critic, and another wave when it
-   finds work. Units the cap or budget cannot reach: `audit.py defer` with the reason `AUDIT.md` names.
+   --clear-pending`, which plans them for the next wave; in quick with `--status deferred --reason
+   quick_profile_final_critic`, past the wave cap with `--reason wave_cap_reached`). Next wave while
+   planned units remain and the cap allows; then the final-clean critic, and another wave when it finds
+   work. Units the cap or budget cannot reach: `audit.py defer` with the reason `AUDIT.md` names.
 3. **Candidate validation**: one verifier per pending candidate in `status`.
 4. **Record verification** (not quick): one verifier per validated record; a material replacement goes
    to a fresh `--reverify` verifier, at most twice.
-5. **Findings**: `audit.py final <run>`, or `final <run> --incomplete <reason>` as `AUDIT.md` says.
-   Both validators must pass.
+5. **Findings**: `audit.py final <run>`, or `final <run> --incomplete <reason>` as `AUDIT.md` says (it
+   refuses `complete` while a cap or the budget deferred units). Both validators must pass.
 6. **Reports**: write `REPORT.md`, `FINDINGS-DETAIL.md` and `NEEDS-VALIDATION.md` from `findings.json` and
    the ledger only (`VALIDATION-AND-REPORTING.md` → Phase 6), following Writing style. No live-probe
-   instruction, no secret value; never present an unvalidated candidate as a finding.
+   instruction, no secret value; never present an unvalidated candidate as a finding. Then
+   `audit.py done <run>` ends the run; until then it stays `in_progress` and resumable.
 
 ## Report
 

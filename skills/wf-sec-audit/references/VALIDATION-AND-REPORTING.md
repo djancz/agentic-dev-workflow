@@ -6,9 +6,10 @@
 > Phase 5 verifier is `audit.py prompt … record --fingerprint <fp>` (read-only); a material replacement
 > gets a fresh `record --reverify` verifier, at most twice per fingerprint before the record stays
 > unresolved. `audit.py apply` validates each result without repairing it, and decides whether a
-> replacement is material: a stronger verdict, or a changed root cause, trace, severity, payloads or
-> observed result. `audit.py final` writes `findings.json`, sorted by fingerprint, and runs both
-> validators. Bookkeeping of candidates lives in `<run-dir>/state.json`.
+> replacement is material: a stronger verdict, or a changed root cause, trace, conditions, severity,
+> payloads, instructions or observed result; a final disposition updates the linked ledger decisions.
+> `audit.py final` writes `findings.json`, sorted by fingerprint, and runs both validators; after the
+> Phase 6 reports, `audit.py done` ends the run. Bookkeeping of candidates lives in `<run-dir>/state.json`.
 
 ### Phase 3: Independently validate every candidate
 

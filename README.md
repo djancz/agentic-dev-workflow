@@ -251,9 +251,9 @@ for it; nothing else starts it. It adapts Cloudflare's
 [security-audit skill](https://github.com/cloudflare/security-audit-skill): reconnaissance agents map the
 code, a coverage ledger splits it into units of entry surface, trust boundary, subsystem and attack class,
 hunters review the units in waves, coverage critics look for gaps, and fresh verifiers try to refute every
-candidate and check every final record. A finding is `confirmed` only with a source trace and a result
-observed in a local sandbox; a lead that needs a fact outside the source is `needs_validation`, without
-severity. The report, the ledger and the findings stay in `development/audits/`; the audit never changes
+candidate and check every final record. A finding is `confirmed` only with a source trace and an observed
+result that a fresh verifier established again, and any check that runs target code runs only in a local
+sandbox; a lead that needs a fact outside the source is `needs_validation`, without severity. The report, the ledger and the findings stay in `development/audits/`; the audit never changes
 code, and it proposes one `wf task` per confirmed root cause for you to choose.
 
 Two roles of its own run the agents: `hunt` (reconnaissance and hunters, for example an open-weight model

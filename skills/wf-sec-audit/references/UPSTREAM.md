@@ -22,14 +22,26 @@ Changes to the upstream text and contract:
   `runs/scratch/<agent-id>/` and artifacts `agents/<agent-id>/artifacts/`; `state.json` holds the
   parent's bookkeeping.
 - Delegation runs through `audit.py prompt` and `run-agent.sh`, with the roles `hunt` (reconnaissance,
-  hunters) and `verify` (critics, verifiers). Every run is a fresh headless session; the tree check of
-  `run-agent.sh` enforces the write isolation.
+  hunters) and `verify` (critics, verifiers). Every run is a fresh headless session in this clone, so the
+  agent CLIs load the project's agent configuration: the audit gate lists what the target commits. The
+  tree check of `run-agent.sh` detects a write outside `runs/` after the run; Write isolation in
+  `AUDIT.md` says what it does not cover. `run-agent.sh` drops one code fence around a whole message
+  before `audit.py apply` reads it; anything else around the JSON object discards the result.
 - A budget is always set (profile defaults 25, 60 and 150, at most 500) and every profile has a wave cap.
   A unit is reassigned at most twice, and a material Phase 5 replacement is re-verified at most twice;
   then the run follows the upstream incomplete path.
 - The sandbox is `sandbox-run.py`. Target code writes only to a size-limited tmpfs; the evidence of a
   local check is its bounded stdout and stderr, which the trusted runner writes to the scratch directory.
-  The source is an export of the committed bytes, so no attribute of the target applies.
+  The source is a fresh export of the committed bytes for every check, so no attribute of the target
+  applies and nothing left in a scratch directory stands in for the commit. A `--tool` mount refuses
+  sockets, FIFOs and runtime directories such as `/run`, and the cgroup limits are read back inside the
+  scope before the command starts.
+- A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`
+  refuses `complete` while a cap or the budget deferred units. `audit.py done` ends a run once the Phase 6
+  reports exist; until then it stays `in_progress`.
+- The validators take Unicode properties from the running Python's `unicodedata`, as upstream's take them
+  from Node's ICU: two runtimes with different Unicode versions can classify a newly assigned character
+  differently.
 - Promotion opens the scratch and artifacts roots when it starts, without following links, instead of
   before the agent run: `audit.py` is a separate process. The artifacts directories are hashed by
   `run-agent.sh`, so a run that touched one fails before anything is promoted.
