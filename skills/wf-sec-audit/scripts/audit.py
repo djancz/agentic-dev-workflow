@@ -143,6 +143,11 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+# A save writes these together, through this journal (Run.save).
+JOURNAL = '.save.json'
+SAVED = ('coverage-ledger.json', 'run-metadata.json', 'state.json')
+
+
 def write_json(path: Path, value) -> None:
     tmp = path.with_name(f'.{path.name}.tmp')
     tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
@@ -170,6 +175,7 @@ class Run:
         self.dir = Path(path).resolve()
         if not (self.dir / 'run-metadata.json').is_file():
             raise Refused(f'not an audit run: {path}')
+        self.finish_save()
         self.meta = read_json(self.dir / 'run-metadata.json')
         self.state = read_json(self.dir / 'state.json')
         ledger = self.dir / 'coverage-ledger.json'
@@ -181,14 +187,29 @@ class Run:
         return self.dir / 'runs'
 
     def save(self, ledger: bool = False) -> None:
+        """Write the state, the metadata and with ledger the ledger together: the journal holds all of them
+        first, in one atomic write, so that a save that stops halfway is finished by the next Run."""
+        documents = {'state.json': self.state, 'run-metadata.json': self.meta}
         if ledger:
             self.ledger.sort(key=lambda unit: unit['coverage_id'])
             errors = ledger_errors(self.ledger)
             if errors:
                 raise Refused('the ledger would be invalid, nothing was written:\n  ' + '\n  '.join(errors[:20]))
-            write_json(self.dir / 'coverage-ledger.json', self.ledger)
-        write_json(self.dir / 'state.json', self.state)
-        write_json(self.dir / 'run-metadata.json', self.meta)
+            documents['coverage-ledger.json'] = self.ledger
+        write_json(self.dir / JOURNAL, documents)
+        self.finish_save()
+
+    def finish_save(self) -> None:
+        """Write what the journal of a save holds, then remove it."""
+        journal = self.dir / JOURNAL
+        if not journal.is_file():
+            return
+        documents = read_json(journal)
+        if not isinstance(documents, dict) or not set(documents) <= set(SAVED) or 'state.json' not in documents:
+            raise Refused(f'{journal} is not a journal of a save; restore the records from it by hand')
+        for name, value in documents.items():
+            write_json(self.dir / name, value)
+        journal.unlink()
 
     def unit(self, coverage_id: str) -> dict:
         for unit in self.ledger:
@@ -361,11 +382,30 @@ def config_summary(files: list[str], limit: int = 20) -> str:
 
 def hidden_changes(root: Path) -> None:
     """Refuse index entries that git status does not compare with the working tree (assume-unchanged,
-    skip-worktree): an edit of such a file is what the agents read, while the sandbox runs the commit."""
-    # Records end with NUL: a name may hold any other character. Initialized submodules count too, since git
-    # status takes their working trees as clean on the same index bits.
-    listing = git('-C', str(root), 'ls-files', '-v', '-z', '--recurse-submodules')
-    hidden = [entry[2:] for entry in listing.split('\0') if entry[:1].islower() or entry[:1] == 'S']
+    skip-worktree): an edit of such a file is what the agents read, while the sandbox runs the commit.
+    Every submodule checked out below counts, active or not (git ls-files --recurse-submodules skips an
+    inactive one, and git status takes it as clean on the same bits), and a submodule path that holds files
+    but no repository refuses: git status does not look into it."""
+    hidden, unchecked = [], []
+
+    def visit(tree: Path, prefix: str) -> None:
+        # Records end with NUL: a name may hold any other character.
+        listing = git('-C', str(tree), 'ls-files', '-v', '-z')
+        hidden.extend(prefix + entry[2:] for entry in listing.split('\0') if entry[:1].islower() or entry[:1] == 'S')
+        for record in git('-C', str(tree), 'ls-files', '-s', '-z').split('\0'):
+            meta, _, name = record.partition('\t')
+            if not meta.startswith('160000 '):
+                continue
+            sub = tree / name
+            if (sub / '.git').exists():
+                visit(sub, f'{prefix}{name}/')
+            elif sub.is_dir() and any(sub.iterdir()):
+                unchecked.append(prefix + name)
+
+    visit(root, '')
+    if unchecked:
+        raise Refused(f'the submodule path {display_path(unchecked[0])} holds files but no repository, which git '
+                      'status does not look into: remove them, or initialize the submodule')
     if hidden:
         raise Refused(f'git status does not check {len(hidden)} file(s) of the index (assume-unchanged or '
                       f'skip-worktree, for example {display_path(hidden[0])}): run git update-index '
@@ -1347,8 +1387,10 @@ def prompt_critic(run: Run, args) -> str:
         raise Refused('a quick run has exactly one coverage critic')
     if any(c['kind'] == kind and c['wave'] == args.wave for c in run.state['critics']):
         raise Refused(f'the {kind} critic of wave {args.wave} ran already; a new pass follows a new wave')
-    if final and not any(c['kind'] == 'post-wave' and c['wave'] == args.wave for c in run.state['critics']):
-        raise Refused(f'the post-wave critic of wave {args.wave} comes before the final-clean critic')
+    if final and not any(c['kind'] == 'post-wave' and c['wave'] == args.wave and c.get('applied')
+                         for c in run.state['critics']):
+        raise Refused(f'the post-wave critic of wave {args.wave} comes before the final-clean critic: apply its '
+                      'result first')
     require_launch(run, 'critic', args.agent)
     if any(u['status'] == 'in_progress' for u in run.ledger):
         raise Refused('apply every hunter of the wave before its critic')

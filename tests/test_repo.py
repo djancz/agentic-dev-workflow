@@ -872,7 +872,7 @@ esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress
 elif [ "$name" = opencode ]; then
   # OpenCode's JSON events: text before a tool call is a step of its own, the final message the last one.
-  FAKE_BODY=$body python3 -c 'import json, os, sys
+  FAKE_BODY=$body python3 -I -c 'import json, os, sys
 # A retry within one assistant message repeats its messageID in the next step.
 last = "m1" if sys.argv[1] == "same-id" else "m2"
 steps = [("m1", "I will look at the files first."), (last, None if sys.argv[1] == "no-final" else os.environ["FAKE_BODY"])]
@@ -1307,6 +1307,35 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
         self.assertEqual(r.returncode, 3)
         self.assertIn('the index hides files from git status', r.stderr)
+        # Inactive in the local configuration, which git ls-files --recurse-submodules skips, it is still there.
+        subprocess.run([*git, 'config', 'submodule.vendor.active', 'false'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the index hides files from git status', r.stderr)
+        # Files at a submodule path without a repository, where git status does not look.
+        subprocess.run([*vendor, 'update-index', '--no-skip-worktree', 'lib.py'], check=True)
+        subprocess.run([*vendor, 'checkout', '-q', 'lib.py'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (self.repo / 'vendor' / '.git').rename(self.tmp / 'vendor.git')
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 4\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('a submodule path holds files without a repository', r.stderr)
+
+    def test_the_runners_python_imports_nothing_of_the_project(self):
+        # Its current directory is the project's: an audited repository may hold a json.py or subprocess.py.
+        marker = self.tmp / 'planted-module-ran'
+        for name in ('json', 'subprocess'):
+            (self.repo / f'{name}.py').write_text(f'open({str(marker)!r}, "a").write("{name}\\n")\n')
+        git = ['git', '-C', str(self.repo), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        subprocess.run([*git, 'add', 'json.py', 'subprocess.py'], check=True)
+        subprocess.run([*git, 'commit', '-qm', 'modules of the project'], check=True)
+        head = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        r = self.run_agent('opencode', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else '')
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n')
 
     def test_exit_code_is_recorded_and_wait_returns_it(self):
         self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='fail')

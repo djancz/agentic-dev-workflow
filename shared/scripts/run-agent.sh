@@ -282,8 +282,10 @@ fingerprint() {
 
 # The final message of an OpenCode run: the text of the step that started last in its JSON events. Text the
 # model writes before a tool call belongs to an earlier step; a last step without text gives no output.
+# Python runs isolated (-I) here and below: the current directory is the project's, from which python3 -c
+# would import a module of the same name first (a json.py of an audited repository, for example).
 opencode_final() {
-    python3 -c '
+    python3 -I -c '
 import json, sys
 steps = []
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
@@ -302,6 +304,32 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
 text = "\n".join(steps[-1]).strip() if steps else ""
 sys.stdout.write(text + "\n" if text else "")
 ' "$1"
+}
+
+# Exit 1 when the index of the working tree, or of a submodule checked out below it, active or not, hides an
+# entry from git status (assume-unchanged, skip-worktree), or when a submodule path holds files but no
+# repository: git status looks into neither. Exit 2 when git fails.
+index_hides() {
+    python3 -I -c '
+import os, subprocess, sys
+def entries(tree, option):
+    out = subprocess.run(["git", "-C", tree, "ls-files", option, "-z"], stdout=subprocess.PIPE, check=True).stdout
+    return [entry for entry in out.split(b"\0") if entry]
+def hides(tree):
+    if any(entry[:1].islower() or entry[:1] == b"S" for entry in entries(tree, "-v")):
+        return True
+    for entry in entries(tree, "-s"):
+        meta, _, name = entry.partition(b"\t")
+        sub = os.path.join(tree, name)
+        if meta.startswith(b"160000 ") and (hides(sub) if os.path.exists(os.path.join(sub, b".git"))
+                                            else os.path.isdir(sub) and bool(os.listdir(sub))):
+            return True
+    return False
+try:
+    sys.exit(1 if hides(b".") else 0)
+except (OSError, subprocess.CalledProcessError):
+    sys.exit(2)
+'
 }
 
 # A snapshot that cannot be taken after the run counts as a change.
@@ -347,10 +375,11 @@ if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
     [ -z "$pinned_status" ] ||
         die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"
     # git status does not compare assume-unchanged or skip-worktree entries with the working tree.
-    hidden=$(GIT_OPTIONAL_LOCKS=0 git ls-files -v --recurse-submodules) ||
-        die 3 "git ls-files failed, so the tree of this pinned run is unknown; nothing ran"
-    ! printf '%s\n' "$hidden" | grep -q '^[a-zS] ' ||
-        die 3 "the index hides files from git status (assume-unchanged or skip-worktree), so this run pinned to $WF_AGENT_EXPECT_HEAD cannot be checked; nothing ran"
+    hides=0
+    GIT_OPTIONAL_LOCKS=0 index_hides || hides=$?
+    [ "$hides" != 2 ] || die 3 "git ls-files failed, so the tree of this pinned run is unknown; nothing ran"
+    [ "$hides" = 0 ] ||
+        die 3 "the index hides files from git status (assume-unchanged or skip-worktree), or a submodule path holds files without a repository, so this run pinned to $WF_AGENT_EXPECT_HEAD cannot be checked; nothing ran"
 fi
 project_settings_before=$(file_hash "$project_settings")
 user_settings_before=$(file_hash "$user_settings")

@@ -139,6 +139,26 @@ class Promote(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn('exists already', entries[0]['reason'])
 
+    def test_a_destination_replaced_while_it_is_compared_is_no_promotion(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        (self.artifacts / 'c01.out').write_bytes(b'observed\n')
+        fd = os.open(self.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        self.assertTrue(sandbox.same_copy(fd, 'c01.out', b'observed\n'))
+        real_read, swapped = os.read, []
+
+        def swapping_read(descriptor, size):
+            data = real_read(descriptor, size)
+            if data and not swapped:
+                swapped.append(True)
+                (self.artifacts / 'c01.out').rename(self.artifacts / 'old.out')
+                (self.artifacts / 'c01.out').write_bytes(b'other bytes\n')
+            return data
+        with mock.patch.object(os, 'read', swapping_read):
+            self.assertFalse(sandbox.same_copy(fd, 'c01.out', b'observed\n'), 'the name holds other bytes now')
+        self.assertEqual(swapped, [True])
+
     def test_a_check_that_never_ran_is_missing_not_rejected(self):
         shutil.rmtree(self.scratch / 'evidence')
         r, entries = self.promote('evidence/c01.out:100', 'evidence/c01.json:100')
@@ -238,6 +258,13 @@ def load_sandbox():
     return load_script(SANDBOX)
 
 
+def public_tmp() -> Path:
+    """A new directory that every user may enter, below /tmp: the user's own TMPDIR may be closed to others."""
+    path = Path(tempfile.mkdtemp(dir='/tmp' if os.path.isdir('/tmp') else None)).resolve()
+    os.chmod(path, 0o755)
+    return path
+
+
 def made_of(root: Path) -> set:
     """The identities of root and every directory below it, as export_source records the ones it made."""
     found = [os.lstat(root)] + [os.lstat(Path(top) / name) for top, dirs, _ in os.walk(root) for name in dirs]
@@ -279,8 +306,8 @@ class SandboxGuards(unittest.TestCase):
 
     def test_the_sandbox_takes_writes_only_in_work_and_shared_memory_and_hides_the_host_name(self):
         sandbox = load_sandbox()
-        args = sandbox.bwrap_args(work_bytes=1024, env={}, binds=[('/opt/tool', '/opt/tool')], chdir='/', status_fd=9,
-                                  launch=True)
+        args = sandbox.bwrap_args(work_bytes=1024, env={'DUMMY_USER': 'alice'}, binds=[('/opt/tool', '/opt/tool')],
+                                  chdir='/', status_fd=9, etc=[(7, '/etc/ssl/certs')], python='/usr/bin/python3.99')
         tail = args[args.index('--remount-ro'):]
         self.assertEqual(tail[:4], ['--remount-ro', '/dev', '--remount-ro', '/'], 'after every mount')
         self.assertLess(args.index('/opt/tool'), args.index('--remount-ro'))
@@ -289,22 +316,52 @@ class SandboxGuards(unittest.TestCase):
         self.assertIn(['--size', '1024', '--tmpfs', '/work'], [args[n:n + 4] for n in range(len(args))])
         self.assertIn(['--hostname', 'sandbox'], [args[n:n + 2] for n in range(len(args))])
         mounted = [args[n + 1] for n in range(len(args)) if args[n] == '--ro-bind']
-        self.assertFalse({'/etc/ssl', '/etc/pki', '/etc/hosts'} & set(mounted), 'never the whole of ssl or pki')
-        self.assertEqual(args[-4:], ['/bin/sh', '-c', sandbox.LAUNCH_SCRIPT, 'wf-sandbox-launch'])
+        self.assertFalse([path for path in mounted if path.startswith('/etc')],
+                         'an entry of /etc is mounted by the descriptor that was checked, never by its path')
+        self.assertIn(['--ro-bind-fd', '7', '/etc/ssl/certs'], [args[n:n + 3] for n in range(len(args))])
+        self.assertNotIn('--setenv', args, 'the environment acts on the command, not on the step that starts it')
+        self.assertEqual(args[args.index('--') + 1:],
+                         ['/usr/bin/python3.99', '-I', '-S', '-c', sandbox.LAUNCHER, '1', 'DUMMY_USER=alice'])
 
-    def test_an_etc_entry_leading_out_of_etc_and_usr_stays_out(self):
+    def test_an_etc_entry_goes_in_only_inside_etc_and_usr_and_readable_by_every_user(self):
         from unittest import mock
         sandbox = load_sandbox()
-        links = [name for name in ('mtab', 'resolv.conf', 'printcap') if os.path.islink(f'/etc/{name}')
-                 and not str(Path(f'/etc/{name}').resolve()).startswith(('/etc/', '/usr/'))]
-        if not links:
-            self.skipTest('no link of /etc here leads out of /etc and /usr')
-        with mock.patch.object(sandbox, 'ETC_ENTRIES', sandbox.ETC_ENTRIES + tuple(links)):
-            self.assertFalse({f'/etc/{name}' for name in links} & set(sandbox.etc_sources()))
+        etc, outside = public_tmp(), public_tmp()
+        for path in (etc, outside):
+            self.addCleanup(shutil.rmtree, path)
+        (etc / 'fonts').mkdir(mode=0o755)
+        (etc / 'fonts' / 'fonts.conf').write_text('<fontconfig/>\n')
+        os.chmod(etc / 'fonts', 0o755)
+        # A JMX password file of its owner keeps the Java runtime's configuration out.
+        management = etc / 'java-21-openjdk' / 'management'
+        management.mkdir(parents=True)
+        for path in (etc / 'java-21-openjdk', management):
+            os.chmod(path, 0o755)
+        (management / 'jmxremote.password').write_text('monitorRole secret\n')
+        os.chmod(management / 'jmxremote.password', 0o600)
+        # A certificate entry that leads to a directory only some users may enter, elsewhere in /etc.
+        (etc / 'keys').mkdir(mode=0o750)
+        (etc / 'keys' / 'ca.pem').write_text('public\n')
+        os.chmod(etc / 'keys', 0o750)
+        (etc / 'ssl').mkdir()
+        os.chmod(etc / 'ssl', 0o755)
+        (etc / 'ssl' / 'certs').symlink_to('../keys')
+        (etc / 'perl').symlink_to(outside)
+        names = ('fonts', 'perl', 'ssl/certs')
+        with mock.patch.object(sandbox, 'ETC_ENTRIES', names), contextlib.redirect_stderr(io.StringIO()) as notes:
+            mounts = sandbox.etc_mounts(etc, roots=(etc, Path('/usr')))
+        for fd, _ in mounts:
+            os.close(fd)
+        self.assertEqual([target for _, target in mounts], ['/etc/fonts'], notes.getvalue())
+        text = notes.getvalue()
+        self.assertIn('/etc/java-21-openjdk stays out of the sandbox: it holds '
+                      f'{management / "jmxremote.password"}, which not every user may read', text)
+        self.assertIn(f'/etc/ssl/certs stays out of the sandbox: not every user may pass through {etc / "keys"}', text)
+        self.assertIn('/etc/perl stays out of the sandbox: it leads out of', text)
 
     def test_an_etc_entry_must_be_readable_by_every_user_throughout(self):
         sandbox = load_sandbox()
-        tmp = Path(tempfile.mkdtemp()).resolve()
+        tmp = public_tmp()
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / 'certs').mkdir()
         (tmp / 'certs' / 'ca.pem').write_text('public\n')
@@ -326,6 +383,43 @@ class SandboxGuards(unittest.TestCase):
             # What this user may not read shows nothing inside either, as a root-only file of /etc/default.
             os.chmod(tmp / 'private' / 'key.pem', 0o000)
             self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool', public=True))
+        # A file every user may read, behind a directory only some may enter, would leave it in a mount.
+        os.chmod(tmp / 'private' / 'key.pem', 0o644)
+        os.chmod(tmp / 'private', 0o750)
+        with self.assertRaises(sandbox.Refused) as caught:
+            sandbox.public_fd(tmp / 'private' / 'key.pem', '--tool')
+        self.assertIn(f'not every user may pass through {tmp / "private"}', str(caught.exception))
+        os.chmod(tmp / 'private', 0o755)
+        os.chmod(tmp / 'private' / 'key.pem', 0o640)
+        with self.assertRaises(sandbox.Refused) as caught:
+            sandbox.public_fd(tmp / 'private' / 'key.pem', '--tool')
+        self.assertIn('is not a regular file that every user may read', str(caught.exception))
+        os.chmod(tmp / 'private' / 'key.pem', 0o644)
+        os.close(sandbox.public_fd(tmp / 'private' / 'key.pem', '--tool'))
+
+    def test_what_is_asked_for_in_etc_or_leads_there_keeps_the_rules_of_etc(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        nested = next((p for p in ('/etc/ssl/certs', '/etc/fonts/conf.d', '/etc/ld.so.conf.d')
+                       if Path(p).is_dir() and Path(p).parent != Path('/etc')), None)
+        entry = next((p for p in ('/etc/fonts', '/etc/alternatives', '/etc/ld.so.conf.d') if Path(p).is_dir()), None)
+        if not nested or not entry:
+            self.skipTest('no nested directory of /etc here')
+        (tmp / 'alias').symlink_to(entry)
+        with mock.patch.object(sandbox, 'public_fd', side_effect=sandbox.Refused('the rules of /etc')):
+            for path in (nested, str(tmp / 'alias')):
+                with self.subTest(path=path), self.assertRaises(sandbox.Refused) as caught:
+                    sandbox.check_tool(path, tmp / 'repo')
+                self.assertIn('the rules of /etc', str(caught.exception))
+        # The sandbox's own files, and those that name the host, whatever leads there.
+        (tmp / 'users').symlink_to('/etc/passwd')
+        for path in ('/etc/hosts', '/etc/passwd', '/etc/hostname', str(tmp / 'users')):
+            if os.path.exists(path):
+                with self.subTest(path=path), self.assertRaises(sandbox.Refused) as caught:
+                    sandbox.check_tool(path, tmp / 'repo')
+                self.assertIn('the sandbox has its own', str(caught.exception))
 
     def test_no_tool_covers_a_mount_point_of_the_sandbox(self):
         sandbox = load_sandbox()
@@ -471,6 +565,37 @@ while True:
         self.assertIn('is not a directory of the export', err.getvalue())
         self.assertTrue((tmp / 'src' / 'export' / 'deep' / 'keep.txt').exists(), 'the directory moved in stays whole')
 
+    def test_the_export_takes_no_directory_it_did_not_make(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, root)
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        made = {sandbox.identity(os.fstat(fd))}
+        os.close(sandbox.walk(fd, ['pkg', 'mod'], create=True, made=made))
+        os.close(sandbox.walk(fd, ['pkg', 'mod'], create=True, made=made))  # the export's own, for its next file
+        self.assertEqual(made, made_of(root))
+        # Put there by another process while the export was made: the cleanup would empty it later.
+        (root / 'lib').mkdir()
+        (root / 'lib' / 'keep.txt').write_text('not the export\n')
+        with self.assertRaises(sandbox.Rejected) as caught:
+            sandbox.walk(fd, ['lib', 'x'], create=True, made=made)
+        self.assertIn('a directory the export did not make', str(caught.exception))
+        # Moved into the place of a new directory before it was opened.
+        real_mkdir = os.mkdir
+
+        def swapping_mkdir(name, mode=0o777, *, dir_fd=None):
+            real_mkdir(name, mode, dir_fd=dir_fd)
+            if name == 'app':
+                os.rename('app', 'app.new', src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                os.rename('lib', 'app', src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        with mock.patch.object(os, 'mkdir', swapping_mkdir), self.assertRaises(sandbox.Rejected) as caught:
+            sandbox.walk(fd, ['app'], create=True, made=made)
+        self.assertIn('another directory took the place of the new one', str(caught.exception))
+        self.assertEqual(made, made_of(root / 'pkg') | {sandbox.identity(os.fstat(fd))})
+        self.assertTrue((root / 'app' / 'keep.txt').exists())
+
     def test_a_link_above_the_scratch_directory_runs_nothing(self):
         # As for promote: a planted runs/scratch link leads the run nowhere, not to a real directory elsewhere.
         tmp = Path(tempfile.mkdtemp()).resolve()
@@ -614,14 +739,30 @@ class SandboxRun(unittest.TestCase):
                                                           'kept': 100, 'truncated': True})
 
     def test_the_cgroup_limits_processes_and_memory(self):
-        script = 'i=0; while [ $i -lt 30 ]; do sleep 2 & i=$((i+1)); done; wait; echo spawned'
-        r = self.run_check('c16', 'sh', '-c', script, options=('--tasks', '10'))
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn('Cannot fork', r.stderr)
-        self.assertNotIn('spawned', r.stdout)
-        r = self.run_check('c18', 'sh', '-c', script, options=('--tasks', '64'))
+        # Forks counted by the fixture itself: a shell's diagnostic and its retries differ (dash, bash).
+        script = ('import os, time\n'
+                  'for n in range(30):\n'
+                  '    try:\n'
+                  '        if os.fork() == 0:\n'
+                  '            time.sleep(2)\n'
+                  '            os._exit(0)\n'
+                  '    except BlockingIOError:\n'
+                  '        print("refused after", n)\n'
+                  '        break\n'
+                  'else:\n'
+                  '    print("spawned")\n'
+                  'while True:\n'
+                  '    try:\n'
+                  '        os.wait()\n'
+                  '    except ChildProcessError:\n'
+                  '        break\n')
+        r = self.run_check('c16', 'python3', '-c', script, options=('--tasks', '10'))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('spawned', r.stdout)
+        self.assertIn('refused after', r.stdout)
+        self.assertLess(int(r.stdout.split()[-1]), 10, 'the scope counts every task of the sandbox')
+        r = self.run_check('c18', 'python3', '-c', script, options=('--tasks', '64'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, 'spawned\n')
 
     def test_a_check_past_its_memory_limit_is_killed_without_failing_its_scope(self):
         # A scope that fails with 'oom-kill' makes KDE and GNOME report that the system is low on memory.
@@ -719,13 +860,60 @@ class SandboxRun(unittest.TestCase):
         result = sandbox.sandboxed(['sleep', '10'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[],
                                    chdir='/', limits=limits)
         self.assertEqual((result['status'], result['killed']), (124, 'timeout'), 'a command that ran times out')
-        env = {'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}
-        result = sandbox.sandboxed(['env'], env=env, binds=[], chdir='/', limits=limits)
-        self.assertEqual(sorted(line.split('=')[0] for line in result['stdout'].decode().splitlines()), sorted(env),
-                         'the shell of the launch adds no variable')
-        result = sandbox.sandboxed(['ls', '/proc/self/fd'], env=env, binds=[], chdir='/', limits=limits)
+        # The launcher reports the start only once the exec succeeded: one held up before it never ran.
+        held = sandbox.LAUNCHER.replace('\ntry:\n    execute()', '\nimport time\ntime.sleep(10)\ntry:\n    execute()')
+        self.assertNotEqual(held, sandbox.LAUNCHER)
+        with mock.patch.object(sandbox, 'LAUNCHER', held), self.assertRaises(sandbox.Refused) as caught:
+            sandbox.sandboxed(['true'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[], chdir='/',
+                              limits=limits)
+        self.assertIn('ran out before the command started', str(caught.exception))
+        # A "." that comes only after the deadline, as from a watcher that outlived the launcher the kill ended.
+        late = held.replace('report = os.read(done, 512)', 'time.sleep(1.4)\n        report = b""')
+        real_stop = sandbox.stop
+
+        def slow_stop(process, unit):
+            time.sleep(0.8)
+            real_stop(process, unit)
+        with mock.patch.object(sandbox, 'LAUNCHER', late.replace('import errno,', 'import time, errno,')), \
+                mock.patch.object(sandbox, 'stop', slow_stop), self.assertRaises(sandbox.Refused) as caught:
+            sandbox.sandboxed(['true'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[], chdir='/',
+                              limits=limits)
+        self.assertIn('ran out before the command started', str(caught.exception))
+        result = sandbox.sandboxed(['ls', '/proc/self/fd'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV},
+                                   binds=[], chdir='/', limits=limits)
         self.assertEqual(result['stdout'].decode().split(), ['0', '1', '2', '3'],
                          'the command keeps no descriptor of the launch (3 is ls reading the list)')
+
+    def test_the_command_gets_exactly_its_environment_or_does_not_start(self):
+        sandbox = load_sandbox()
+        limits = {name: default for name, (default, _) in sandbox.LIMITS.items()}
+        env = {'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV, 'PWD': '/src', 'SHELLOPTS': 'xtrace'}
+        result = sandbox.sandboxed(['env'], env=env, binds=[], chdir='/', limits=limits)
+        self.assertEqual(result['stdout'].decode(), ''.join(f'{name}={value}\n' for name, value in env.items()),
+                         'nothing is added, removed or changed on the way, whatever /bin/sh is')
+        # The environment acts on the command alone, not on the step that starts it.
+        result = sandbox.sandboxed(['/usr/bin/true'], env={**env, 'LD_TRACE_LOADED_OBJECTS': '1'}, binds=[], chdir='/',
+                                   limits=limits)
+        self.assertEqual(result['status'], 0, result['stderr'])
+        self.assertIn(b'libc.so', result['stdout'])
+        result = sandbox.sandboxed(['grep', '^SigIgn', '/proc/self/status'], env=env, binds=[], chdir='/',
+                                   limits=limits)
+        self.assertEqual(result['stdout'].split(), [b'SigIgn:', b'0' * 16], 'no signal ignored, as for any command')
+        # A command whose exec fails did not run, whatever the reason.
+        tools = public_tmp()
+        self.addCleanup(shutil.rmtree, tools)
+        (tools / 'missing-interpreter').write_text('#!/nonexistent/interpreter\necho ran\n')
+        (tools / 'not-executable').write_text('echo ran\n')
+        (tools / 'no-interpreter-line').write_text('echo ran as a shell script\n')
+        os.chmod(tools / 'missing-interpreter', 0o755)
+        os.chmod(tools / 'no-interpreter-line', 0o755)
+        for command in ('/opt/t/missing-interpreter', '/opt/t/not-executable', 'no-such-command'):
+            with self.subTest(command=command), self.assertRaises(sandbox.Refused) as caught:
+                sandbox.sandboxed([command], env=env, binds=[(str(tools), '/opt/t')], chdir='/', limits=limits)
+            self.assertIn(f'the command did not start: {command}: ', str(caught.exception))
+        result = sandbox.sandboxed(['/opt/t/no-interpreter-line'], env=env, binds=[(str(tools), '/opt/t')], chdir='/',
+                                   limits=limits)
+        self.assertEqual(result['stdout'], b'ran as a shell script\n', 'as execvp runs it')
 
     def test_refused_calls_run_nothing_and_leave_no_evidence(self):
         cases = [
@@ -1594,6 +1782,51 @@ class AuditTool(unittest.TestCase):
                 self.audit('reopen', str(run), '--units', cid, '--reason', 'the human asked for another pass')
         self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
 
+    def test_the_final_clean_critic_follows_an_applied_post_wave_critic(self):
+        run = self.start(profile='standard', budget=40)
+        cid = self.coverage_id(run)
+        clean = {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [], 'stop': True}
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        # Its result may still name gaps: the final-clean pass waits for it, not only for its prompt.
+        r = self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1',
+                       ok=False)
+        self.assertIn('comes before the final-clean critic: apply its result first', r.stderr)
+        self.result(run, 'critic-w1', clean)
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1')
+
+    def test_a_save_that_stopped_halfway_is_finished_before_the_records_are_read(self):
+        from unittest import mock
+        run = self.start()
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        candidate = needs_validation()
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01', candidate=candidate))
+        audit = load_script(AUDIT)
+        real, calls = audit.write_json, []
+
+        def stop_halfway(path, value):
+            calls.append(path.name)
+            if len(calls) == 2:
+                raise KeyboardInterrupt('the parent stopped between two files of one save')
+            real(path, value)
+        with mock.patch.object(audit, 'write_json', stop_halfway), self.assertRaises(KeyboardInterrupt), \
+                contextlib.redirect_stdout(io.StringIO()):
+            audit.main(['apply', str(run), 'hunter', '--agent', 'hunt-w1-01'])
+        # The next command finds the ledger, the state and the metadata of one save, never a mix.
+        status = self.audit('status', str(run)).stdout
+        state = json.loads((run / 'state.json').read_text())
+        self.assertIn(candidate['fingerprint'], state['candidates'], status)
+        self.assertIn('hunt-w1-01', state['applied'])
+        self.assertNotEqual(self.ledger(run)[0]['status'], 'in_progress')
+        self.assertIn(candidate['fingerprint'], self.ledger(run)[0]['result_fingerprints'])
+        self.assertFalse((run / '.save.json').exists())
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01', ok=False)
+        self.assertIn('was applied already', r.stderr)
+
     def test_a_final_clean_pass_whose_proposals_were_all_rejected_is_clean(self):
         run = self.start(profile='standard', budget=40)
         cid = self.coverage_id(run)
@@ -1919,6 +2152,22 @@ class AuditTool(unittest.TestCase):
         r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
         self.assertIn('git status does not check 1 file(s) of the index', r.stderr)
         self.assertIn('vendor/lib.py', r.stderr)
+        # Inactive in the local configuration, it is still checked out for the agents to read.
+        git(self.repo, 'config', 'submodule.vendor.active', 'false')
+        self.assertNotIn('vendor/lib.py', git(self.repo, 'ls-files', '--recurse-submodules'),
+                         'git skips an inactive submodule')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
+        self.assertIn('git status does not check 1 file(s) of the index', r.stderr)
+        self.assertIn('vendor/lib.py', r.stderr)
+        # Files at a submodule path without a repository: git status does not look there at all.
+        git(self.repo / 'vendor', 'update-index', '--no-skip-worktree', 'lib.py')
+        git(self.repo / 'vendor', 'checkout', '-q', '--', 'lib.py')
+        (self.repo / 'vendor' / '.git').rename(self.tmp / 'vendor.git')
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 4\n')
+        self.assertEqual(git(self.repo, 'status', '--porcelain', '--ignore-submodules=none', '--untracked-files=all'),
+                         '')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
+        self.assertIn('the submodule path vendor holds files but no repository', r.stderr)
 
     def test_printed_commands_quote_their_paths(self):
         # A linked worktree keeps its records in the main worktree, whose path here has a space.

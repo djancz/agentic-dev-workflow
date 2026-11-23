@@ -138,7 +138,18 @@ in the rest of it, such as a proxy password, a package index token or a TLS key 
 may read. Its `passwd`, `group` and `hosts` name only the sandbox, as its host name does. When a toolchain
 needs another entry, mount it read-only with `--tool /etc/<name>`, a file or a directory; all of `/etc` is
 refused, and so is an entry with anything in it that you may read but other users may not, such as
-`/etc/ssl/private`.
+`/etc/ssl/private`, or behind a directory that not every user may enter, wherever the `--tool` path leads
+in `/etc`. `passwd`, `group`, `hosts`, `hostname` and `machine-id` cannot be mounted. An entry of the list
+itself that breaks these rules, or leads out of `/etc` and `/usr`, stays out, and `sandbox-run.py` says so
+on stderr: `/etc/java-21-openjdk stays out of the sandbox: it holds …/jmxremote.password, which not every
+user may read`. Make the file readable by every user, or move it, when the toolchain needs that entry.
+
+## A check is refused with "the command did not start"
+
+Its exec failed inside the sandbox: the command is not on its `PATH`, is not executable, or names an
+interpreter in its `#!` line that the sandbox does not have (mount its toolchain with `--tool`). Nothing
+ran, so the check leaves no record. The command is started by the host's Python 3 under `/usr`, inside the
+sandbox; a host without one refuses every check.
 
 ## A check ends with status 137, or the desktop says a wf-sandbox scope was terminated for low memory
 

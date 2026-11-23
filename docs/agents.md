@@ -63,8 +63,8 @@ A weak model shows as discarded results (`audit.py apply` never repairs one), an
 run. The `verify` role, critics and verifiers, is best another model family than `hunt`. You can also run
 the whole audit from an OpenCode session.
 
-Local checks need `/usr/bin/bwrap` (bubblewrap) and `systemd-run --user` with the `cpu`, `memory` and
-`pids` controllers delegated, as on current systemd distributions. `python3 <skill>/scripts/sandbox-run.py
+Local checks need `/usr/bin/bwrap` (bubblewrap), a Python 3 under `/usr` and `systemd-run --user` with
+the `cpu`, `memory` and `pids` controllers delegated, as on current systemd distributions. `python3 <skill>/scripts/sandbox-run.py
 probe` names each missing control. Inside a headless Codex run it cannot start: Codex's sandbox blocks the
 user session bus that `systemd-run` needs. A Codex verifier can then still check the source and the
 hunters' evidence, but not reproduce local results.

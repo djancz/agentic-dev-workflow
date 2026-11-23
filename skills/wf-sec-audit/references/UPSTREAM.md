@@ -42,17 +42,23 @@ Changes to the upstream text and contract:
   points, `--inputs` refuses sockets and FIFOs, and the cgroup v2 limits are read back inside the scope
   before the command starts. The sandbox's `/etc` holds only the entries toolchains read (`ETC_ENTRIES`: of
   `ssl` and `pki` only the certificates and the OpenSSL configuration), where a host may keep user-readable
-  credentials too; another entry is a `--tool /etc/<name>`, a file or a directory, in which nothing that this
-  user may read is closed to other users. Its `passwd`, `group` and `hosts` name only the sandbox, as its host
-  name does, and its root and `/dev` are read-only: only `/work` and `/dev/shm` take writes, each with its
-  size. A check whose command never started within its time limit leaves no record: a trusted step inside
-  the finished sandbox reports the start. No `--tool` may cover a credential store of the home directory, or the
-  destination of one that is a link. The export is removed through its own descriptor and only in the
-  directories it made; by name only an empty directory goes, so a directory moved into its place stays.
+  credentials too, and of those only the ones that lead to `/etc` or `/usr` and that every user may read
+  throughout, each mounted by the descriptor that was checked: one with a file only some users may read,
+  such as a JMX password file, stays out with a note. Another entry is a `--tool /etc/<name>`, a file or a
+  directory, under the same rules wherever it is asked for or leads in `/etc`; `passwd`, `group`, `hosts`,
+  `hostname` and `machine-id` cannot be mounted. Its `passwd`, `group` and `hosts` name only the sandbox,
+  as its host name does, and its root and `/dev` are read-only: only `/work` and `/dev/shm` take writes, each
+  with its size. A Python launcher inside the finished sandbox starts the command with exactly its
+  environment, which acts on nothing before, and reports the start only once the exec succeeded: a check
+  whose command never started within its time limit, or whose exec failed (a missing interpreter, for
+  example), leaves no record. No `--tool` may cover a credential store of the home directory, or the
+  destination of one that is a link. The export is made only of directories it created and removed through
+  its own descriptor and only in those; by name only an empty directory goes, so a directory moved into its
+  place stays.
 - A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`
   refuses `complete` while a cap or the budget deferred units, while a proposed unit is neither seeded
   nor dismissed with a reason, or when no clean final-clean critic pass followed the latest hunted wave,
-  archived attempts included. A pass whose only work was proposals the parent rejected (out of scope, not
+  archived attempts included; the final-clean critic of a wave follows its applied post-wave critic. A pass whose only work was proposals the parent rejected (out of scope, not
   applicable, a unit already there, or dismissed) counts as clean, as upstream's parent rejects them. `seed` resolves a proposal only with a unit of its file that has the
   proposal's labels and covers its starting paths. `audit.py done` ends a run once the Phase 6 reports
   exist; until then it stays `in_progress`, and a new `final` needs the reports of the last one removed.
@@ -64,9 +70,11 @@ Changes to the upstream text and contract:
   opens its scratch directory the same way. The artifacts directories are hashed by
   `run-agent.sh`, so a run that touched one fails before anything is promoted. A destination that holds the
   same bytes already, from an apply that stopped after its promotion, counts as promoted; one with other
-  bytes is never overwritten. The audit and every pinned run count a change inside a submodule, whatever
-  its `ignore` setting, and refuse files the index hides from git status (assume-unchanged, skip-worktree),
-  in initialized submodules too.
+  bytes is never overwritten. The ledger, the state and the metadata of one save are written together
+  through a journal, which the next command finishes when a save stopped halfway. The audit and every
+  pinned run count a change inside a submodule, whatever its `ignore` setting, and refuse files the index
+  hides from git status (assume-unchanged, skip-worktree), in every submodule checked out, active or not,
+  and a submodule path that holds files but no repository.
 - Reconnaissance agent 1d does not probe the host for the sandbox and promotion controls (its items 6 and
   7): `sandbox-run.py probe` answers them, and the agent names the toolchains a local check needs.
 - The hunter result has one more field, `sandbox_probe`, and the candidate and `--reverify` verifier
