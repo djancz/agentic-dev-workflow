@@ -873,7 +873,9 @@ if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress
 elif [ "$name" = opencode ]; then
   # OpenCode's JSON events: text before a tool call is a step of its own, the final message the last one.
   FAKE_BODY=$body python3 -c 'import json, os, sys
-steps = [("m1", "I will look at the files first."), ("m2", None if sys.argv[1] == "no-final" else os.environ["FAKE_BODY"])]
+# A retry within one assistant message repeats its messageID in the next step.
+last = "m1" if sys.argv[1] == "same-id" else "m2"
+steps = [("m1", "I will look at the files first."), (last, None if sys.argv[1] == "no-final" else os.environ["FAKE_BODY"])]
 for mid, text in steps:
     print(json.dumps({"type": "step_start", "part": {"messageID": mid, "type": "step-start"}}))
     if text is not None:
@@ -1018,6 +1020,10 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n')
         self.assertIn('"step_start"', Path(f'{self.out}.log').read_text(), 'the events stay in the log')
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out), mode='same-id')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n',
+                         'a step is a step also when it repeats the messageID of the one before')
         r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out), mode='no-final')
         self.assertEqual(r.returncode, 5, 'a last step without text is no result')
         self.assertIn('produced no output', r.stderr)
@@ -1250,6 +1256,25 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
         self.assertEqual(r.returncode, 3)
         self.assertIn('the working tree has changes', r.stderr)
+
+    def test_a_pinned_run_counts_a_change_the_index_hides_from_git_status(self):
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.repo, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        for flag in ('--assume-unchanged', '--skip-worktree'):
+            with self.subTest(flag=flag):
+                subprocess.run(['git', 'update-index', flag, 'tracked.txt'], cwd=self.repo, check=True)
+                (self.repo / 'tracked.txt').write_text('changed where git status does not look\n')
+                status = subprocess.run(['git', 'status', '--porcelain'], cwd=self.repo, capture_output=True,
+                                        text=True, check=True).stdout
+                self.assertEqual(status, '', 'git status alone misses the change')
+                r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+                self.assertEqual(r.returncode, 3)
+                self.assertIn('the index hides files from git status', r.stderr)
+                subprocess.run(['git', 'update-index', flag.replace('--', '--no-'), 'tracked.txt'], cwd=self.repo,
+                               check=True)
+                subprocess.run(['git', 'checkout', '-q', '--', 'tracked.txt'], cwd=self.repo, check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_a_pinned_run_counts_a_change_inside_a_submodule(self):
         sub = self.tmp / 'sub'

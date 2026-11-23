@@ -70,7 +70,7 @@ class Promote(unittest.TestCase):
     """The parent's copy of evidence into the artifacts directory; it needs no sandbox."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.scratch = self.tmp / 'runs' / 'scratch' / 'hunt-1'
         self.artifacts = self.tmp / 'agents' / 'hunt-1' / 'artifacts'
@@ -204,7 +204,7 @@ class SandboxGuards(unittest.TestCase):
     def test_a_tool_tree_with_a_socket_or_fifo_is_refused(self):
         import socket
         sandbox = load_sandbox()
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / 'bin').mkdir()
         (tmp / 'bin' / 'tool').write_text('#!/bin/sh\n')
@@ -231,7 +231,7 @@ class SandboxGuards(unittest.TestCase):
 
     def test_no_tool_covers_a_mount_point_of_the_sandbox(self):
         sandbox = load_sandbox()
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
         sandbox.RESERVED_MOUNTS = (str(tmp / 'src'),)  # stands in for /src, which this host may not have
         (tmp / 'src' / 'lib').mkdir(parents=True)
@@ -244,7 +244,7 @@ class SandboxGuards(unittest.TestCase):
         # git cat-file stands in for a child that keeps writing and survives a closed pipe and SIGTERM, so
         # that only a kill ends it: a run that merely closed the pipes would wait for it forever.
         sandbox = load_sandbox()
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
         repo, ref = make_repo(tmp)
         pidfile = tmp / 'cat-file.pid'
@@ -287,7 +287,7 @@ while True:
     def test_cleanup_never_removes_a_directory_moved_into_the_exports_place(self):
         from unittest import mock
         sandbox = load_sandbox()
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
 
         def export() -> tuple[int, int]:
@@ -332,6 +332,32 @@ while True:
         sandbox.remove_export(src_fd, 'export', root_fd)
         self.assertEqual(list((tmp / 'src').iterdir()), [])
 
+    def test_cleanup_never_descends_into_a_directory_moved_over_one_of_the_exports(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'src' / 'export' / 'deep').mkdir(parents=True)
+        (tmp / 'src' / 'export' / 'deep' / 'app.py').write_text('print(1)\n')
+        (tmp / 'victim').mkdir()
+        (tmp / 'victim' / 'keep.txt').write_text('not the export\n')
+        src_fd = os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY)
+        root_fd = os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY)
+        real_stat, raced = os.stat, []
+
+        def racing_stat(path, *args, dir_fd=None, **kwargs):
+            result = real_stat(path, *args, dir_fd=dir_fd, **kwargs)
+            if path == 'deep' and dir_fd is not None and not raced:
+                raced.append(path)
+                (tmp / 'src' / 'export' / 'deep').rename(tmp / 'moved')
+                (tmp / 'victim').rename(tmp / 'src' / 'export' / 'deep')
+            return result
+        with mock.patch.object(os, 'stat', racing_stat), contextlib.redirect_stderr(io.StringIO()) as err:
+            sandbox.remove_export(src_fd, 'export', root_fd)
+        self.assertEqual(raced, ['deep'])
+        self.assertIn('was replaced during the cleanup', err.getvalue())
+        self.assertTrue((tmp / 'src' / 'export' / 'deep' / 'keep.txt').exists(), 'the directory moved in stays whole')
+
     def test_a_link_above_the_scratch_directory_runs_nothing(self):
         # As for promote: a planted runs/scratch link leads the run nowhere, not to a real directory elsewhere.
         tmp = Path(tempfile.mkdtemp()).resolve()
@@ -369,13 +395,15 @@ while True:
         tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / 'a' / 'b').mkdir(parents=True)
-        saved = os.O_PATH
-        del os.O_PATH
+        saved = getattr(os, 'O_PATH', None)
+        if saved is not None:
+            del os.O_PATH
         try:
             sandbox = load_sandbox()
             os.close(sandbox.open_real(tmp / 'a' / 'b', '--scratch'))
         finally:
-            os.O_PATH = saved
+            if saved is not None:
+                os.O_PATH = saved
         self.assertEqual(sandbox.SEARCH_ONLY, os.O_RDONLY)
 
     def test_the_scope_check_reads_each_controller_on_its_own(self):
@@ -387,13 +415,16 @@ while True:
     def test_a_scope_continues_after_an_oom_kill_where_systemd_allows_it(self):
         from unittest import mock
         sandbox = load_sandbox()
-        cases = (('systemd 252 (252.39-1~deb12u1)\n', ()), ('systemd 253 (253.5-1)\n', ('-p', 'OOMPolicy=continue')),
-                 ('systemd 259 (259.9-0ubuntu0.1)\n+PAM +AUDIT\n', ('-p', 'OOMPolicy=continue')), ('', ()))
+        # The running user manager's version, which an upgrade can leave older than systemd-run's.
+        cases = (('252.39-1~deb12u1\n', ()), ('253.5-1\n', ('-p', 'OOMPolicy=continue')),
+                 ('259.9-0ubuntu0.1\n', ('-p', 'OOMPolicy=continue')), ('v254\n', ('-p', 'OOMPolicy=continue')),
+                 ('', ()))
         for version, expected in cases:
             with self.subTest(version=version), mock.patch.object(
-                    sandbox.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, version, '')):
+                    sandbox.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, version, '')) as run:
                 sandbox.oom_policy.cache_clear()
                 self.assertEqual(sandbox.oom_policy(), expected)
+                self.assertEqual(run.call_args.args[0][:3], [sandbox.SYSTEMCTL, '--user', 'show'])
                 scope, _ = sandbox.scope_args(tasks=1, memory_mb=1, cpu_percent=1)
                 self.assertEqual('OOMPolicy=continue' in scope, bool(expected))
         sandbox.oom_policy.cache_clear()
@@ -413,7 +444,7 @@ class SandboxRun(unittest.TestCase):
     def setUp(self):
         if PROBE_FAILURE:
             self.skipTest(f'sandbox-run probe: {PROBE_FAILURE}')
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.repo, self.ref = make_repo(self.tmp)
         self.scratch = self.repo / 'development' / 'audits' / 'a' / 'runs' / 'scratch' / 'hunt-1'
@@ -498,6 +529,39 @@ class SandboxRun(unittest.TestCase):
         log = subprocess.run(['journalctl', '--user', '-u', scope, '-o', 'cat', '--no-pager'],
                              capture_output=True, text=True).stdout
         self.assertNotIn("Failed with result 'oom-kill'", log)
+
+    def test_the_target_sees_only_the_etc_entries_toolchains_read(self):
+        script = ('ls -A /etc; (: > /x) 2>/dev/null && echo root-writable; (: > /etc/x) 2>/dev/null && echo '
+                  'etc-writable; python3 -c "import getpass, pwd; print(\'user=\' + getpass.getuser(), len(pwd.getpwall()))"')
+        r = self.run_check('c21', 'sh', '-c', script)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = set(r.stdout.splitlines()[:-1])
+        self.assertNotIn('environment', seen, 'host files of /etc beyond the toolchains\' stay out')
+        self.assertNotIn('writable', r.stdout, 'bwrap\'s root is read-only: only /work takes writes')
+        self.assertEqual(r.stdout.splitlines()[-1], 'user=sandbox 1', 'passwd names only the sandbox\'s user')
+        sandbox = load_sandbox()
+        self.assertLessEqual({n for n in seen if not n.startswith(sandbox.ETC_PREFIXES)},
+                             {*sandbox.ETC_ENTRIES, 'passwd', 'group'})
+        extra = next((p for p in ('/etc/default', '/etc/apt', '/etc/skel') if Path(p).is_dir()), None)
+        if extra:
+            r = self.run_check('c22', 'sh', '-c', f'[ -d {extra} ] && echo mounted', options=('--tool', extra))
+            self.assertEqual(r.stdout.strip(), 'mounted', r.stderr)
+        r = self.run_check('c23', 'true', options=('--tool', '/etc'))
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('must not mount all of /etc', r.stderr)
+
+    def test_a_check_whose_sandbox_never_started_in_time_leaves_no_record(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        limits = {name: default for name, (default, _) in sandbox.LIMITS.items()} | {'timeout': 1}
+        slow = (['/bin/sh', '-c', 'sleep 10; exec "$@"', 'slow-scope'], 'wf-sandbox-slow')
+        with mock.patch.object(sandbox, 'scope_args', return_value=slow), self.assertRaises(sandbox.Refused) as caught:
+            sandbox.sandboxed(['true'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[], chdir='/',
+                              limits=limits, guard=False)
+        self.assertIn('ran out before the command started', str(caught.exception))
+        result = sandbox.sandboxed(['sleep', '10'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[],
+                                   chdir='/', limits=limits)
+        self.assertEqual((result['status'], result['killed']), (124, 'timeout'), 'a command that ran times out')
 
     def test_refused_calls_run_nothing_and_leave_no_evidence(self):
         cases = [
@@ -648,7 +712,7 @@ class AuditTool(unittest.TestCase):
     """The parent's tool: records, budget, prompts and the validation of agent results (no agent runs)."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.repo, self.ref = make_repo(self.tmp)
 
@@ -1201,15 +1265,35 @@ class AuditTool(unittest.TestCase):
                                         'checks': [source_check('record-003')]})
         r = self.audit('apply', str(run), 'record', '--agent', 'record-003', ok=False)
         self.assertIn('needs a local check of your own', r.stdout, 'nobody reproduced the stronger verdict')
+        # Another root cause: what found it goes with it, not with the fingerprint it was given to check.
+        self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-005')
+        found = self.local_check(run, 'record-005')
+        self.result(run, 'record-005', {'decision': 'replace', 'reason': 'Another cause.', 'sandbox_probe': 'pass',
+                                        'record': needs_validation('app-other-root-cause'), 'checks': [found]})
+        self.audit('apply', str(run), 'record', '--agent', 'record-005')
+        state = json.loads((run / 'state.json').read_text())
+        self.assertNotIn('record-005', json.dumps(state['candidates'][fp].get('reverify_checks', [])))
+        self.assertEqual(state['candidates'][fp]['state'], 'needs_reverification')
+        other = state['candidates']['app-other-root-cause']
+        self.assertEqual((other['state'], other['origins'], other['discovery_checks']), ('pending', [fp], [found]))
         self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-004')
         self.result(run, 'record-004', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass',
                                         'checks': [source_check('record-004'), self.local_check(run, 'record-004')]})
         self.audit('apply', str(run), 'record', '--agent', 'record-004')
         self.assertIn('agents/record-004/artifacts/evidence/c01.json',
                       json.dumps(self.ledger(run)[0]['local_checks']), 'its reproduction is in the ledger')
+        other = 'app-other-root-cause'
+        self.audit('prompt', str(run), 'candidate', '--fingerprint', other, '--agent', 'verify-006')
+        self.result(run, 'verify-006', {'decision': 'needs_validation', 'record': needs_validation(other),
+                                        'checks': [source_check('verify-006')], 'sandbox_probe': 'pass'})
+        self.audit('apply', str(run), 'candidate', '--agent', 'verify-006')
+        self.audit('prompt', str(run), 'record', '--fingerprint', other, '--agent', 'record-006')
+        self.result(run, 'record-006', {'decision': 'verified', 'fingerprint': other})
+        self.audit('apply', str(run), 'record', '--agent', 'record-006')
         out = self.audit('final', str(run)).stdout
         self.assertIn('complete: confirmed 1', out)
-        self.assertEqual(self.ledger(run)[0]['decisions'], {fp: 'confirmed'}, 'the ledger follows the final verdict')
+        self.assertEqual(self.ledger(run)[0]['decisions'], {fp: 'confirmed', other: 'needs_validation'},
+                         'the ledger follows the final verdict')
         prompt = (run / 'runs' / 'record-001.prompt.md').read_text()
         self.assertIn('The checks behind it', prompt)
         self.assertIn('"agent_id": "verify-001"', prompt, 'the record verifier sees the evidence it checks')
@@ -1249,6 +1333,9 @@ class AuditTool(unittest.TestCase):
         (self.repo / '.codex' / 'a\tb.toml').write_text('# a name git quotes\n')
         (self.repo / '.claude' / 'skills' / 'two\nlines').mkdir(parents=True)
         (self.repo / '.claude' / 'skills' / 'two\nlines' / 'SKILL.md').write_text('---\nname: x\n---\n')
+        # A backslash and an n is another name than a newline, and must look so.
+        (self.repo / '.claude' / 'skills' / 'two\\nlines').mkdir()
+        (self.repo / '.claude' / 'skills' / 'two\\nlines' / 'SKILL.md').write_text('---\nname: y\n---\n')
         # A name that is not UTF-8, in the configuration and elsewhere: nothing stops the gate or hides it.
         for name in (b'.codex/\xff.toml', b'latin-\xe9.txt'):
             with open(os.path.join(os.fsencode(self.repo), name), 'w') as handle:
@@ -1257,7 +1344,8 @@ class AuditTool(unittest.TestCase):
         run = Path(self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['agent_config'],
                          ['.agents/skills/helper/SKILL.md', '.claude/skills/two\\nlines/SKILL.md',
-                          '.codex/a\\tb.toml', '.codex/\\xff.toml', '.gemini'])
+                          '.claude/skills/two\\\\nlines/SKILL.md', '.codex/a\\tb.toml', '.codex/\\xff.toml',
+                          '.gemini'])
 
     def test_the_records_are_where_the_installer_keeps_them_also_with_a_separate_git_dir(self):
         main = self.tmp / 'main'
@@ -1325,6 +1413,48 @@ class AuditTool(unittest.TestCase):
                 self.audit('reopen', str(run), '--units', cid, '--reason', 'the human asked for another pass')
         self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
 
+    def test_a_final_clean_pass_whose_proposals_were_all_rejected_is_clean(self):
+        run = self.start(profile='standard', budget=40)
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        clean = {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [], 'stop': True}
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', clean)
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        gaps = [unit_spec('vendor/x.py#y') | {'starting_paths': ['vendor/x.py'], 'reason': 'Outside the scope.'},
+                unit_spec('b.py#x') | {'starting_paths': ['b.py'], 'reason': 'A duplicate.'}]
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1')
+        self.result(run, 'critic-final-w1', clean | {'missing_units': gaps})
+        self.assertIn('work remains', self.audit('apply', str(run), 'critic', '--agent', 'critic-final-w1').stdout)
+        units = self.tmp / 'out-of-scope.json'
+        units.write_text(json.dumps([unit_spec('vendor/x.py#y') | {'starting_paths': ['vendor/x.py']}]))
+        self.audit('seed', str(run), str(units), '--status', 'out_of_scope', '--reason', 'vendored code')
+        self.assertIn('not seeded yet', self.audit('final', str(run), ok=False).stderr)
+        self.audit('dismiss', str(run), '1', '--reason', 'the same entry as app.py#main')
+        # Upstream's parent rejects both: the pass asked for no accepted work, and coverage is complete.
+        self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
+
+    def test_a_proposal_the_parent_accepted_keeps_the_final_clean_pass_unclean(self):
+        audit = load_script(AUDIT)
+        critic = {'agent': 'critic-final-w1', 'kind': 'final-clean', 'wave': 1, 'clean': False, 'applied': 'x',
+                  'capped': [], 'reopened': []}
+
+        class FakeRun:
+            meta = {'profile': 'standard'}
+            ledger = [{'status': 'covered', 'wave': 1, 'attempts': []}]
+            state = {'critics': [critic], 'missing_units': [], 'candidates': {},
+                     'resolved_proposals': [{'from': 'critic-final-w1', 'accepted': True}]}
+        self.assertFalse(audit.clean_final_pass(FakeRun()), 'a unit seeded to hunt is work it found')
+        FakeRun.state['resolved_proposals'][0]['accepted'] = False
+        self.assertTrue(audit.clean_final_pass(FakeRun()))
+        FakeRun.state['missing_units'] = [{'from': 'critic-final-w1'}]
+        self.assertFalse(audit.clean_final_pass(FakeRun()), 'a proposal not triaged yet')
+        FakeRun.state['missing_units'] = []
+        critic['reopened'] = ['u1']
+        self.assertFalse(audit.clean_final_pass(FakeRun()), 'a reopened unit is work')
+
     def test_archived_attempts_and_the_next_wave_need_their_own_final_clean_pass(self):
         audit = load_script(AUDIT)
 
@@ -1368,7 +1498,7 @@ class AuditTool(unittest.TestCase):
 
     def test_only_the_runners_record_of_the_audited_commit_backs_a_confirmation(self):
         audit = load_script(AUDIT)
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
         evidence = tmp / 'agents' / 'verify-1' / 'artifacts' / 'evidence'
         evidence.mkdir(parents=True)
@@ -1504,7 +1634,15 @@ class AuditTool(unittest.TestCase):
         self.result(run, 'hunt-w1-02', self.hunter_result(run, 'hunt-w1-02') | {
             'uncovered': [proposal | {'surface': 'entry b.py#x', 'starting_paths': ['/etc/passwd']}]})
         r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02', ok=False)
-        self.assertIn('uncovered[0].starting_paths: expected repository-relative paths', r.stdout)
+        self.assertIn('uncovered[0].starting_paths: expected one or more distinct repository-relative paths', r.stdout)
+        # Without a path, any unit of the same labels would seem to cover it and resolve it unseen.
+        audit, labels = load_script(AUDIT), proposal | {'surface': 'entry b.py#x'}
+        self.assertEqual(audit.proposal_errors([labels], 'missing_units'), [])
+        for paths in ([], ['b.py', 'b.py']):
+            with self.subTest(paths=paths):
+                self.assertEqual(audit.proposal_errors([labels | {'starting_paths': paths}], 'missing_units'),
+                                 ['missing_units[0].starting_paths: expected one or more distinct '
+                                  'repository-relative paths'])
 
     def test_a_promotion_that_did_not_happen_is_no_empty_result(self):
         from unittest import mock
@@ -1513,14 +1651,37 @@ class AuditTool(unittest.TestCase):
         class FakeRun:
             state = {'allowlists': {'hunt-1': ['evidence/c01.out:10', 'evidence/c01.json:10']}}
             runs, dir = Path('/nonexistent/runs'), Path('/nonexistent')
-        promoted = json.dumps({'path': 'evidence/c01.out', 'status': 'promoted'})
-        for code, stdout in ((1, ''), (1, f'{promoted}\n{promoted}\n'), (0, 'Traceback\n'), (2, '')):
+        promoted = json.dumps({'path': 'evidence/c01.out', 'status': 'promoted', 'bytes': 3, 'sha256': 'ab'})
+        bare = json.dumps({'path': 'evidence/c01.json', 'status': 'promoted'})
+        record = json.dumps({'path': 'evidence/c01.json', 'status': 'promoted', 'bytes': 3, 'sha256': 'cd'})
+        # The outcome of each allowlisted file, in its order, with the fields of its status.
+        with mock.patch.object(audit.subprocess, 'run',
+                               return_value=subprocess.CompletedProcess([], 0, f'{promoted}\n{record}\n', '')):
+            self.assertEqual(len(audit.promote(FakeRun(), 'hunt-1')), 2)
+        FakeRun.state['allowlists']['hunt-1'] = ['evidence/c01.out:10', 'evidence/c01.json:10']
+        for code, stdout in ((1, ''), (1, f'{promoted}\n{promoted}\n'), (0, f'{promoted}\n{promoted}\n'),
+                             (0, f'{record}\n{promoted}\n'), (0, f'{promoted}\n{bare}\n'), (0, 'Traceback\n'),
+                             (2, '')):
             with self.subTest(code=code, stdout=stdout), self.assertRaises(audit.Refused) as caught, \
                     mock.patch.object(audit.subprocess, 'run',
                                       return_value=subprocess.CompletedProcess([], code, stdout, 'AttributeError')):
                 audit.promote(FakeRun(), 'hunt-1')
             self.assertIn('promotion failed', str(caught.exception))
         self.assertIn('hunt-1', FakeRun.state['allowlists'], 'the allowlist stays for another apply')
+
+    def test_a_change_the_index_hides_from_git_status_counts(self):
+        git(self.repo, 'update-index', '--skip-worktree', 'app.py')
+        (self.repo / 'app.py').write_text('print("what the agents would read")\n')
+        self.assertEqual(git(self.repo, 'status', '--porcelain'), '', 'git status alone misses the change')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
+        self.assertIn('git status does not check 1 file(s) of the index', r.stderr)
+        git(self.repo, 'update-index', '--no-skip-worktree', 'app.py')
+        git(self.repo, 'checkout', '-q', '--', 'app.py')
+        run = Path(self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
+        self.audit('approve', str(run), '--words', 'start')
+        git(self.repo, 'update-index', '--assume-unchanged', 'app.py')
+        r = self.audit('prompt', str(run), 'recon', '--recon', '1a', '--agent', 'recon-1a', ok=False)
+        self.assertIn('git status does not check', r.stderr, 'nor before an agent starts')
 
     def test_a_change_inside_a_submodule_counts_whatever_its_ignore_setting(self):
         sub = self.tmp / 'sub'

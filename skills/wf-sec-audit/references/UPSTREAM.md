@@ -40,13 +40,17 @@ Changes to the upstream text and contract:
   every `--tool` directory are mounted by descriptor, so what was checked is what the command sees. A
   `--tool` mount refuses sockets, FIFOs, runtime directories such as `/run` and the sandbox's own mount
   points, `--inputs` refuses sockets and FIFOs, and the cgroup v2 limits are read back inside the scope
-  before the command starts. No `--tool` may cover a credential store of the home directory, or the
+  before the command starts. The sandbox's `/etc` holds only the entries toolchains read (`ETC_ENTRIES`;
+  another is a `--tool /etc/<name>`), where a host may keep user-readable credentials too, its `passwd` and
+  `group` name only the sandbox's user, and its root is read-only. A check whose sandbox never started
+  within its time limit leaves no record. No `--tool` may cover a credential store of the home directory, or the
   destination of one that is a link. The export is removed through its own descriptor; by name only an
   empty directory goes, so a directory moved into its place stays.
 - A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`
   refuses `complete` while a cap or the budget deferred units, while a proposed unit is neither seeded
   nor dismissed with a reason, or when no clean final-clean critic pass followed the latest hunted wave,
-  archived attempts included. `seed` resolves a proposal only with a unit of its file that has the
+  archived attempts included. A pass whose only work was proposals the parent rejected (out of scope, not
+  applicable, a unit already there, or dismissed) counts as clean, as upstream's parent rejects them. `seed` resolves a proposal only with a unit of its file that has the
   proposal's labels and covers its starting paths. `audit.py done` ends a run once the Phase 6 reports
   exist; until then it stays `in_progress`, and a new `final` needs the reports of the last one removed.
 - The validators take Unicode properties from the running Python's `unicodedata`, as upstream's take them
@@ -56,7 +60,8 @@ Changes to the upstream text and contract:
   the way, instead of before the agent run: `audit.py` is a separate process. `sandbox-run.py run`
   opens its scratch directory the same way. The artifacts directories are hashed by
   `run-agent.sh`, so a run that touched one fails before anything is promoted. The audit and every
-  pinned run count a change inside a submodule, whatever its `ignore` setting.
+  pinned run count a change inside a submodule, whatever its `ignore` setting, and refuse files the index
+  hides from git status (assume-unchanged, skip-worktree).
 - Reconnaissance agent 1d does not probe the host for the sandbox and promotion controls (its items 6 and
   7): `sandbox-run.py probe` answers them, and the agent names the toolchains a local check needs.
 - The hunter result has one more field, `sandbox_probe`, and the candidate and `--reverify` verifier

@@ -10,8 +10,9 @@ probe   reports each control the audit requires as `enforced` or `missing` and e
         exist. Run it where the checks will run: inside a delegated agent run, not only on the host.
 
 run     (hunters and candidate verifiers) runs <command> with no external network (only loopback), an empty
-        environment plus --env NAME=VALUE, read-only /usr, /etc, toolchains (--tool) and target source, and
-        writes only to a size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to /work to build).
+        environment plus --env NAME=VALUE, read-only /usr, toolchains (--tool) and target source, an /etc of
+        the entries toolchains read (ETC_ENTRIES; passwd and group name only the sandbox's user), and writes
+        only to a size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to /work to build).
         The source is a fresh export of the committed bytes of <commit> for this run (no .gitattributes of
         the target applies), written by this script into a new <scratch>/src/<random>/, mounted read-only
         at /src and removed afterwards; submodules are not exported. --inputs <dir under scratch> is mounted
@@ -98,6 +99,15 @@ RUNTIME_ROOTS = ('/run', '/var/run', '/tmp', '/var/tmp', '/dev', '/proc', '/sys'
 # The sandbox's own mount points, which a --tool (mounted at its host path) must not cover.
 RESERVED_MOUNTS = ('/src', '/work', '/input')
 TOOL_SCAN_LIMIT = 500000
+# The entries of the host /etc that toolchains read: the loader, alternatives, time and name service files,
+# certificates and the configuration of common runtimes. The rest of /etc stays out: a host keeps
+# user-readable credentials there too (a proxy password, a package index token). passwd and group are the
+# sandbox's own; a toolchain that needs another entry gets it with --tool /etc/<name>.
+ETC_ENTRIES = ('alternatives', 'ca-certificates', 'crypto-policies', 'debian_version', 'fonts', 'gai.conf',
+               'host.conf', 'hosts', 'ld.so.cache', 'ld.so.conf', 'ld.so.conf.d', 'locale.alias', 'locale.conf',
+               'localtime', 'lsb-release', 'magic', 'mime.types', 'nsswitch.conf', 'os-release', 'perl', 'pki',
+               'protocols', 'services', 'ssl', 'timezone')
+ETC_PREFIXES = ('java-', 'python3')
 
 
 class Refused(Exception):
@@ -124,21 +134,47 @@ def host_root_links() -> list[str]:
     return args
 
 
+def etc_args(identity: list[tuple[int, str]]) -> list[str]:
+    """The sandbox's /etc: the host entries of ETC_ENTRIES that exist, and passwd and group from the
+    descriptors in identity."""
+    args = ['--dir', '/etc']
+    for name in sorted(os.listdir('/etc')):
+        if (name in ETC_ENTRIES or name.startswith(ETC_PREFIXES)) and os.path.exists(f'/etc/{name}'):
+            args += ['--ro-bind', f'/etc/{name}', f'/etc/{name}']
+    for fd, target in identity:
+        args += ['--ro-bind-data', str(fd), target]
+    return args
+
+
+def identity_fds() -> list[tuple[int, str]]:
+    """Descriptors that hold the sandbox's passwd and group: one user, its group, home /work/home."""
+    uid, gid = os.getuid(), os.getgid()
+    fds = []
+    for target, line in (('/etc/passwd', f'sandbox:x:{uid}:{gid}::/work/home:/bin/sh\n'),
+                         ('/etc/group', f'sandbox:x:{gid}:\n')):
+        read, write = os.pipe()
+        os.write(write, line.encode())
+        os.close(write)
+        fds.append((read, target))
+    return fds
+
+
 def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str | int, str]], chdir: str,
-               status_fd: int) -> list[str]:
+               status_fd: int, identity: list[tuple[int, str]] = ()) -> list[str]:
     """A bind's source is a path, or an open directory descriptor that keeps its identity until bwrap mounts it."""
     # The status descriptor gets an "exit-code" line only when the command itself ran and ended.
     args = [BWRAP, '--json-status-fd', str(status_fd), '--unshare-all', '--unshare-user', '--disable-userns',
             '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv']
     for name, value in env.items():
         args += ['--setenv', name, value]
-    args += ['--ro-bind', '/usr', '/usr', *host_root_links(), '--ro-bind', '/etc', '/etc',
+    args += ['--ro-bind', '/usr', '/usr', *host_root_links(), *etc_args(list(identity)),
              '--proc', '/proc', '--dev', '/dev',
              '--size', str(work_bytes), '--tmpfs', '/work', '--dir', '/work/home', '--dir', '/work/tmp',
              '--symlink', '/work/tmp', '/tmp']
     for source, target in binds:
         args += ['--ro-bind-fd', str(source), target] if isinstance(source, int) else ['--ro-bind', source, target]
-    return args + ['--chdir', chdir, '--']
+    # bwrap leaves its root writable: only /work, which has a size, may take writes.
+    return args + ['--remount-ro', '/', '--chdir', chdir, '--']
 
 
 @functools.lru_cache(maxsize=1)
@@ -156,12 +192,14 @@ def oom_policy() -> tuple[str, ...]:
     """OOMPolicy=continue, which scopes take from systemd 253. A check past its memory limit loses the process
     the kernel killed either way; under the default, stop, the scope also fails with 'oom-kill', which KDE and
     GNOME report as the system running low on memory. What is left of the scope ends with its command, or the
-    wall-clock limit stops it."""
+    wall-clock limit stops it. The running user manager decides what a scope takes: after an upgrade it can be
+    older than systemd-run."""
     try:
-        text = subprocess.run([SYSTEMD_RUN, '--version'], capture_output=True, text=True, timeout=10).stdout
+        text = subprocess.run([SYSTEMCTL, '--user', 'show', '--property=Version', '--value'], capture_output=True,
+                              text=True, env=scope_env(), timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return ()
-    match = re.match(r'systemd (\d+)', text)
+    match = re.match(r'v?(\d+)', text.strip())
     return ('-p', 'OOMPolicy=continue') if match and int(match.group(1)) >= 253 else ()
 
 
@@ -232,9 +270,11 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
     cgroup = {'tasks': limits['tasks'], 'memory_mb': limits['memory_mb'], 'cpu_percent': limits['cpu_percent']}
     scope, unit = scope_args(**cgroup)
     status_read, status_write = os.pipe()
+    identity = identity_fds()
     argv = scope + (guard_args(**cgroup) if guard else []) + bwrap_args(
-        work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds, chdir=chdir, status_fd=status_write) + command
-    bind_fds = tuple(source for source, _ in binds if isinstance(source, int))
+        work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds, chdir=chdir, status_fd=status_write,
+        identity=identity) + command
+    bind_fds = tuple(source for source, _ in binds if isinstance(source, int)) + tuple(fd for fd, _ in identity)
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -247,6 +287,8 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
         raise Refused(f'cannot start the sandbox: {exc}') from exc
     finally:
         os.close(status_write)
+        for fd, _ in identity:
+            os.close(fd)
     out, err = Capture(process.stdout, limits['output_bytes']), Capture(process.stderr, limits['output_bytes'])
     status_pipe = Capture(os.fdopen(status_read, 'rb'), 65536)
     for reader in (out, err, status_pipe):
@@ -260,6 +302,7 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
         process.wait()
     for reader in (out, err, status_pipe):
         reader.join()
+        reader.stream.close()
     duration = round(time.monotonic() - started, 3)
     code = process.returncode
     status = 124 if killed else (128 - code if code < 0 else code)
@@ -267,6 +310,10 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
     if not killed and b'"exit-code"' not in status_pipe.data:
         # bwrap or systemd refused before the command started: nothing of it ran.
         raise Refused('the sandbox did not start: ' + stderr.decode('utf-8', 'replace').strip()[:300])
+    if killed and b'"child-pid"' not in status_pipe.data:
+        # bwrap reports a child-pid once it has made the sandbox the command starts in; without one the time ran
+        # out while systemd was still setting up the scope, and nothing of the command ran.
+        raise Refused(f'the wall-clock limit of {limits["timeout"]} s ran out before the command started')
     return {'status': status, 'killed': killed, 'duration_s': duration, 'stdout': bytes(out.data),
             'stdout_bytes': out.total, 'stderr': stderr, 'stderr_bytes': err.total, 'unit': unit}
 
@@ -293,10 +340,11 @@ PROBE_SCRIPT = r'''
 nets=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')
 echo "nets=$nets"
 echo "env=$(env | cut -d= -f1 | sort | tr '\n' ' ')"
-for p in /src/x /usr/x /etc/x "$1/x" "$2/x"; do
+for p in /x /src/x /usr/x /etc/x "$1/x" "$2/x"; do
   if (: > "$p") 2>/dev/null; then echo "writable=$p"; fi
 done
 for p in "$1" "$2"; do [ -e "$p" ] && echo "visible=$p"; done
+echo "etc=$(ls -A /etc | tr '\n' ' ')"
 : > /work/ok && echo work=ok
 head -c 2097152 /dev/zero > /work/big 2>/dev/null; echo "work_bytes=$(wc -c < /work/big)"
 echo "cpu=$(ulimit -t)"; echo "nofile=$(ulimit -n)"; echo "core=$(ulimit -c)"; echo "fsize=$(ulimit -f)"
@@ -353,6 +401,10 @@ def probe() -> dict[str, str]:
                             'scratch-only-writes')
                 if visible:
                     missing(f'host paths visible inside: {", ".join(visible)}', 'scratch-only-writes')
+                etc = sorted(name for name in facts.get('etc', '').split() if name not in ('passwd', 'group')
+                             and name not in ETC_ENTRIES and not name.startswith(ETC_PREFIXES))
+                if etc or 'etc' not in facts:
+                    missing(f'host /etc entries visible inside: {", ".join(etc) or "?"}', 'scratch-only-writes')
                 if facts.get('work') != 'ok':
                     missing('the work tmpfs is not writable', 'scratch-only-writes')
                 if facts.get('work_bytes', '').strip() != str(1024 * 1024):
@@ -450,6 +502,9 @@ def check_tool(path: str, repo: Path) -> tuple[str, int]:
 
     if real == Path('/') or within(home, real) or within(repo, real) or within(real, repo):
         raise Refused(f'--tool must not expose the home directory or the repository: {path}')
+    if real == Path('/etc'):
+        raise Refused('--tool must not mount all of /etc, which holds host credentials too: mount the entry a '
+                      f'toolchain needs, --tool /etc/<name>: {path}')
     for reserved in RESERVED_MOUNTS:
         if within(real, Path(reserved)) or within(Path(reserved), real):
             raise Refused(f'--tool is mounted at its own path and must not cover {reserved} of the sandbox: {path}')
@@ -618,8 +673,15 @@ def clear_dir(top_fd: int) -> None:
                 frame[2] = os.listdir(fd)
             if frame[2]:
                 name = frame[2].pop()
-                if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
-                    stack.append([open_dir(name, dir_fd=fd), name, None])
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISDIR(st.st_mode):
+                    child = open_dir(name, dir_fd=fd)
+                    own = os.fstat(child)
+                    if (own.st_dev, own.st_ino) != (st.st_dev, st.st_ino):
+                        # Another directory was moved to this name after the check: it is not the export's.
+                        os.close(child)
+                        raise OSError(errno.EBUSY, f'{name} was replaced during the cleanup, so it stays')
+                    stack.append([child, name, None])
                 else:
                     os.unlink(name, dir_fd=fd)
                 continue
@@ -889,7 +951,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument('--ref', required=True, help='full id of the audited commit')
     r.add_argument('--check', required=True, help='evidence name, for example c01')
     r.add_argument('--inputs', help='a directory inside the scratch directory, mounted read-only at /input')
-    r.add_argument('--tool', action='append', default=[], help='an absolute toolchain directory, mounted read-only')
+    r.add_argument('--tool', action='append', default=[], help='an absolute toolchain directory, mounted read-only at its own path '
+                   '(also an entry of /etc beyond ETC_ENTRIES, as /etc/<name>)')
     r.add_argument('--env', action='append', default=[], help='NAME=VALUE with a dummy, non-secret value')
     for name, (default, maximum) in LIMITS.items():
         r.add_argument(f'--{name.replace("_", "-")}', type=int, help=f'default {default}, at most {maximum}')

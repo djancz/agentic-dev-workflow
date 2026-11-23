@@ -129,6 +129,14 @@ it passes on the host: Codex's sandbox blocks the user session bus (`Failed to c
 bus`), and a Claude sandbox can block namespaces; the audit then stops and asks. A source-only run
 is your explicit choice at the audit gate.
 
+## A check cannot find a file of /etc
+
+The sandbox's `/etc` holds only the entries that common toolchains read (`ETC_ENTRIES` in
+`sandbox-run.py`: the loader, alternatives, time and name service files, certificates, Java and Python
+configuration), because a host may keep user-readable credentials in the rest of it, such as a proxy
+password or a package index token. Its `passwd` and `group` name only the sandbox's user. When a toolchain
+needs another entry, mount it read-only with `--tool /etc/<name>`; all of `/etc` is refused.
+
 ## A check ends with status 137, or the desktop says a wf-sandbox scope was terminated for low memory
 
 A check went past its own memory limit (`MemoryMax`, from `sandbox-run.py run --memory-mb`, default

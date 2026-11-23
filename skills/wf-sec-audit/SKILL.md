@@ -105,8 +105,8 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
    for the next wave and resolves each proposal a unit of its file covers by labels and starting paths; in
    quick `--status deferred --reason quick_profile_final_critic`, past the cap `--reason wave_cap_reached`;
    one a unit covers already: `dismiss <run> <n> --reason "<the unit and why>"`). Next wave while planned
-   units remain and the cap allows; then the final-clean critic of the last wave, and another wave when it
-   finds work. Units the cap or budget cannot reach: `audit.py defer` with the reason `AUDIT.md` names.
+   units remain and the cap allows; then the final-clean critic of the last wave, another wave for work it
+   finds that you seed to hunt. Units the cap or budget cannot reach: `audit.py defer` (reason: `AUDIT.md`).
 3. **Candidate validation**: one verifier per pending candidate in `status`. `confirmed` needs a local
    check the verifier ran itself, citing its `evidence/<check>.json`; a failed sandbox settles nothing.
 4. **Record verification** (not quick): one verifier per validated record; a material replacement goes

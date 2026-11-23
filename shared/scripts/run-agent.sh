@@ -35,8 +35,8 @@
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #   WF_AGENT_EXPECT_HEAD       a full commit id: start only when HEAD is that commit and the working tree
-#                              has no change, untracked files and submodules included, else exit 3 (wf sec
-#                              audit pins its agents to the audited commit)
+#                              has no change, untracked files, submodules and files the index hides from
+#                              git status included, else exit 3 (wf sec audit pins its agents to its commit)
 #
 # Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
@@ -285,7 +285,7 @@ fingerprint() {
 opencode_final() {
     python3 -c '
 import json, sys
-steps, texts = [], {}
+steps = []
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     try:
         event = json.loads(line)
@@ -294,11 +294,12 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     part = event.get("part") if isinstance(event, dict) else None
     if not isinstance(part, dict):
         continue
+    # Each step starts its own text: a retry can repeat the messageID of the step before it.
     if event.get("type") == "step_start":
-        steps.append(part.get("messageID"))
-    elif event.get("type") == "text" and isinstance(part.get("text"), str):
-        texts.setdefault(part.get("messageID"), []).append(part["text"])
-text = "\n".join(texts.get(steps[-1], [])).strip() if steps else ""
+        steps.append([])
+    elif event.get("type") == "text" and isinstance(part.get("text"), str) and steps:
+        steps[-1].append(part["text"])
+text = "\n".join(steps[-1]).strip() if steps else ""
 sys.stdout.write(text + "\n" if text else "")
 ' "$1"
 }
@@ -345,6 +346,11 @@ if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
         die 3 "git status failed, so the tree of this pinned run is unknown; nothing ran"
     [ -z "$pinned_status" ] ||
         die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"
+    # git status does not compare assume-unchanged or skip-worktree entries with the working tree.
+    hidden=$(GIT_OPTIONAL_LOCKS=0 git ls-files -v) ||
+        die 3 "git ls-files failed, so the tree of this pinned run is unknown; nothing ran"
+    ! printf '%s\n' "$hidden" | grep -q '^[a-zS] ' ||
+        die 3 "the index hides files from git status (assume-unchanged or skip-worktree), so this run pinned to $WF_AGENT_EXPECT_HEAD cannot be checked; nothing ran"
 fi
 project_settings_before=$(file_hash "$project_settings")
 user_settings_before=$(file_hash "$user_settings")

@@ -123,8 +123,9 @@ def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
 
 
 def display_path(path: str) -> str:
-    """A path as git gave it, for the gate and the records: undecodable bytes and control characters escaped."""
-    text = os.fsencode(path).decode('utf-8', 'backslashreplace')
+    """A path as git gave it, for the gate and the records: undecodable bytes and control characters escaped,
+    and a backslash of the name doubled, so that no two names look alike."""
+    text = os.fsencode(path).replace(b'\\', b'\\\\').decode('utf-8', 'backslashreplace')
     return ''.join(c if c.isprintable() else c.encode('unicode_escape').decode('ascii') for c in text)
 
 
@@ -351,6 +352,17 @@ def config_summary(files: list[str], limit: int = 20) -> str:
     return '; '.join(shown)
 
 
+def hidden_changes(root: Path) -> None:
+    """Refuse index entries that git status does not compare with the working tree (assume-unchanged,
+    skip-worktree): an edit of such a file is what the agents read, while the sandbox runs the commit."""
+    hidden = [line[2:] for line in git('-C', str(root), 'ls-files', '-v').splitlines() if line[:1].islower()
+              or line[:1] == 'S']
+    if hidden:
+        raise Refused(f'git status does not check {len(hidden)} file(s) of the index (assume-unchanged or '
+                      f'skip-worktree, for example {display_path(hidden[0])}): run git update-index '
+                      '--no-assume-unchanged --no-skip-worktree on them, or audit a full checkout')
+
+
 def main_worktree(root: Path) -> Path:
     """The main worktree, first in `git worktree list` (as the installer finds it), which holds the records."""
     listing = git('-C', str(root), 'worktree', 'list', '--porcelain')
@@ -369,6 +381,7 @@ def cmd_init(args) -> int:
         raise Refused('development/ is not ignored by git; run wf init (or install.py) first')
     if git('-C', str(root), 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'):
         raise Refused('the working tree is not clean: commit or stash first, so that the audited commit is exact')
+    hidden_changes(root)
     floor = 4 + profile['critics'] + 1
     budget = args.budget or profile['budget']
     if not floor <= budget <= MAX_BUDGET:
@@ -494,11 +507,25 @@ def hunted_wave(run: Run) -> int:
     return max(live + [a['wave'] for u in run.ledger for a in u['attempts']], default=0)
 
 
+def clean_pass(run: Run, critic: dict) -> bool:
+    """A critic pass that asked for no accepted work: clean as applied, or one whose only work was proposals
+    the parent rejected since (out of scope, not applicable, a unit that was there already, or dismissed), as
+    upstream's parent rejects them. One that reopened or capped a unit is never clean."""
+    if critic.get('clean'):
+        return True
+    if not critic.get('applied') or critic.get('reopened') or critic.get('capped'):
+        return False
+    agent = critic['agent']
+    return not any(e.get('from') == agent for e in run.state['missing_units']) and \
+        not any(e.get('from') == agent and e.get('accepted') for e in run.state.get('resolved_proposals', []))
+
+
 def clean_final_pass(run: Run, wave: int | None = None) -> bool:
     """A clean final-clean critic pass over the latest coverage, or over the wave about to be hunted: a unit
     hunted in a later wave needs another."""
     hunted = max(hunted_wave(run), wave or 0)
-    return any(c['kind'] == 'final-clean' and c.get('clean') and c['wave'] >= hunted for c in run.state['critics'])
+    return any(c['kind'] == 'final-clean' and clean_pass(run, c) and c['wave'] >= hunted
+               for c in run.state['critics'])
 
 
 def reserves(run: Run, wave: int | None = None, remaining: int | None = None) -> int:
@@ -604,7 +631,7 @@ def cmd_seed(args) -> int:
         raise Refused(f'these units would be wave {wave}, past the cap of {run.meta["waves"]}: seed them with '
                       '--status deferred --reason wave_cap_reached')
     existing = {unit['coverage_id']: unit for unit in run.ledger}
-    added, listed = 0, []
+    added, listed, fresh = 0, [], set()
     for spec in specs:
         unit = new_unit(spec, args.status, args.reason, min(wave, run.meta['waves'] + 1))
         listed.append(unit)
@@ -615,12 +642,23 @@ def cmd_seed(args) -> int:
             continue
         run.ledger.append(unit)
         existing[unit['coverage_id']] = unit
+        fresh.add(unit['coverage_id'])
         added += 1
     # A proposal is resolved by a unit of this file with its labels whose starting paths cover its own; any
     # other stays until it is seeded or dismissed with a reason, so that final never overlooks it.
+    # Only a unit this seed added to hunt, or deferred, is work the parent accepted; one that was there already,
+    # or one out of scope or not applicable, rejects the proposal, as does a dismissal.
     resolved = 0
     for name in ('uncovered', 'missing_units'):
-        kept = [entry for entry in run.state[name] if not any(seeds(unit, entry) for unit in listed)]
+        kept = []
+        for entry in run.state[name]:
+            unit = next((u for u in listed if seeds(u, entry)), None)
+            if unit is None:
+                kept.append(entry)
+                continue
+            accepted = unit['coverage_id'] in fresh and unit['status'] in ('planned', 'deferred')
+            run.state.setdefault('resolved_proposals', []).append(
+                entry | {'list': name, 'unit': unit['coverage_id'], 'accepted': accepted, 'at': now()})
         resolved += len(run.state[name]) - len(kept)
         run.state[name] = kept
     run.meta['selected_companions'] = sorted({ref.split('#', 1)[0] for unit in run.ledger
@@ -651,8 +689,10 @@ def proposal_errors(entries, where: str) -> list[str]:
             errors.append(f'{at}: expected {", ".join(PROPOSAL)}')
             continue
         errors += [f'{at}.{key}: expected text' for key in (*LABELS, 'reason') if not VF.has_visible_prose(entry[key])]
-        if not isinstance(entry['starting_paths'], list) or not all(is_path(p) for p in entry['starting_paths']):
-            errors.append(f'{at}.starting_paths: expected repository-relative paths')
+        paths = entry['starting_paths']
+        if not isinstance(paths, list) or not paths or not all(is_path(p) for p in paths) or \
+                len(set(paths)) != len(paths):
+            errors.append(f'{at}.starting_paths: expected one or more distinct repository-relative paths')
     if not isinstance(entries, list):
         errors.append(f'{where}: expected a list')
     return errors
@@ -908,8 +948,10 @@ Run each check as `{tool} run --scratch {shlex.quote(scratch)} --ref {run.meta["
 -- <command…>` from the repository root. The command sees the audited commit read-only at /src (its
 working directory), no network, an empty environment (add dummy values with --env NAME=VALUE), and may
 write only to /work (copy /src there to build). Fixture files you write into {scratch}/inputs/ are mounted
-read-only at /input with --inputs inputs. `{tool} run --help` lists the limits; keep them low and keep the
-timeout below what is left of your own time. Use the check names {checks}, each once.
+read-only at /input with --inputs inputs. /etc holds only what common toolchains read: mount a toolchain
+outside /usr, or another entry of /etc, read-only with --tool <absolute directory>. `{tool} run --help`
+lists the limits; keep them low and keep the timeout below what is left of your own time. Use the check
+names {checks}, each once.
 The command's stdout and stderr are the only evidence: print the minimum observed result. After your run
 the parent promotes evidence/<name>.out, .err and .json; refer to a check's evidence as
 "agents/{agent}/artifacts/evidence/<name>.json" in its "artifact" field.
@@ -943,6 +985,7 @@ def require_launch(run: Run, kind: str, agent: str, hunter_wave: int | None = No
                       'again before the next agent')
     if git('-C', str(run.root), 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'):
         raise Refused('the working tree changed since the audit gate: restore it before the next agent')
+    hidden_changes(run.root)
     if not AGENT_ID.fullmatch(agent) or agent in {'con', 'prn', 'aux', 'nul'} or re.fullmatch(r'(com|lpt)[1-9]', agent):
         raise Refused(f'unsafe agent id: {agent}')
     if (run.runs / f'{agent}.prompt.md').exists() or (run.runs / 'scratch' / agent).exists():
@@ -1440,10 +1483,18 @@ def promote(run: Run, agent: str) -> list[dict]:
         entries = [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
     except ValueError:
         entries = []
-    # Exit 0 or 1 with one outcome per allowlisted file, 1 exactly when one was rejected; anything else is a
-    # promotion that did not happen, never "no evidence".
-    if r.returncode not in (0, 1) or len(entries) != len(allowlist) or \
-            not all(isinstance(e, dict) and e.get('status') in ('promoted', 'missing', 'rejected') for e in entries) or \
+    def outcome(entry, path: str) -> bool:
+        if not isinstance(entry, dict) or entry.get('path') != path:
+            return False
+        if entry.get('status') == 'promoted':
+            return isinstance(entry.get('bytes'), int) and isinstance(entry.get('sha256'), str)
+        return entry.get('status') == 'missing' or (entry.get('status') == 'rejected'
+                                                    and isinstance(entry.get('reason'), str))
+
+    # Exit 0 or 1 with the outcome of each allowlisted file in its order, 1 exactly when one was rejected;
+    # anything else is a promotion that did not happen, never "no evidence".
+    expected = [item.rpartition(':')[0] for item in allowlist]
+    if r.returncode not in (0, 1) or len(entries) != len(expected) or not all(map(outcome, entries, expected)) or \
             (r.returncode == 1) != any(e['status'] == 'rejected' for e in entries):
         raise Refused(f'promotion failed (exit {r.returncode}): {r.stderr.strip()[-500:] or "no outcome"}; '
                       'nothing was applied')
@@ -1608,11 +1659,7 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
         return errors
     record = result['record']
     if record['fingerprint'] != fp:
-        # A different root cause: it needs its own independent validation before it may count.
-        run.state['candidates'].setdefault(record['fingerprint'], {
-            'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
-            'units': candidate['units'], 'hunters': [agent], 'title': record['title'],
-            'origins': [fp, *candidate.get('origins', [])]})
+        new_root_cause(run, candidate, agent, record, result['checks'])
         candidate['events'] = candidate.get('events', []) + [f'{agent} found another root cause']
         return []
     candidate.update(record=record, decision=decision, validated_by=agent, checks=result['checks'],
@@ -1621,6 +1668,19 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
         run.unit(coverage_id).setdefault('decisions', {})[fp] = decision
     add_checks(run, candidate, agent, result['checks'])
     return []
+
+
+def new_root_cause(run: Run, candidate: dict, agent: str, record: dict, checks: list[dict]) -> None:
+    """A verifier's record of a different root cause: a new candidate that needs its own independent
+    validation before it may count. The checks that found it go with it as discovery evidence, in the
+    attempt it came from, never as a check of the fingerprint the verifier was given."""
+    new = run.state['candidates'].setdefault(record['fingerprint'], {
+        'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
+        'units': candidate['units'], 'hunters': [agent], 'title': record['title'],
+        'origins': [candidate['fingerprint'], *candidate.get('origins', [])]})
+    if checks:
+        new['discovery_checks'] = new.get('discovery_checks', []) + checks
+        add_checks(run, new, agent, checks)
 
 
 def add_checks(run: Run, candidate: dict, agent: str, checks: list[dict]) -> None:
@@ -1747,15 +1807,12 @@ def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
         errors += local_reproduction(run, agent, verdict, result['checks'])  # it becomes final right here
     if errors:
         return errors
+    if record['fingerprint'] != fp:
+        new_root_cause(run, candidate, agent, record, result.get('checks', []))
+        return []
     if reverify:
         candidate['reverify_checks'] = candidate.get('reverify_checks', []) + result['checks']
         add_checks(run, candidate, agent, result['checks'])
-    if record['fingerprint'] != fp:
-        run.state['candidates'].setdefault(record['fingerprint'], {
-            'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
-            'units': candidate['units'], 'hunters': [agent], 'title': record['title'],
-            'origins': [fp, *candidate.get('origins', [])]})
-        return []
     if material(current, record):
         candidate['reverifications'] = candidate.get('reverifications', 0) + 1
         if candidate['reverifications'] > MAX_REVERIFICATIONS:
@@ -1801,7 +1858,7 @@ def apply_critic(run: Run, agent: str, result: dict) -> list[str]:
     # Work the critic asked for counts even when a cap defers it: a capped gap is never a clean pass.
     capped = outcome['deferred'] + [i for i in outcome['ignored'] if known[i]['status'] == 'deferred']
     clean = not result['missing_units'] and not outcome['reopened'] and not capped
-    critic.update(clean=clean, capped=capped)
+    critic.update(clean=clean, capped=capped, reopened=outcome['reopened'])
     print(f'critic {agent}: {len(result["missing_units"])} missing unit(s) to seed, reopened '
           f'{len(outcome["reopened"])}, deferred {len(outcome["deferred"])} at the cap, ignored '
           f'{len(outcome["ignored"])}; {"clean" if clean else "work remains"}')
