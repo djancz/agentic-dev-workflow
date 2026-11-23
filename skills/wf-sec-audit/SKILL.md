@@ -101,19 +101,19 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
    human's number: `audit.py budget <run> --set <n> --words "<their words>"`); defer what does not fit
    with `audit.py defer`.
 2. **Hunting waves.** Hunters per wave, closely related units of one subsystem per hunter, then the
-   post-wave critic. Seed the units the critic and the hunters proposed with their labels (`status`
-   numbers them; `seed` plans them for the next wave and resolves each one the ledger then holds; in quick
-   with `--status deferred --reason quick_profile_final_critic`, past the wave cap with `--reason
-   wave_cap_reached`; a duplicate under other labels: `dismiss <run> <n> --reason "<the unit it
-   duplicates>"`). Next wave while planned units remain and the cap allows; then the final-clean critic of
-   the last wave, and another wave when it finds work. Units the cap or budget cannot reach: `audit.py
-   defer` with the reason `AUDIT.md` names.
+   post-wave critic. Seed what the critic and the hunters proposed (`status` numbers it; `seed` plans it
+   for the next wave and resolves each proposal a unit of its file covers by labels and starting paths; in
+   quick `--status deferred --reason quick_profile_final_critic`, past the cap `--reason wave_cap_reached`;
+   one a unit covers already: `dismiss <run> <n> --reason "<the unit and why>"`). Next wave while planned
+   units remain and the cap allows; then the final-clean critic of the last wave, and another wave when it
+   finds work. Units the cap or budget cannot reach: `audit.py defer` with the reason `AUDIT.md` names.
 3. **Candidate validation**: one verifier per pending candidate in `status`. `confirmed` needs a local
-   check the verifier ran itself; a verifier whose sandbox failed settles nothing.
+   check the verifier ran itself, citing its `evidence/<check>.json`; a failed sandbox settles nothing.
 4. **Record verification** (not quick): one verifier per validated record; a material replacement goes
    to a fresh `--reverify` verifier, at most twice.
 5. **Findings**: `audit.py final <run>`, or `final <run> --incomplete <reason>` as `AUDIT.md` says (it
-   refuses `complete` while a cap or the budget deferred units). Both validators must pass.
+   refuses `complete` while a cap or the budget deferred units). Both validators must pass. A new `final`
+   needs the reports of the last one removed.
 6. **Reports**: write `REPORT.md`, `FINDINGS-DETAIL.md` and `NEEDS-VALIDATION.md` from `findings.json` and
    the ledger only (`VALIDATION-AND-REPORTING.md` → Phase 6), following Writing style. No live-probe
    instruction, no secret value; never present an unvalidated candidate as a finding. Then

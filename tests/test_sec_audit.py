@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -244,6 +247,11 @@ class SandboxGuards(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp)
         repo, ref = make_repo(tmp)
         pidfile = tmp / 'cat-file.pid'
+
+        def reap():  # also when the run times out, which kills only the runner
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        self.addCleanup(reap)
         fake = tmp / 'fake-git'
         fake.write_text(f'''#!{sys.executable}
 import os, signal, sys, time
@@ -276,21 +284,98 @@ while True:
         self.assertEqual(list((scratch / 'src').iterdir()), [], 'the partial copy is removed')
 
     def test_cleanup_never_removes_a_directory_moved_into_the_exports_place(self):
+        from unittest import mock
         sandbox = load_sandbox()
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
-        (tmp / 'src' / 'export').mkdir(parents=True)
-        st = (tmp / 'src' / 'export').stat()
-        (tmp / 'src' / 'export').rename(tmp / 'moved')
-        (tmp / 'src' / 'export').mkdir()
-        (tmp / 'src' / 'export' / 'keep.txt').write_text('not the export\n')
+
+        def export() -> tuple[int, int]:
+            (tmp / 'src' / 'export' / 'deep' / 'er').mkdir(parents=True)
+            (tmp / 'src' / 'export' / 'deep' / 'er' / 'app.py').write_text('print(1)\n')
+            (tmp / 'src' / 'export' / 'link').symlink_to(tmp / 'outside')
+            return (os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY),
+                    os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY))
+
+        def replace() -> None:
+            (tmp / 'src' / 'export').rename(tmp / f'moved-{len(list(tmp.glob("moved-*")))}')
+            (tmp / 'src' / 'export').mkdir()
+            (tmp / 'src' / 'export' / 'keep.txt').write_text('not the export\n')
+
+        (tmp / 'outside').mkdir()
+        (tmp / 'outside' / 'keep.txt').write_text('reached through a link\n')
+        # Moved before the cleanup: the export is emptied where it went, the directory now at its name stays.
+        src_fd, root_fd = export()
+        replace()
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            sandbox.remove_export(os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY), 'export', (st.st_dev, st.st_ino))
-        self.assertIn('replaced by another directory', err.getvalue())
-        self.assertTrue((tmp / 'src' / 'export' / 'keep.txt').exists())
-        st = (tmp / 'src' / 'export').stat()
-        sandbox.remove_export(os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY), 'export', (st.st_dev, st.st_ino))
-        self.assertFalse((tmp / 'src' / 'export').exists())
+            sandbox.remove_export(src_fd, 'export', root_fd)
+        self.assertIn('holds another directory now', err.getvalue())
+        self.assertEqual(list((tmp / 'moved-0').iterdir()), [])
+        # Moved between the check of the name and its removal: only an empty directory can go by name.
+        shutil.rmtree(tmp / 'src' / 'export')
+        src_fd, root_fd = export()
+        real_stat = os.stat
+
+        def racing_stat(path, *args, dir_fd=None, **kwargs):
+            result = real_stat(path, *args, dir_fd=dir_fd, **kwargs)
+            if path == 'export' and dir_fd == src_fd:
+                replace()
+            return result
+        with mock.patch.object(os, 'stat', racing_stat), contextlib.redirect_stderr(io.StringIO()) as err:
+            sandbox.remove_export(src_fd, 'export', root_fd)
+        self.assertIn('was not removed', err.getvalue())
+        self.assertTrue((tmp / 'src' / 'export' / 'keep.txt').exists(), 'the replacement stays')
+        self.assertEqual(list((tmp / 'moved-1').iterdir()), [], 'the export itself is emptied')
+        self.assertTrue((tmp / 'outside' / 'keep.txt').exists(), 'nothing is deleted through a link')
+        shutil.rmtree(tmp / 'src' / 'export')
+        src_fd, root_fd = export()
+        sandbox.remove_export(src_fd, 'export', root_fd)
+        self.assertEqual(list((tmp / 'src').iterdir()), [])
+
+    def test_a_link_above_the_scratch_directory_runs_nothing(self):
+        # As for promote: a planted runs/scratch link leads the run nowhere, not to a real directory elsewhere.
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        repo, ref = make_repo(tmp)
+        runs = repo / 'development' / 'audits' / 'a' / 'runs'
+        runs.mkdir(parents=True)
+        (tmp / 'elsewhere' / 'hunt-1').mkdir(parents=True)
+        (runs / 'scratch').symlink_to(tmp / 'elsewhere', target_is_directory=True)
+        r = subprocess.run([sys.executable, str(SANDBOX), 'run', '--scratch', str(runs / 'scratch' / 'hunt-1'), '--ref',
+                            ref, '--check', 'c01', '--', 'true'], cwd=repo, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 125, r.stderr)
+        self.assertIn('reached without a link', r.stderr)
+        self.assertIn('nothing ran', r.stderr)
+        self.assertEqual(list((tmp / 'elsewhere' / 'hunt-1').iterdir()), [], 'no export and no evidence there')
+
+    def test_no_tool_exposes_a_credential_store_through_its_link(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        sandbox.RUNTIME_ROOTS = ()  # the temporary directory stands in for a toolchain outside /tmp
+        (tmp / 'home').mkdir()
+        (tmp / 'vault' / 'ssh').mkdir(parents=True)
+        (tmp / 'vault' / 'ssh' / 'id_ed25519').write_text('secret\n')
+        (tmp / 'home' / '.ssh').symlink_to(tmp / 'vault' / 'ssh', target_is_directory=True)
+        with mock.patch.dict(os.environ, {'HOME': str(tmp / 'home')}):
+            for tool in (tmp / 'vault', tmp / 'vault' / 'ssh'):
+                with self.subTest(tool=tool), self.assertRaises(sandbox.Refused) as caught:
+                    sandbox.check_tool(str(tool), REPO)
+                self.assertIn('.ssh', str(caught.exception))
+
+    def test_directories_open_without_o_path_too(self):
+        # macOS has no O_PATH; promotion, which a source-only audit also runs, must still open its roots.
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'a' / 'b').mkdir(parents=True)
+        saved = os.O_PATH
+        del os.O_PATH
+        try:
+            sandbox = load_sandbox()
+            os.close(sandbox.open_real(tmp / 'a' / 'b', '--scratch'))
+        finally:
+            os.O_PATH = saved
+        self.assertEqual(sandbox.SEARCH_ONLY, os.O_RDONLY)
 
     def test_the_scope_check_reads_each_controller_on_its_own(self):
         sandbox = load_sandbox()
@@ -568,11 +653,18 @@ class AuditTool(unittest.TestCase):
     def coverage_id(self, run: Path) -> str:
         return self.ledger(run)[0]['coverage_id']
 
-    def local_check(self, run: Path, agent: str) -> dict:
-        """A local check whose evidence the agent's sandbox left in its scratch, for the parent to promote."""
+    def local_check(self, run: Path, agent: str, ref: str | None = None, stdout: bytes = b'changed\n') -> dict:
+        """A local check whose evidence the agent's sandbox left in its scratch, for the parent to promote: the
+        runner's record of the audited commit (or of ref) and the two streams it describes."""
         evidence = run / 'runs' / 'scratch' / agent / 'evidence'
         evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / 'c01.json').write_text('{"status": 0}\n')
+        streams = {'stdout': b'changed\n', 'stderr': b''}
+        record = {'check': 'c01', 'ref': ref or json.loads((run / 'run-metadata.json').read_text())['source_ref'],
+                  'status': 0, **{name: {'bytes': len(data), 'kept': len(data), 'truncated': False,
+                                         'sha256': hashlib.sha256(data).hexdigest()} for name, data in streams.items()}}
+        (evidence / 'c01.out').write_bytes(stdout)
+        (evidence / 'c01.err').write_bytes(streams['stderr'])
+        (evidence / 'c01.json').write_text(json.dumps(record))
         return source_check(agent) | {'method': 'local', 'result': 'The object changed.',
                                       'artifact': f'agents/{agent}/artifacts/evidence/c01.json'}
 
@@ -893,7 +985,7 @@ class AuditTool(unittest.TestCase):
         candidate = needs_validation()
         self.result(run, 'hunt-w1-03', self.hunter_result(run, 'hunt-w1-03', candidate, local=True))
         out = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-03').stdout
-        self.assertIn('promoted 1 evidence file(s)', out)
+        self.assertIn('promoted 3 evidence file(s)', out)
         unit = self.ledger(run)[0]
         self.assertEqual((unit['status'], unit['agent_id'], unit['result_fingerprints']),
                          ('candidate', 'hunt-w1-03', [candidate['fingerprint']]))
@@ -967,6 +1059,12 @@ class AuditTool(unittest.TestCase):
         state = json.loads((run / 'state.json').read_text())
         self.assertEqual(state['candidates'][record['fingerprint']]['state'], 'pending')
         self.assertIn('verify-002', state['candidates'][record['fingerprint']]['failed_verifiers'])
+        # A local check counts only with the runner's record of it, which the promoted output must match.
+        self.audit('prompt', str(run), 'candidate', '--fingerprint', candidate['fingerprint'], '--agent', 'verify-02b')
+        self.result(run, 'verify-02b', {'decision': 'confirmed', 'record': record, 'sandbox_probe': 'pass',
+                                        'checks': [self.local_check(run, 'verify-02b', stdout=b'forged\n')]})
+        self.assertIn('is not the output it records', self.audit('apply', str(run), 'candidate', '--agent',
+                                                                  'verify-02b', ok=False).stdout)
         self.audit('prompt', str(run), 'candidate', '--fingerprint', candidate['fingerprint'], '--agent', 'verify-003')
         self.assertIn('needs at\nleast one local check of your own', (run / 'runs' / 'verify-003.prompt.md').read_text())
         self.result(run, 'verify-003', {'decision': 'confirmed', 'record': record, 'sandbox_probe': 'pass',
@@ -977,6 +1075,9 @@ class AuditTool(unittest.TestCase):
         self.assertIn('complete: confirmed 1', out)
         self.assertEqual(json.loads((run / 'findings.json').read_text()), [record])
         self.assertEqual(self.ledger(run)[0]['decisions'], {record['fingerprint']: 'confirmed'})
+        self.assertEqual([c['agent_id'] for c in self.ledger(run)[0]['attempts'][0]['local_checks']],
+                         ['hunt-w1-01', 'verify-003', 'verify-003'],
+                         'the deferred unit keeps the verifier\'s checks in the attempt that found the candidate')
         # The run ends only once the reports exist, derived from the final records.
         meta = json.loads((run / 'run-metadata.json').read_text())
         self.assertEqual((meta['run_status'], meta['phase']), ('in_progress', 'report'))
@@ -991,7 +1092,14 @@ class AuditTool(unittest.TestCase):
             (run / name).write_text(f'# {name}\n')
         (run / 'findings.json').write_text('[]\n')
         self.assertIn('changed after final', self.audit('done', str(run), ok=False).stderr)
+        # Reports describe the finalization they were written for: a new final needs new reports.
+        self.assertIn('exist from an earlier final', self.audit('final', str(run), ok=False).stderr)
+        for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
+            (run / name).unlink()
         self.audit('final', str(run))
+        self.assertIn('write REPORT.md', self.audit('done', str(run), ok=False).stderr)
+        for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
+            (run / name).write_text(f'# {name}\n')
         self.assertIn('complete', self.audit('done', str(run)).stdout)
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['run_status'], 'complete')
         self.assertIn('the run is complete', self.audit('final', str(run), ok=False).stderr)
@@ -1072,9 +1180,9 @@ class AuditTool(unittest.TestCase):
                          'verify-001 checked fp-a in the same unit: its check is no evidence for fp-b')
 
         class SourceOnly:
-            meta = {'source_only': True}
-        self.assertIn('confirms nothing', audit.local_reproduction(SourceOnly, 'confirmed', [source_check('v')])[0])
-        self.assertEqual(audit.local_reproduction(SourceOnly, 'needs_validation', [source_check('v')]), [])
+            meta, state = {'source_only': True}, {}
+        self.assertIn('confirms nothing', audit.local_reproduction(SourceOnly, 'v', 'confirmed', [source_check('v')])[0])
+        self.assertEqual(audit.local_reproduction(SourceOnly, 'v', 'needs_validation', [source_check('v')]), [])
 
     def test_linked_config_roots_and_codex_skills_are_agent_configuration(self):
         (self.repo / 'cfg').mkdir()
@@ -1085,10 +1193,17 @@ class AuditTool(unittest.TestCase):
         (self.repo / '.agents' / 'skills' / 'wf-sec-audit').symlink_to(REPO / 'skills' / 'wf-sec-audit')
         (self.repo / '.codex').mkdir()
         (self.repo / '.codex' / 'a\tb.toml').write_text('# a name git quotes\n')
+        (self.repo / '.claude' / 'skills' / 'two\nlines').mkdir(parents=True)
+        (self.repo / '.claude' / 'skills' / 'two\nlines' / 'SKILL.md').write_text('---\nname: x\n---\n')
+        # A name that is not UTF-8, in the configuration and elsewhere: nothing stops the gate or hides it.
+        for name in (b'.codex/\xff.toml', b'latin-\xe9.txt'):
+            with open(os.path.join(os.fsencode(self.repo), name), 'w') as handle:
+                handle.write('x\n')
         self.commit('agent configuration elsewhere')
         run = Path(self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['agent_config'],
-                         ['.agents/skills/helper/SKILL.md', '.codex/a\tb.toml', '.gemini'])
+                         ['.agents/skills/helper/SKILL.md', '.claude/skills/two\\nlines/SKILL.md',
+                          '.codex/a\\tb.toml', '.codex/\\xff.toml', '.gemini'])
 
     def test_the_records_are_where_the_installer_keeps_them_also_with_a_separate_git_dir(self):
         main = self.tmp / 'main'
@@ -1156,6 +1271,22 @@ class AuditTool(unittest.TestCase):
                 self.audit('reopen', str(run), '--units', cid, '--reason', 'the human asked for another pass')
         self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
 
+    def test_archived_attempts_and_the_next_wave_need_their_own_final_clean_pass(self):
+        audit = load_script(AUDIT)
+
+        class FakeRun:
+            meta = {'profile': 'standard'}
+            # Hunted in wave 2, reopened and then deferred by the parent: wave 2 still needs a final pass.
+            ledger = [{'status': 'deferred', 'wave': 3, 'attempts': [{'wave': 1}, {'wave': 2}]}]
+            state = {'critics': [{'kind': 'post-wave', 'clean': True, 'wave': 1},
+                                 {'kind': 'final-clean', 'clean': True, 'wave': 1}], 'candidates': {}}
+        self.assertFalse(audit.clean_final_pass(FakeRun()))
+        FakeRun.ledger = [{'status': 'covered', 'wave': 1, 'attempts': []}]
+        self.assertTrue(audit.clean_final_pass(FakeRun()))
+        self.assertFalse(audit.clean_final_pass(FakeRun(), 2), 'a hunter of wave 2 needs a new final pass')
+        # A wave-2 hunter keeps its post-wave critic, a new final-clean critic and 30% of the rest reserved.
+        self.assertEqual(audit.reserves(FakeRun(), 2, 10), 2 + 3)
+
     def test_a_result_that_would_outgrow_the_validator_is_discarded(self):
         run = self.start()
         self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
@@ -1180,6 +1311,210 @@ class AuditTool(unittest.TestCase):
         for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
             (run / name).write_text(f'# {name}\n')
         self.assertIn('incomplete (interrupted_by_the_human)', self.audit('done', str(run)).stdout)
+
+    def test_only_the_runners_record_of_the_audited_commit_backs_a_confirmation(self):
+        audit = load_script(AUDIT)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        evidence = tmp / 'agents' / 'verify-1' / 'artifacts' / 'evidence'
+        evidence.mkdir(parents=True)
+
+        class FakeRun:
+            dir, meta = tmp, {'source_ref': 'a' * 40}
+
+        def write(ref: str = 'a' * 40, check: str = 'c01', stdout: bytes = b'changed\n') -> None:
+            (evidence / 'c01.out').write_bytes(stdout)
+            (evidence / 'c01.err').write_bytes(b'')
+            record = {'check': check, 'ref': ref, **{name: {'kept': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                                                       for name, data in (('stdout', b'changed\n'), ('stderr', b''))}}
+            (evidence / 'c01.json').write_text(json.dumps(record))
+        artifact = 'agents/verify-1/artifacts/evidence/c01.json'
+        write()
+        self.assertIsNone(audit.sandbox_record(FakeRun, artifact))
+        for kwargs, message in (({'ref': 'b' * 40}, 'records no run of c01 on the audited commit'),
+                                ({'check': 'c02'}, 'records no run'), ({'stdout': b'forged\n'}, 'not the output')):
+            with self.subTest(kwargs=kwargs):
+                write(**kwargs)
+                self.assertIn(message, audit.sandbox_record(FakeRun, artifact))
+        write()
+        (evidence / 'c01.err').unlink()
+        self.assertIn('.err file of', audit.sandbox_record(FakeRun, artifact))
+        self.assertIn('no check record', audit.sandbox_record(FakeRun, 'agents/verify-1/artifacts/evidence/c01.out'))
+
+    def test_a_failed_probe_settles_nothing_also_after_the_switch_to_source_only(self):
+        run = self.start()
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        first, second = needs_validation(), needs_validation('app-owner-check-second')
+        result = self.hunter_result(run, 'hunt-w1-01', first)
+        result['candidates'].append({k: v for k, v in second.items() if k != 'verdict'} |
+                                    {'proposed_verdict': 'needs_validation'})
+        result['units'][0]['candidate_fingerprints'].append(second['fingerprint'])
+        self.result(run, 'hunt-w1-01', result)
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [],
+                                       'stop': True})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+
+        def verifier(agent: str, record: dict, probe: str) -> None:
+            self.audit('prompt', str(run), 'candidate', '--fingerprint', record['fingerprint'], '--agent', agent)
+            self.result(run, agent, {'decision': 'needs_validation', 'record': record,
+                                     'checks': [source_check(agent)], 'sandbox_probe': probe})
+
+        def state(record: dict) -> str:
+            return json.loads((run / 'state.json').read_text())['candidates'][record['fingerprint']]['state']
+        # Both verifiers ran in one batch; the first failure makes the human switch to source-only.
+        verifier('verify-001', first, 'fail: no-network')
+        verifier('verify-002', second, 'fail: no-network')
+        self.assertEqual(self.audit('apply', str(run), 'candidate', '--agent', 'verify-001', ok=False).returncode, 4)
+        self.audit('approve', str(run), '--source-only', '--words', 'go on without local checks')
+        out = self.audit('apply', str(run), 'candidate', '--agent', 'verify-002').stdout
+        self.assertIn('launched before the switch to source-only', out)
+        self.assertEqual(state(second), 'pending', 'its sandbox failed: what it decided settles nothing')
+        # A verifier launched source-only runs no probe, and may settle what needs no local result.
+        verifier('verify-003', second, 'pass')
+        self.assertIn('runs no probe', self.audit('apply', str(run), 'candidate', '--agent', 'verify-003',
+                                                  ok=False).stdout)
+        verifier('verify-004', second, 'not_run')
+        self.audit('apply', str(run), 'candidate', '--agent', 'verify-004')
+        self.assertEqual(state(second), 'final')
+
+    def test_verifier_checks_join_the_attempt_that_found_their_fingerprint(self):
+        audit = load_script(AUDIT)
+
+        def attempt(agent: str, fps: list[str]) -> dict:
+            return {'wave': 1, 'status': 'candidate', 'agent_id': agent, 'reviewed_paths': ['app.py'],
+                    'local_checks': [source_check(agent)], 'result_fingerprints': fps, 'unresolved': [],
+                    'reassignment_reason': 'reassigned'}
+        live = {'coverage_id': 'u1', 'wave': 2, 'attempts': [attempt('hunt-w1-01', ['fp-a'])]} | \
+            attempt('hunt-w2-01', ['fp-b'])
+        deferred = {'coverage_id': 'u2', 'wave': 2, 'status': 'deferred', 'agent_id': None, 'reviewed_paths': [],
+                    'local_checks': [], 'result_fingerprints': [], 'unresolved': ['quick_profile_final_critic'],
+                    'attempts': [attempt('hunt-w1-02', ['fp-a'])]}
+
+        class FakeRun:
+            ledger = [live, deferred]
+
+            def unit(self, coverage_id):
+                return next(u for u in self.ledger if u['coverage_id'] == coverage_id)
+        checks = [source_check('verify-001') | {'reviewed_paths': ['lib.py']}]
+        audit.add_checks(FakeRun(), {'fingerprint': 'fp-a', 'units': ['u1', 'u2']}, 'verify-001', checks)
+        self.assertEqual([c['agent_id'] for c in live['local_checks']], ['hunt-w2-01'],
+                         'the attempt that found fp-b holds no evidence about fp-a')
+        for unit in (live, deferred):
+            self.assertEqual([c['agent_id'] for c in unit['attempts'][0]['local_checks']], [unit['attempts'][0]['agent_id'],
+                                                                                         'verify-001'])
+            self.assertEqual(unit['attempts'][0]['reviewed_paths'], ['app.py', 'lib.py'])
+        self.assertEqual(deferred['local_checks'], [])
+        # A root cause a verifier found instead joins the attempt of the fingerprint it came from.
+        audit.add_checks(FakeRun(), {'fingerprint': 'fp-c', 'origins': ['fp-b'], 'units': ['u1']}, 'verify-002',
+                         [source_check('verify-002')])
+        self.assertEqual(live['local_checks'][-1]['agent_id'], 'verify-002')
+
+    def test_a_proposal_is_resolved_only_by_a_unit_that_covers_it(self):
+        run = self.start(profile='standard', budget=40)
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        # An unchecked parallel path with the labels of the existing unit.
+        parallel = {k: v for k, v in unit_spec().items() if k in ('surface', 'boundary', 'subsystem', 'attack_class')} \
+            | {'starting_paths': ['lib/parallel.py'], 'reason': 'An unchecked parallel path.'}
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', {'missing_units': [parallel], 'reassign_ids': [], 'resolved_prior_leads': [],
+                                       'stop': False})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        units = self.tmp / 'units-2.json'
+        for listed in ([unit_spec('b.py#x')], [unit_spec()]):
+            units.write_text(json.dumps(listed))
+            self.assertIn('0 proposal(s) resolved, 1 left', self.audit('seed', str(run), str(units)).stdout,
+                          'neither an unrelated unit nor the one that starts elsewhere covers it')
+        # The ledger holds one unit per label tuple, so only the parent's recorded decision settles it.
+        self.assertIn('to seed 1 (missing_units, from critic-w1)', self.audit('status', str(run)).stdout)
+        self.assertIn('0 left', self.audit('dismiss', str(run), '1', '--reason',
+                                           'seeded as entry lib/parallel.py#main').stdout)
+
+    def test_a_proposal_with_a_label_that_is_no_text_is_discarded(self):
+        run = self.start(profile='standard', budget=40)
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        result = self.hunter_result(run, 'hunt-w1-01')
+        proposal = {'surface': ['entry b.py#x'], 'boundary': 'owner check', 'subsystem': 'app',
+                    'attack_class': 'Access control', 'starting_paths': ['b.py'], 'reason': 'Another entry.'}
+        self.result(run, 'hunt-w1-01', result | {'uncovered': [proposal]})
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01', ok=False)
+        self.assertIn('uncovered[0].surface: expected text', r.stdout, 'seed could not have matched it later')
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-02')
+        self.result(run, 'hunt-w1-02', self.hunter_result(run, 'hunt-w1-02') | {
+            'uncovered': [proposal | {'surface': 'entry b.py#x', 'starting_paths': ['/etc/passwd']}]})
+        r = self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-02', ok=False)
+        self.assertIn('uncovered[0].starting_paths: expected repository-relative paths', r.stdout)
+
+    def test_a_promotion_that_did_not_happen_is_no_empty_result(self):
+        from unittest import mock
+        audit = load_script(AUDIT)
+
+        class FakeRun:
+            state = {'allowlists': {'hunt-1': ['evidence/c01.out:10', 'evidence/c01.json:10']}}
+            runs, dir = Path('/nonexistent/runs'), Path('/nonexistent')
+        promoted = json.dumps({'path': 'evidence/c01.out', 'status': 'promoted'})
+        for code, stdout in ((1, ''), (1, f'{promoted}\n{promoted}\n'), (0, 'Traceback\n'), (2, '')):
+            with self.subTest(code=code, stdout=stdout), self.assertRaises(audit.Refused) as caught, \
+                    mock.patch.object(audit.subprocess, 'run',
+                                      return_value=subprocess.CompletedProcess([], code, stdout, 'AttributeError')):
+                audit.promote(FakeRun(), 'hunt-1')
+            self.assertIn('promotion failed', str(caught.exception))
+        self.assertIn('hunt-1', FakeRun.state['allowlists'], 'the allowlist stays for another apply')
+
+    def test_a_change_inside_a_submodule_counts_whatever_its_ignore_setting(self):
+        sub = self.tmp / 'sub'
+        sub.mkdir()
+        git(sub, 'init', '-q')
+        (sub / 'lib.py').write_text('x = 1\n')
+        git(sub, 'add', '.')
+        git(sub, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'sub')
+        git(self.repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(sub), 'vendor')
+        git(self.repo, 'config', '-f', '.gitmodules', 'submodule.vendor.ignore', 'all')
+        self.commit('a submodule whose changes git status hides')
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 2\n')
+        self.assertEqual(git(self.repo, 'status', '--porcelain'), '', 'git status alone hides the change')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
+        self.assertIn('not clean', r.stderr)
+
+    def test_printed_commands_quote_their_paths(self):
+        # A linked worktree keeps its records in the main worktree, whose path here has a space.
+        main = self.tmp / 'main dir'
+        main.mkdir()
+        git(main, 'init', '-q')
+        (main / 'app.py').write_text('print(1)\n')
+        (main / '.gitignore').write_text('/development\n')
+        git(main, 'add', '.')
+        git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', str(wt))
+        (main / 'development').mkdir()
+        (wt / 'development').symlink_to(main / 'development', target_is_directory=True)
+
+        def audit(*args: str) -> str:
+            r = subprocess.run([sys.executable, str(AUDIT), *args], cwd=wt, capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return r.stdout
+        run = Path(audit('init', '--host', 'claude', '--hunt', 'opencode,provider/open-model', '--verify',
+                         'claude').strip()).resolve()
+        audit('approve', str(run), '--words', 'yes')
+        line = next(line for line in audit('prompt', str(run), 'recon', '--recon', '1a', '--agent',
+                                           'recon-1a').splitlines() if line.startswith('run: '))
+        words = shlex.split(line[len('run: '):])
+        self.assertEqual(words[-2:], [os.path.relpath(run / 'runs' / f'recon-1a.{ext}.md', wt)
+                                      for ext in ('prompt', 'out')])
+        self.assertIn(' ', words[-2])
+        self.assertTrue((wt / words[-2]).is_file(), 'the command names the prompt as it is')
+        section = load_script(AUDIT).sandbox_section(load_script(AUDIT).Run(run), 'hunt-w1-01')
+        check = shlex.split(section.split('Run each check as `', 1)[1].split(' [limits]', 1)[0])
+        self.assertEqual(check[3:5], ['--scratch', os.path.relpath(run / 'runs' / 'scratch' / 'hunt-w1-01', wt)])
 
     def test_a_changed_condition_or_instruction_is_material(self):
         audit = load_script(AUDIT)

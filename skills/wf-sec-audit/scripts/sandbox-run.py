@@ -396,24 +396,21 @@ def open_dir(path: str | Path, dir_fd: int | None = None) -> int:
     return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
 
 
-def real_dir(path: str, what: str) -> Path:
-    p = Path(path)
-    if p.is_symlink() or not p.is_dir():
-        raise Refused(f'{what} must be an existing directory, not a link: {path}')
-    return p.resolve()
+# Linux opens the directories above a path for search only; elsewhere (macOS) they are opened for reading.
+SEARCH_ONLY = getattr(os, 'O_PATH', os.O_RDONLY)
 
 
 def open_real(path: Path, what: str) -> int:
-    """A descriptor of the directory at a resolved absolute path, opened from / one component at a time without
-    following a link: a link anywhere on the path refuses instead of leading somewhere else."""
+    """A descriptor of the directory at an absolute path, opened from / one component at a time without
+    following a link: a link anywhere on the path refuses instead of leading somewhere else. The audit passes
+    resolved paths, so only a link planted on the way refuses."""
     parts = list(path.parts[1:])
     if not path.is_absolute() or not parts:
         raise Refused(f'{what} must be an absolute directory path: {path}')
-    # The directories above need only search permission: they are opened as paths, the last one for reading.
-    fd = os.open('/', os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    fd = os.open('/', SEARCH_ONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for n, part in enumerate(parts):
-            mode = os.O_RDONLY if n == len(parts) - 1 else os.O_PATH
+            mode = os.O_RDONLY if n == len(parts) - 1 else SEARCH_ONLY
             try:
                 child = os.open(part, mode | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             except OSError as exc:
@@ -443,9 +440,10 @@ def check_tool(path: str, repo: Path) -> tuple[str, int]:
         if within(real, Path(reserved)) or within(Path(reserved), real):
             raise Refused(f'--tool is mounted at its own path and must not cover {reserved} of the sandbox: {path}')
     for name in HOME_SECRETS:
-        secret = home / name
-        if within(real, secret) or within(secret, real):
-            raise Refused(f'--tool must not expose {secret}: {path}')
+        # A credential store that is itself a link exposes its destination: check both.
+        for secret in dict.fromkeys((home / name, (home / name).resolve())):
+            if within(real, secret) or within(secret, real):
+                raise Refused(f'--tool must not expose {home / name}: {path}')
     runtime = [Path(p).resolve() for p in RUNTIME_ROOTS + ((os.environ['XDG_RUNTIME_DIR'],)
                                                           if os.environ.get('XDG_RUNTIME_DIR') else ())]
     for root in runtime:
@@ -514,7 +512,7 @@ def git(repo: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run([GIT, '-C', str(repo), *args], env=env, **kwargs)
 
 
-def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str], tuple[int, str]]:
+def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str], tuple[int, str, int]]:
     """A fresh copy of the commit for one run, made by trusted code: returns a descriptor of its directory
     (bwrap mounts that, so a later rename cannot swap it), the omitted submodules and what remove_export needs.
 
@@ -549,7 +547,6 @@ def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str]
     name = f'{ref[:12]}-{secrets.token_hex(8)}'
     os.mkdir(name, 0o700, dir_fd=src_fd)
     root = open_dir(name, dir_fd=src_fd)
-    identity = (os.fstat(root).st_dev, os.fstat(root).st_ino)
     batch = subprocess.Popen([GIT, '-C', str(repo), 'cat-file', '--batch'], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1',
                                                           'LC_ALL': 'C'})
@@ -591,27 +588,51 @@ def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str]
         batch.stdout.close()
         batch.wait()
         if not done:
-            os.close(root)
-            remove_export(src_fd, name, identity)
-    return root, submodules, (src_fd, name, identity)
+            remove_export(src_fd, name, root)
+    return root, submodules, (src_fd, name, os.dup(root))
 
 
-def remove_export(src_fd: int, name: str, identity: tuple[int, int]) -> None:
-    """Delete one run's source copy below the descriptor of <scratch>/src, never through a link, and only
-    while that name is still the directory the export created: never a directory moved into its place."""
+def clear_dir(top_fd: int) -> None:
+    """Delete everything below the directory top_fd through descriptors alone: never by a path from above it,
+    never through a link, wherever the directory has been moved meanwhile."""
+    stack: list[list] = [[os.dup(top_fd), None, None]]  # descriptor, name in its parent, names left
     try:
-        st = os.stat(name, dir_fd=src_fd, follow_symlinks=False)
-        if (st.st_dev, st.st_ino) != identity:
-            print(f'sandbox-run: the source copy {name} was replaced by another directory, which stays',
-                  file=sys.stderr)
+        while stack:
+            frame = stack[-1]
+            fd = frame[0]
+            if frame[2] is None:
+                frame[2] = os.listdir(fd)
+            if frame[2]:
+                name = frame[2].pop()
+                if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                    stack.append([open_dir(name, dir_fd=fd), name, None])
+                else:
+                    os.unlink(name, dir_fd=fd)
+                continue
+            stack.pop()
+            os.close(fd)
+            if frame[1] is not None:
+                os.rmdir(frame[1], dir_fd=stack[-1][0])
+    finally:
+        for frame in stack:
+            os.close(frame[0])
+
+
+def remove_export(src_fd: int, name: str, root_fd: int) -> None:
+    """Delete one run's source copy: its content through its own descriptor root_fd, then its name below the
+    descriptor of <scratch>/src, which removes only an empty directory: a directory moved into its place stays."""
+    try:
+        clear_dir(root_fd)
+        st, own = os.stat(name, dir_fd=src_fd, follow_symlinks=False), os.fstat(root_fd)
+        if (st.st_dev, st.st_ino) != (own.st_dev, own.st_ino):
+            print(f'sandbox-run: the source copy {name} was emptied, but its name holds another directory now, '
+                  'which stays', file=sys.stderr)
             return
-        if sys.version_info >= (3, 11):
-            shutil.rmtree(name, dir_fd=src_fd)
-        else:
-            shutil.rmtree(f'/proc/self/fd/{src_fd}/{name}')
+        os.rmdir(name, dir_fd=src_fd)
     except OSError as exc:
         print(f'sandbox-run: the source copy {name} was not removed: {exc}', file=sys.stderr)
     finally:
+        os.close(root_fd)
         os.close(src_fd)
 
 
@@ -623,7 +644,8 @@ def cmd_run(args) -> int:
     if not COMMIT.fullmatch(args.ref):
         return fail('--ref must be a full commit id')
     try:
-        scratch = real_dir(args.scratch, '--scratch')
+        # The path as given, not resolved: a link anywhere on it (a planted runs/scratch) refuses below.
+        scratch = Path(os.path.abspath(args.scratch))
         repo_out = git(Path.cwd(), 'rev-parse', '--show-toplevel', capture_output=True, text=True)
         if repo_out.returncode != 0:
             raise Refused('run from inside the audited repository')

@@ -11,8 +11,12 @@
 > A `confirmed` verdict, from a candidate verifier or a `--reverify` verifier, needs a local check that
 > verifier ran itself in the sandbox (this skill's reading of "complete local execution evidence" and
 > "independently run any decisive check it can reproduce safely": every hunter check ran in the same
-> sandbox, so a verifier can reproduce it); a source-only run confirms nothing. A verifier whose sandbox
-> probe failed settles nothing: its candidate or replacement waits for a fresh verifier.
+> sandbox, so a verifier can reproduce it); a source-only run confirms nothing. Such a check cites the
+> runner's record `evidence/<check>.json` of the audited commit, whose promoted `.out` and `.err` must be
+> the output it records: it shows that the check ran through `sandbox-run.py`, not who wrote the files.
+> A verifier whose sandbox probe failed settles nothing, also when the human switched to source-only
+> after its launch: its candidate or replacement waits for a fresh verifier. A verifier's checks join the
+> ledger in the attempt that found its fingerprint, live or archived.
 > `audit.py final` writes `findings.json`, sorted by fingerprint, and runs both validators; after the
 > Phase 6 reports, `audit.py done` ends the run. Bookkeeping of candidates lives in `<run-dir>/state.json`.
 

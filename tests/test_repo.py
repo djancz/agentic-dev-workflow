@@ -1231,6 +1231,30 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 3)
         self.assertIn('the working tree has changes', r.stderr)
 
+    def test_a_pinned_run_counts_a_change_inside_a_submodule(self):
+        sub = self.tmp / 'sub'
+        sub.mkdir()
+        for args in (['init', '-q'], ['commit', '-q', '--allow-empty', '-m', 'sub']):
+            subprocess.run(['git', '-C', str(sub), '-c', 'user.name=t', '-c', 'user.email=t@t', *args], check=True)
+        (sub / 'lib.py').write_text('x = 1\n')
+        git = ['git', '-C', str(self.repo), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        subprocess.run(['git', '-C', str(sub), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(sub), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'lib'],
+                       check=True)
+        subprocess.run([*git, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(sub), 'vendor'],
+                       check=True, capture_output=True)
+        # The target's own .gitmodules may hide every change inside it from git status.
+        subprocess.run([*git, 'config', '-f', '.gitmodules', 'submodule.vendor.ignore', 'all'], check=True)
+        subprocess.run([*git, 'add', '.gitmodules'], check=True)
+        subprocess.run([*git, 'commit', '-qm', 'vendor'], check=True)
+        head = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 2\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the working tree has changes', r.stderr)
+
     def test_exit_code_is_recorded_and_wait_returns_it(self):
         self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='fail')
         self.assertEqual(Path(f'{self.out}.exit').read_text().strip(), '5')

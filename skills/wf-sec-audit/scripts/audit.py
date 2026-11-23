@@ -47,6 +47,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -75,7 +76,7 @@ KINDS = {  # kind: (role, run-agent mode, --expect-clean)
     'candidate': ('verify', 'rw', True), 'record': ('verify', 'ro', False),
 }
 # A configuration root itself counts too: a committed link `.claude` leads the CLI to settings elsewhere.
-AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini|agents)(/.+)?')
+AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini|agents)(/.+)?', re.DOTALL)
 AGENT_CONFIG_PATHS = ('opencode.json', 'opencode.jsonc', '.mcp.json', '.opencode', '.claude', '.codex', '.gemini',
                       '.agents')
 SKILL_LINK = re.compile(r'\.(claude|opencode|gemini|agents)/skills/(wf-[^/]+)')
@@ -83,6 +84,8 @@ CAP_REASONS = ('wave_cap_reached', 'stagnation', 'budget_cannot_reserve_critics_
                'critic_budget_exhausted')
 REPORTS = ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md')
 LABELS = ('surface', 'boundary', 'subsystem', 'attack_class')  # how a proposal matches the unit seeded for it
+PROPOSAL = (*LABELS, 'starting_paths', 'reason')
+RUNNER_RECORD = re.compile(r'agents/[a-z0-9][a-z0-9_-]{0,63}/artifacts/evidence/(?P<check>c[0-9]{2})\.json')
 BOLD_BLOCK = re.compile(r'^\*\*(?P<name>[^*]+)\*\*(?:\s*\(subagent_type:[^)]*\))?\s*$')
 HEADING = re.compile(r'^(?P<marks>#{1,6})\s+(?P<text>.+?)\s*$')
 
@@ -112,10 +115,17 @@ def now() -> str:
 
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
-    r = subprocess.run(['git', *args], cwd=cwd, capture_output=True, text=True)
+    """Its output as text that keeps every byte: a file name that is not UTF-8 stops nothing."""
+    r = subprocess.run(['git', *args], cwd=cwd, capture_output=True)
     if check and r.returncode != 0:
-        raise Refused(f'git {" ".join(args)} failed: {r.stderr.strip()}')
-    return r.stdout.strip()
+        raise Refused(f'git {" ".join(args)} failed: {r.stderr.decode("utf-8", "replace").strip()}')
+    return r.stdout.decode('utf-8', 'surrogateescape').strip()
+
+
+def display_path(path: str) -> str:
+    """A path as git gave it, for the gate and the records: undecodable bytes and control characters escaped."""
+    text = os.fsencode(path).decode('utf-8', 'backslashreplace')
+    return ''.join(c if c.isprintable() else c.encode('unicode_escape').decode('ascii') for c in text)
 
 
 # --------------------------------------------------------------------------- files
@@ -301,7 +311,7 @@ def committed_agent_config(root: Path, ref: str) -> list[str]:
         mode, _, oid = meta.split()
         if mode == '120000' and installer_link(path, git('-C', str(root), 'cat-file', 'blob', oid)):
             continue
-        found.append(path)
+        found.append(display_path(path))
     return found
 
 
@@ -309,7 +319,7 @@ def local_agent_config(root: Path) -> list[str]:
     """Agent configuration in this clone that git ignores: yours, not the target's, but loaded the same way."""
     listing = git('-C', str(root), 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--',
                   *AGENT_CONFIG_PATHS).split('\0')
-    return [path for path in listing if path and AGENT_CONFIG.fullmatch(path)
+    return [display_path(path) for path in listing if path and AGENT_CONFIG.fullmatch(path)
             and not ((root / path).is_symlink() and installer_link(path, os.readlink(root / path)))]
 
 
@@ -329,7 +339,7 @@ def cmd_init(args) -> int:
         raise Refused('git tracks files below development/: the audit records must stay private')
     if subprocess.run(['git', '-C', str(root), 'check-ignore', '-q', 'development']).returncode != 0:
         raise Refused('development/ is not ignored by git; run wf init (or install.py) first')
-    if git('-C', str(root), 'status', '--porcelain', '--untracked-files=all'):
+    if git('-C', str(root), 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'):
         raise Refused('the working tree is not clean: commit or stash first, so that the audited commit is exact')
     floor = 4 + profile['critics'] + 1
     budget = args.budget or profile['budget']
@@ -362,7 +372,8 @@ def cmd_init(args) -> int:
     if audits.is_symlink():
         raise Refused('development/audits is a link: the audit records stay in development/ itself')
     audits.mkdir(parents=True, exist_ok=True)
-    since_paths = git('-C', str(root), 'diff', '--name-only', '--no-renames', since, head).splitlines() if since else []
+    since_paths = [display_path(path) for path in git('-C', str(root), 'diff', '--name-only', '-z', '--no-renames',
+                                                      since, head).split('\0') if path] if since else []
     agent_config, local_config = committed_agent_config(root, head), local_agent_config(root)
     for files, what in ((agent_config, 'the target commits agent configuration'),
                         (local_config, 'this clone has ignored agent configuration')):
@@ -450,9 +461,16 @@ def counts(run: Run) -> dict[str, int]:
     return result
 
 
-def clean_final_pass(run: Run) -> bool:
-    """A clean final-clean critic pass over the latest coverage: a unit hunted in a later wave needs another."""
-    hunted = max((u['wave'] for u in run.ledger if u['status'] in ('covered', 'candidate', 'blocked')), default=0)
+def hunted_wave(run: Run) -> int:
+    """The latest wave a hunter worked in: live results, units being hunted and archived attempts alike."""
+    live = [u['wave'] for u in run.ledger if u['status'] in ('covered', 'candidate', 'blocked', 'in_progress')]
+    return max(live + [a['wave'] for u in run.ledger for a in u['attempts']], default=0)
+
+
+def clean_final_pass(run: Run, wave: int | None = None) -> bool:
+    """A clean final-clean critic pass over the latest coverage, or over the wave about to be hunted: a unit
+    hunted in a later wave needs another."""
+    hunted = max(hunted_wave(run), wave or 0)
     return any(c['kind'] == 'final-clean' and c.get('clean') and c['wave'] >= hunted for c in run.state['critics'])
 
 
@@ -466,7 +484,7 @@ def reserves(run: Run, wave: int | None = None, remaining: int | None = None) ->
         critics = 0 if critics_run else 1
     else:
         post_wave = wave is not None and not any(c['kind'] == 'post-wave' and c['wave'] == wave for c in critics_run)
-        critics = int(post_wave) + int(not clean_final_pass(run))
+        critics = int(post_wave) + int(not clean_final_pass(run, wave))
     factor = 1 if run.meta['profile'] == 'quick' else 2
     pending = sum(1 for c in run.state['candidates'].values() if c['state'] == 'pending')
     balance = max(remaining - critics, 0)
@@ -559,9 +577,10 @@ def cmd_seed(args) -> int:
         raise Refused(f'these units would be wave {wave}, past the cap of {run.meta["waves"]}: seed them with '
                       '--status deferred --reason wave_cap_reached')
     existing = {unit['coverage_id']: unit for unit in run.ledger}
-    added = 0
+    added, listed = 0, []
     for spec in specs:
         unit = new_unit(spec, args.status, args.reason, min(wave, run.meta['waves'] + 1))
+        listed.append(unit)
         if unit['coverage_id'] in existing:
             old = existing[unit['coverage_id']]
             if any(old.get(key) != unit.get(key) for key in SEMANTIC):
@@ -570,12 +589,11 @@ def cmd_seed(args) -> int:
         run.ledger.append(unit)
         existing[unit['coverage_id']] = unit
         added += 1
-    # A proposal is resolved once the ledger holds a unit with its labels; any other stays until it is seeded
-    # or dismissed with a reason, so that final never overlooks it.
-    held = {tuple(unit.get(key) for key in LABELS) for unit in run.ledger}
+    # A proposal is resolved by a unit of this file with its labels whose starting paths cover its own; any
+    # other stays until it is seeded or dismissed with a reason, so that final never overlooks it.
     resolved = 0
     for name in ('uncovered', 'missing_units'):
-        kept = [entry for entry in run.state[name] if tuple(entry.get(key) for key in LABELS) not in held]
+        kept = [entry for entry in run.state[name] if not any(seeds(unit, entry) for unit in listed)]
         resolved += len(run.state[name]) - len(kept)
         run.state[name] = kept
     run.meta['selected_companions'] = sorted({ref.split('#', 1)[0] for unit in run.ledger
@@ -584,8 +602,33 @@ def cmd_seed(args) -> int:
     left = len(proposals(run))
     print(f'seeded {added} unit(s) for wave {wave}, {len(specs) - added} already present; {len(run.ledger)} in '
           f'the ledger; {resolved} proposal(s) resolved, {left} left'
-          + (' (status lists them: seed them with their labels, or dismiss a duplicate)' if left else ''))
+          + (' (status lists them: seed each as a unit with its labels and starting paths, or dismiss one '
+             'that a unit covers already)' if left else ''))
     return 0
+
+
+def seeds(unit: dict, entry: dict) -> bool:
+    """Whether the unit is the one seeded for the proposal: the same labels, and every path the proposal
+    starts from at or below one of the unit's."""
+    def covered(path: str) -> bool:
+        return any(path == start or path.startswith(start.rstrip('/') + '/') for start in unit['starting_paths'])
+    return all(unit.get(key) == entry.get(key) for key in LABELS) and all(map(covered, entry['starting_paths']))
+
+
+def proposal_errors(entries, where: str) -> list[str]:
+    """Proposed units: text labels and reason and repository-relative starting paths, as a unit needs them."""
+    errors = []
+    for n, entry in enumerate(entries if isinstance(entries, list) else []):
+        at = f'{where}[{n}]'
+        if not isinstance(entry, dict) or not set(PROPOSAL) <= set(entry):
+            errors.append(f'{at}: expected {", ".join(PROPOSAL)}')
+            continue
+        errors += [f'{at}.{key}: expected text' for key in (*LABELS, 'reason') if not VF.has_visible_prose(entry[key])]
+        if not isinstance(entry['starting_paths'], list) or not all(is_path(p) for p in entry['starting_paths']):
+            errors.append(f'{at}.starting_paths: expected repository-relative paths')
+    if not isinstance(entries, list):
+        errors.append(f'{where}: expected a list')
+    return errors
 
 
 def proposals(run: Run) -> list[tuple[str, dict]]:
@@ -821,7 +864,7 @@ def scope_line(run: Run) -> str:
 
 def sandbox_section(run: Run, agent: str) -> str:
     scratch = run.rel(run.runs / 'scratch' / agent)
-    tool = f'python3 {skill_path(run)}/scripts/sandbox-run.py'
+    tool = f'python3 {shlex.quote(skill_path(run) + "/scripts/sandbox-run.py")}'
     if run.meta['source_only']:
         return ('\n## Local checks\n\nThis audit is source-only by the human\'s decision: run no target code. '
                 'Set "sandbox_probe" to "not_run". A candidate that needs a local observed result is '
@@ -834,7 +877,7 @@ First run `{tool} probe --json` and copy its result into "sandbox_probe" as "pas
 "fail: <its missing controls>" otherwise. When it fails, run no target code at all: every candidate that
 needs a local result is needs_validation with that exact blocker.
 
-Run each check as `{tool} run --scratch {scratch} --ref {run.meta["source_ref"]} --check <name> [limits]
+Run each check as `{tool} run --scratch {shlex.quote(scratch)} --ref {run.meta["source_ref"]} --check <name> [limits]
 -- <command…>` from the repository root. The command sees the audited commit read-only at /src (its
 working directory), no network, an empty environment (add dummy values with --env NAME=VALUE), and may
 write only to /work (copy /src there to build). Fixture files you write into {scratch}/inputs/ are mounted
@@ -871,7 +914,7 @@ def require_launch(run: Run, kind: str, agent: str, hunter_wave: int | None = No
     if head != run.meta['source_ref']:
         raise Refused(f'HEAD is {head}, the audit was approved for {run.meta["source_ref"]}: check that commit out '
                       'again before the next agent')
-    if git('-C', str(run.root), 'status', '--porcelain', '--untracked-files=all'):
+    if git('-C', str(run.root), 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'):
         raise Refused('the working tree changed since the audit gate: restore it before the next agent')
     if not AGENT_ID.fullmatch(agent) or agent in {'con', 'prn', 'aux', 'nul'} or re.fullmatch(r'(com|lpt)[1-9]', agent):
         raise Refused(f'unsafe agent id: {agent}')
@@ -907,13 +950,16 @@ def write_prompt(run: Run, agent: str, kind: str, text: str, override: str | Non
     cli = run.meta['host'] if parts[0] == 'self' else parts[0]
     env = [f'WF_AGENT_TIMEOUT={run.meta["agent_timeout"]}', f'WF_AGENT_EXPECT_HEAD={run.meta["source_ref"]}']
     if parts[1] and parts[1] != 'default':
-        env.append(f'WF_AGENT_MODEL={parts[1]}')
+        env.append(f'WF_AGENT_MODEL={shlex.quote(parts[1])}')
     if parts[2] and parts[2] != 'default':
-        env.append(f'WF_AGENT_EFFORT={parts[2]}')
+        env.append(f'WF_AGENT_EFFORT={shlex.quote(parts[2])}')
     out = run.rel(run.runs / f'{agent}.out.md')
-    command = (f'{" ".join(env)} {skill_path(run)}/scripts/run-agent.sh {"--expect-clean " if clean else ""}'
-               f'{cli} {mode} {run.rel(path)} {out}')
-    run.state.setdefault('launched', {})[agent] = {'kind': kind, 'role': role, 'as': value, 'at': now()}
+    # Every path quoted: a checkout below a directory with a space in its name runs the same command.
+    command = ' '.join([*env, shlex.quote(f'{skill_path(run)}/scripts/run-agent.sh'),
+                        *(['--expect-clean'] if clean else []), cli, mode, shlex.quote(run.rel(path)),
+                        shlex.quote(out)])
+    run.state.setdefault('launched', {})[agent] = {'kind': kind, 'role': role, 'as': value, 'at': now(),
+                                                   'source_only': run.meta['source_only']}
     run.save(ledger=True)
     print(f'prompt: {run.rel(path)}  ({run.spent()} of {run.meta["budget"]} spent)')
     print(f'run: {command}')
@@ -1289,6 +1335,11 @@ def strict_json(path: Path):
     return value
 
 
+def launched_source_only(run: Run, agent: str | None) -> bool:
+    """Whether the agent's prompt was source-only: a switch to source-only later changes no earlier launch."""
+    return run.state.get('launched', {}).get(agent, {}).get('source_only', run.meta['source_only'])
+
+
 def is_path(value) -> bool:
     return isinstance(value, str) and VF.is_safe_relative_source_path(value)
 
@@ -1322,7 +1373,7 @@ def check_checks(checks, where: str, owner: str | None, run: Run, errors: list[s
                 errors.append(f'{at}.artifact: a source check has artifact null')
         elif check['method'] == 'local':
             artifact = check['artifact']
-            if run.meta['source_only']:
+            if launched_source_only(run, owner):
                 errors.append(f'{at}.method: this audit is source-only, so no check runs target code')
             elif not isinstance(check['agent_id'], str) or not VL.is_owned_artifact_path(artifact, check['agent_id']):
                 errors.append(f'{at}.artifact: expected agents/{owner or "<agent>"}/artifacts/<file>')
@@ -1358,9 +1409,17 @@ def promote(run: Run, agent: str) -> list[dict]:
     r = subprocess.run(args, capture_output=True, text=True, timeout=120)
     if r.returncode == 3:
         raise Refused('a sandbox of this agent is still running: apply after every run has ended')
-    if r.returncode == 125:
-        raise Refused(f'promotion failed: {r.stderr.strip()}')
-    entries = [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+    try:
+        entries = [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+    except ValueError:
+        entries = []
+    # Exit 0 or 1 with one outcome per allowlisted file, 1 exactly when one was rejected; anything else is a
+    # promotion that did not happen, never "no evidence".
+    if r.returncode not in (0, 1) or len(entries) != len(allowlist) or \
+            not all(isinstance(e, dict) and e.get('status') in ('promoted', 'missing', 'rejected') for e in entries) or \
+            (r.returncode == 1) != any(e['status'] == 'rejected' for e in entries):
+        raise Refused(f'promotion failed (exit {r.returncode}): {r.stderr.strip()[-500:] or "no outcome"}; '
+                      'nothing was applied')
     run.state['allowlists'].pop(agent, None)
     return [e for e in entries if e['status'] != 'missing']
 
@@ -1386,7 +1445,8 @@ def apply_hunter(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
     if set(result) != {'units', 'candidates', 'hardening', 'uncovered', 'sandbox_probe'}:
         return ['the result must have exactly units, candidates, hardening, uncovered and sandbox_probe']
     probe = result['sandbox_probe']
-    if not run.meta['source_only'] and (not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail'))):
+    sandboxed = not launched_source_only(run, agent)
+    if sandboxed and (not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail'))):
         errors.append('sandbox_probe: expected "pass" or "fail: <missing controls>"')
     units = result['units']
     if not isinstance(units, list):
@@ -1445,11 +1505,7 @@ def apply_hunter(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
     hardening, uncovered = result['hardening'], result['uncovered']
     if not isinstance(hardening, list) or not all(VF.has_visible_prose(h) for h in hardening):
         errors.append('hardening: expected a list of notes')
-    if not isinstance(uncovered, list) or not all(
-            isinstance(u, dict) and {'surface', 'boundary', 'subsystem', 'attack_class', 'starting_paths',
-                                     'reason'} <= set(u) for u in uncovered):
-        errors.append('uncovered: expected entries with surface, boundary, subsystem, attack_class, '
-                      'starting_paths and reason')
+    errors += proposal_errors(uncovered, 'uncovered')
     if errors:
         return errors
     for unit in units:
@@ -1470,7 +1526,7 @@ def apply_hunter(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
             entry['proposals'].append(candidate)
         entry.setdefault('title', candidate['title'])
     run.state['uncovered'] += [u | {'from': agent} for u in uncovered]
-    if probe != 'pass' and not run.meta['source_only']:
+    if probe != 'pass' and sandboxed:
         run.state['events'].append({'at': now(), 'agent': agent, 'event': 'sandbox probe failed', 'probe': probe})
     return []
 
@@ -1520,7 +1576,7 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
         errors.append('record.verdict must equal decision')
     errors_checks: list[str] = []
     check_checks(result['checks'], 'result', agent, run, errors_checks, promoted_paths(agent, promoted))
-    errors += errors_checks or local_reproduction(run, decision, result['checks'])
+    errors += errors_checks or local_reproduction(run, agent, decision, result['checks'])
     if errors:
         return errors
     record = result['record']
@@ -1528,7 +1584,8 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
         # A different root cause: it needs its own independent validation before it may count.
         run.state['candidates'].setdefault(record['fingerprint'], {
             'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
-            'units': candidate['units'], 'hunters': [agent], 'title': record['title']})
+            'units': candidate['units'], 'hunters': [agent], 'title': record['title'],
+            'origins': [fp, *candidate.get('origins', [])]})
         candidate['events'] = candidate.get('events', []) + [f'{agent} found another root cause']
         return []
     candidate.update(record=record, decision=decision, validated_by=agent, checks=result['checks'],
@@ -1540,24 +1597,30 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
 
 
 def add_checks(run: Run, candidate: dict, agent: str, checks: list[dict]) -> None:
-    """A verifier's checks join the linked units' checks; a carried record's planned unit becomes its own."""
+    """A verifier's checks join the attempt of each linked unit that found the fingerprint (or the one it came
+    from), live or archived, never an attempt about another fingerprint; a carried record's planned unit
+    becomes its own."""
+    found = {candidate['fingerprint'], *candidate.get('origins', [])}
+    paths = {p for c in checks for p in c['reviewed_paths']}
     for coverage_id in candidate['units']:
         unit = run.unit(coverage_id)
         if unit['status'] == 'planned' and candidate.get('carried'):
-            unit.update(status='candidate', agent_id=agent, local_checks=checks,
-                        reviewed_paths=sorted({p for c in checks for p in c['reviewed_paths']}),
+            unit.update(status='candidate', agent_id=agent, local_checks=checks, reviewed_paths=sorted(paths),
                         result_fingerprints=[candidate['fingerprint']])
-        elif unit['status'] == 'candidate':
-            unit['local_checks'] = unit['local_checks'] + checks
-            unit['reviewed_paths'] = sorted(set(unit['reviewed_paths']) |
-                                            {p for c in checks for p in c['reviewed_paths']})
+            continue
+        attempts = ([unit] if unit['status'] == 'candidate' else []) + unit['attempts'][::-1]
+        holder = next((a for a in attempts if found & set(a['result_fingerprints'])), None)
+        if holder is not None:
+            holder['local_checks'] = holder['local_checks'] + checks
+            holder['reviewed_paths'] = sorted(set(holder['reviewed_paths']) | paths)
 
 
 def probe_failed(run: Run, candidate: dict, agent: str, probe) -> list[str] | None:
-    """None when the verifier's sandbox worked (or the audit is source-only); otherwise its result does not
-    settle anything: the candidate waits for a verifier that can reproduce a local result (errors if malformed)."""
-    if run.meta['source_only']:
-        return None
+    """None when the verifier's sandbox worked, or when it was launched source-only and ran none; otherwise
+    its result does not settle anything, also after a switch to source-only: the candidate waits for another
+    verifier (errors if malformed)."""
+    if launched_source_only(run, agent):
+        return None if probe == 'not_run' else ['sandbox_probe: a source-only verifier runs no probe: "not_run"']
     if not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail')):
         return ['sandbox_probe: expected "pass" or "fail: <missing controls>"']
     if probe == 'pass':
@@ -1568,13 +1631,45 @@ def probe_failed(run: Run, candidate: dict, agent: str, probe) -> list[str] | No
     return []
 
 
-def local_reproduction(run: Run, verdict: str, checks: list[dict]) -> list[str]:
-    """A confirmed verdict rests on complete local execution evidence that this verifier reproduced itself."""
-    if verdict != 'confirmed' or any(c['method'] == 'local' for c in checks):
+def sandbox_record(run: Run, artifact: str) -> str | None:
+    """None when artifact is the runner's record of a check of the audited commit, with both captured streams
+    promoted beside it and matching it; otherwise what is missing. It shows that the check ran through
+    sandbox-run.py, not who wrote the files: nothing authenticates evidence."""
+    match = RUNNER_RECORD.fullmatch(artifact)
+    if not match:
+        return f'{artifact} is no check record (agents/<you>/artifacts/evidence/<check>.json)'
+    path = run.dir / artifact
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return f'{artifact} cannot be read as a check record'
+    if not isinstance(record, dict) or record.get('ref') != run.meta['source_ref'] or \
+            record.get('check') != match['check']:
+        return f'{artifact} records no run of {match["check"]} on the audited commit'
+    for stream, ext in (('stdout', 'out'), ('stderr', 'err')):
+        info = record.get(stream)
+        try:
+            data = path.with_suffix(f'.{ext}').read_bytes()
+        except OSError:
+            return f'the .{ext} file of {artifact} was not promoted'
+        if not isinstance(info, dict) or info.get('kept') != len(data) or \
+                info.get('sha256') != hashlib.sha256(data).hexdigest():
+            return f'the .{ext} file beside {artifact} is not the output it records'
+    return None
+
+
+def local_reproduction(run: Run, agent: str, verdict: str, checks: list[dict]) -> list[str]:
+    """A confirmed verdict rests on complete local execution evidence that this verifier reproduced itself:
+    a local check of its own whose sandbox record, with its output, the parent promoted."""
+    if verdict != 'confirmed':
         return []
-    if run.meta['source_only']:
+    if launched_source_only(run, agent):
         return ['decision: a source-only audit runs no target code, so it confirms nothing: use needs_validation']
-    return ['checks: a confirmed verdict needs a local check of your own that reproduces the observed result']
+    problems = [sandbox_record(run, c['artifact']) for c in checks if c['method'] == 'local']
+    if problems and not all(problems):
+        return []
+    return ['checks: a confirmed verdict needs a local check of your own that reproduces the observed result, '
+            'citing its record evidence/<check>.json' + (f' ({"; ".join(problems[:3])})' if problems else '')]
 
 
 def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> list[str]:
@@ -1600,7 +1695,7 @@ def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
         if set(result) != keys or result['fingerprint'] != fp:
             return [f'a verified result is exactly {sorted(keys)} with fingerprint {fp}']
         if reverify:
-            errors = local_reproduction(run, current['verdict'], result['checks'])
+            errors = local_reproduction(run, agent, current['verdict'], result['checks'])
             if errors:
                 return errors
             candidate['reverify_checks'] = candidate.get('reverify_checks', []) + result['checks']
@@ -1622,7 +1717,7 @@ def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
     if not VF.has_visible_prose(result['reason']):
         errors.append('reason: expected text')
     if reverify and record['fingerprint'] == fp and not material(current, record):
-        errors += local_reproduction(run, verdict, result['checks'])  # it becomes final right here
+        errors += local_reproduction(run, agent, verdict, result['checks'])  # it becomes final right here
     if errors:
         return errors
     if reverify:
@@ -1631,7 +1726,8 @@ def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> li
     if record['fingerprint'] != fp:
         run.state['candidates'].setdefault(record['fingerprint'], {
             'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
-            'units': candidate['units'], 'hunters': [agent], 'title': record['title']})
+            'units': candidate['units'], 'hunters': [agent], 'title': record['title'],
+            'origins': [fp, *candidate.get('origins', [])]})
         return []
     if material(current, record):
         candidate['reverifications'] = candidate.get('reverifications', 0) + 1
@@ -1656,11 +1752,7 @@ def apply_critic(run: Run, agent: str, result: dict) -> list[str]:
             errors.append(f'{field}: expected a list')
     if errors:
         return errors
-    for n, unit in enumerate(result['missing_units']):
-        if not isinstance(unit, dict) or not {'surface', 'boundary', 'subsystem', 'attack_class', 'starting_paths',
-                                              'reason'} <= set(unit):
-            errors.append(f'missing_units[{n}]: expected surface, boundary, subsystem, attack_class, '
-                          'starting_paths, selected_companion_blocks, excluded_blocks and reason')
+    errors += proposal_errors(result['missing_units'], 'missing_units')
     known = {u['coverage_id']: u for u in run.ledger}
     for coverage_id in result['reassign_ids']:
         if not isinstance(coverage_id, str) or coverage_id not in known:
@@ -1770,6 +1862,10 @@ def cmd_apply(args) -> int:
           + (f', rejected {len(rejected)}: ' + '; '.join(f'{e["path"]}: {e["reason"]}' for e in rejected)
              if rejected else ''))
     if result.get('sandbox_probe', 'pass') not in ('pass', 'not_run'):
+        if run.meta['source_only']:
+            print(f'the sandbox probe failed inside {args.agent}, launched before the switch to source-only: '
+                  'what it needed to settle waits for a fresh agent')
+            return 0
         print(f'STOP: the sandbox probe failed inside {args.agent}: {result["sandbox_probe"]}. Ask the human: '
               'fix the environment, or continue source-only (their explicit choice)')
         return 4
@@ -1783,6 +1879,10 @@ def cmd_final(args) -> int:
     run = Run(args.run)
     if run.meta['run_status'] != 'in_progress':
         raise Refused(f'the run is {run.meta["run_status"]}')
+    written = [name for name in REPORTS if (run.dir / name).exists()]
+    if written:
+        raise Refused(f'{", ".join(written)} exist from an earlier final: they describe that finalization, not this '
+                      'one; remove them, then run final again')
     records, unresolved = [], []
     for fp, candidate in sorted(run.state['candidates'].items()):
         if candidate['state'] == 'final':
@@ -1855,7 +1955,8 @@ def cmd_done(args) -> int:
         raise Refused(f'write {", ".join(missing)} first')
     for name, key in (('findings.json', 'findings_sha256'), ('coverage-ledger.json', 'ledger_sha256')):
         if hashlib.sha256((run.dir / name).read_bytes()).hexdigest() != run.meta[key]:
-            raise Refused(f'{name} changed after final: the reports derive from the final records; run final again')
+            raise Refused(f'{name} changed after final: the reports derive from the final records; remove the '
+                          'reports and run final again')
     run.meta.update(run_status=run.meta.pop('final_status'), finished=now())
     run.save()
     print(f'{run.meta["run_id"]}: {run.meta["run_status"]}'

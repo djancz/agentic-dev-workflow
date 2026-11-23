@@ -35,8 +35,8 @@
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
 #   WF_AGENT_EXPECT_HEAD       a full commit id: start only when HEAD is that commit and the working tree
-#                              has no change, untracked files included, else exit 3 (wf sec audit pins its
-#                              agents to the audited commit)
+#                              has no change, untracked files and submodules included, else exit 3 (wf sec
+#                              audit pins its agents to the audited commit)
 #
 # Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
@@ -269,7 +269,8 @@ worktree_tree() {
 fingerprint() {
     tree=$(worktree_tree) || return 1
     head=$(git rev-parse HEAD 2>/dev/null) || head=none
-    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) || return 1
+    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all --ignore-submodules=none) ||
+        return 1
     staged=$(git ls-files --stage) || return 1
     record_hashes=$(records) || return 1
     printf '%s\n' "$head" "$status" "$tree" "$staged" "$record_hashes" | git hash-object --stdin
@@ -313,7 +314,7 @@ if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
     actual=$(git rev-parse HEAD 2>/dev/null) || actual=none
     [ "$actual" = "$WF_AGENT_EXPECT_HEAD" ] ||
         die 3 "HEAD is $actual, but this run is pinned to $WF_AGENT_EXPECT_HEAD; nothing ran"
-    pinned_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) ||
+    pinned_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all --ignore-submodules=none) ||
         die 3 "git status failed, so the tree of this pinned run is unknown; nothing ran"
     [ -z "$pinned_status" ] ||
         die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"

@@ -40,25 +40,32 @@ Changes to the upstream text and contract:
   every `--tool` directory are mounted by descriptor, so what was checked is what the command sees. A
   `--tool` mount refuses sockets, FIFOs, runtime directories such as `/run` and the sandbox's own mount
   points, `--inputs` refuses sockets and FIFOs, and the cgroup v2 limits are read back inside the scope
-  before the command starts.
+  before the command starts. No `--tool` may cover a credential store of the home directory, or the
+  destination of one that is a link. The export is removed through its own descriptor; by name only an
+  empty directory goes, so a directory moved into its place stays.
 - A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`
   refuses `complete` while a cap or the budget deferred units, while a proposed unit is neither seeded
-  nor dismissed with a reason, or when no clean final-clean critic pass followed the latest hunted wave. `audit.py done` ends a run once the Phase 6
-  reports exist; until then it stays `in_progress`.
+  nor dismissed with a reason, or when no clean final-clean critic pass followed the latest hunted wave,
+  archived attempts included. `seed` resolves a proposal only with a unit of its file that has the
+  proposal's labels and covers its starting paths. `audit.py done` ends a run once the Phase 6 reports
+  exist; until then it stays `in_progress`, and a new `final` needs the reports of the last one removed.
 - The validators take Unicode properties from the running Python's `unicodedata`, as upstream's take them
   from Node's ICU: two runtimes with different Unicode versions can classify a newly assigned character
   differently.
 - Promotion opens the scratch and artifacts roots when it starts, from `/` without following a link on
-  the way, instead of before the agent run: `audit.py` is a separate process. The artifacts directories are hashed by
-  `run-agent.sh`, so a run that touched one fails before anything is promoted.
+  the way, instead of before the agent run: `audit.py` is a separate process. `sandbox-run.py run`
+  opens its scratch directory the same way. The artifacts directories are hashed by
+  `run-agent.sh`, so a run that touched one fails before anything is promoted. The audit and every
+  pinned run count a change inside a submodule, whatever its `ignore` setting.
 - Reconnaissance agent 1d does not probe the host for the sandbox and promotion controls (its items 6 and
   7): `sandbox-run.py probe` answers them, and the agent names the toolchains a local check needs.
 - The hunter result has one more field, `sandbox_probe`, and the candidate and `--reverify` verifier
   results two, `checks` (their own source and local checks, recorded in the ledger under their agent ID)
   and `sandbox_probe`. A `confirmed` verdict from either needs a local check of that verifier's own: the
   reading here of upstream's "complete local execution evidence" and "independently run any decisive
-  check it can reproduce safely", since every hunter check ran in the same sandbox. A verifier whose probe
-  failed settles nothing, and a source-only run confirms nothing.
+  check it can reproduce safely", since every hunter check ran in the same sandbox. That check cites the
+  runner's record of it, whose promoted output must match it. A verifier whose probe failed settles
+  nothing, also after a switch to source-only, and a source-only run confirms nothing.
 
 ## License of the upstream files
 
