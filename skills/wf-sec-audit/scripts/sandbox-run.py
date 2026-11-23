@@ -11,14 +11,16 @@ probe   reports each control the audit requires as `enforced` or `missing` and e
 
 run     (hunters and candidate verifiers) runs <command> with no external network (only loopback), an empty
         environment plus --env NAME=VALUE, read-only /usr, toolchains (--tool) and target source, an /etc of
-        the entries toolchains read (ETC_ENTRIES; passwd and group name only the sandbox's user), and writes
-        only to a size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to /work to build).
+        the entries toolchains read (ETC_ENTRIES; passwd, group and hosts name only the sandbox, as its host
+        name does), and writes only to the size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to
+        /work to build) and /dev/shm (64 MiB).
         The source is a fresh export of the committed bytes of <commit> for this run (no .gitattributes of
         the target applies), written by this script into a new <scratch>/src/<random>/, mounted read-only
         at /src and removed afterwards; submodules are not exported. --inputs <dir under scratch> is mounted
         read-only at /input. A --tool is a directory that must not hold a socket or FIFO, nor lie in the
         home directory's credential stores, the repository, a runtime directory such as /run or /tmp, or
-        /src, /work or /input; --inputs holds no socket or FIFO either. Tools, inputs and the source are
+        /src, /work or /input; an entry of /etc, /etc/<name>, may be a file too and must be readable by
+        every user throughout; --inputs holds no socket or FIFO either. Tools, inputs and the source are
         mounted by descriptor: what was checked is what the command sees. Limits: a cgroup v2
         scope (systemd-run --user, which must not expand ${NAME} in the command) for tasks, memory and CPU
         rate, read back inside the scope before the command starts, rlimits for CPU time, file size, open
@@ -32,7 +34,8 @@ promote (the parent only, after the agent run has ended) copies each allowlisted
         into <artifacts> with the race-safe procedure of references/HUNTING.md: directory descriptors held
         from the start, no-follow traversal of every component, nonblocking open, a regular file with one
         link within its byte limit and the cumulative limit, an unchanged identity and size after the copy,
-        exclusive creation of the destination. A file that fails any step is not promoted. It prints one
+        exclusive creation of the destination (one that holds the same bytes already, from a promotion an
+        interrupted apply made, counts as promoted). A file that fails any step is not promoted. It prints one
         JSON line per allowed path (promoted, missing or rejected with the reason). Exit 0 when nothing was
         rejected, 1 when something was, 3 when a run still holds the scratch directory, 125 on invalid use.
 
@@ -100,14 +103,27 @@ RUNTIME_ROOTS = ('/run', '/var/run', '/tmp', '/var/tmp', '/dev', '/proc', '/sys'
 RESERVED_MOUNTS = ('/src', '/work', '/input')
 TOOL_SCAN_LIMIT = 500000
 # The entries of the host /etc that toolchains read: the loader, alternatives, time and name service files,
-# certificates and the configuration of common runtimes. The rest of /etc stays out: a host keeps
-# user-readable credentials there too (a proxy password, a package index token). passwd and group are the
-# sandbox's own; a toolchain that needs another entry gets it with --tool /etc/<name>.
+# the public certificates and the configuration of common runtimes. The rest of /etc stays out: a host keeps
+# user-readable credentials there too (a proxy password, a package index token, a TLS key readable by the
+# group ssl-cert), so of ssl and pki only the certificates and the OpenSSL configuration go in. An entry
+# whose host path leads out of /etc and /usr stays out as well. passwd, group and hosts are the sandbox's
+# own; a toolchain that needs another entry gets it with --tool /etc/<name>.
 ETC_ENTRIES = ('alternatives', 'ca-certificates', 'crypto-policies', 'debian_version', 'fonts', 'gai.conf',
-               'host.conf', 'hosts', 'ld.so.cache', 'ld.so.conf', 'ld.so.conf.d', 'locale.alias', 'locale.conf',
-               'localtime', 'lsb-release', 'magic', 'mime.types', 'nsswitch.conf', 'os-release', 'perl', 'pki',
-               'protocols', 'services', 'ssl', 'timezone')
-ETC_PREFIXES = ('java-', 'python3')
+               'host.conf', 'ld.so.cache', 'ld.so.conf', 'ld.so.conf.d', 'locale.alias', 'locale.conf',
+               'localtime', 'lsb-release', 'magic', 'mime.types', 'nsswitch.conf', 'os-release', 'perl',
+               'pki/ca-trust', 'pki/java', 'pki/tls/cert.pem', 'pki/tls/certs', 'pki/tls/openssl.cnf', 'protocols',
+               'services', 'ssl/cert.pem', 'ssl/certs', 'ssl/openssl.cnf', 'timezone')
+ETC_PATTERN = re.compile(r'java-\d+-openjdk|python3(\.\d+)?')
+# The directories bwrap makes for the nested entries above.
+ETC_PARENTS = tuple(sorted({entry.rsplit('/', 1)[0] for entry in ETC_ENTRIES if '/' in entry} |
+                           {entry.split('/', 1)[0] for entry in ETC_ENTRIES if '/' in entry}))
+ETC_GENERATED = ('group', 'hosts', 'passwd')
+HOSTNAME = 'sandbox'
+# /dev is read-only but for shared memory, a tmpfs of its own with this size.
+SHM_BYTES = 64 * 1024 * 1024
+# The mounts that stay writable inside: /work and /dev/shm take files; the others are the kernel's.
+WRITABLE_MOUNTS = ('/work', '/dev/shm', '/proc', '/dev/pts', '/dev/null', '/dev/zero', '/dev/full', '/dev/random',
+                   '/dev/urandom', '/dev/tty')
 
 
 class Refused(Exception):
@@ -134,47 +150,81 @@ def host_root_links() -> list[str]:
     return args
 
 
-def etc_args(identity: list[tuple[int, str]]) -> list[str]:
-    """The sandbox's /etc: the host entries of ETC_ENTRIES that exist, and passwd and group from the
-    descriptors in identity."""
+def etc_sources() -> list[str]:
+    """The entries of the host /etc that the sandbox mounts: those of ETC_ENTRIES and ETC_PATTERN that exist
+    and do not lead out of /etc and /usr (bwrap would mount where a link of the host leads)."""
+    names = list(ETC_ENTRIES) + sorted(name for name in os.listdir('/etc') if ETC_PATTERN.fullmatch(name))
+    kept = []
+    for name in names:
+        path = Path('/etc') / name
+        if not os.path.lexists(path):
+            continue
+        real = path.resolve()
+        if real.exists() and any(real == root or root in real.parents for root in (Path('/etc'), Path('/usr'))):
+            kept.append(str(path))
+    return kept
+
+
+def etc_args(generated: list[tuple[int, str]]) -> list[str]:
+    """The sandbox's /etc: the host entries of etc_sources(), and passwd, group and hosts from the
+    descriptors in generated."""
     args = ['--dir', '/etc']
-    for name in sorted(os.listdir('/etc')):
-        if (name in ETC_ENTRIES or name.startswith(ETC_PREFIXES)) and os.path.exists(f'/etc/{name}'):
-            args += ['--ro-bind', f'/etc/{name}', f'/etc/{name}']
-    for fd, target in identity:
+    for path in etc_sources():
+        args += ['--ro-bind', path, path]
+    for fd, target in generated:
         args += ['--ro-bind-data', str(fd), target]
     return args
 
 
 def identity_fds() -> list[tuple[int, str]]:
-    """Descriptors that hold the sandbox's passwd and group: one user, its group, home /work/home."""
+    """Descriptors that hold the sandbox's passwd, group and hosts: one user, its group, home /work/home, and
+    only loopback names, so that nothing of the host's name or network shows."""
     uid, gid = os.getuid(), os.getgid()
     fds = []
-    for target, line in (('/etc/passwd', f'sandbox:x:{uid}:{gid}::/work/home:/bin/sh\n'),
-                         ('/etc/group', f'sandbox:x:{gid}:\n')):
+    for target, text in (('/etc/passwd', f'sandbox:x:{uid}:{gid}::/work/home:/bin/sh\n'),
+                         ('/etc/group', f'sandbox:x:{gid}:\n'),
+                         ('/etc/hosts', f'127.0.0.1 localhost {HOSTNAME}\n::1 localhost {HOSTNAME}\n')):
         read, write = os.pipe()
-        os.write(write, line.encode())
+        os.write(write, text.encode())
         os.close(write)
         fds.append((read, target))
     return fds
 
 
+# Runs inside the finished sandbox, as the last step before the command: its standard input is the launch
+# pipe, and one byte there says that the command starts, which then reads /dev/null instead, as before. A
+# command that cannot start sends no byte, so it is no result. The shell adds no variable of its own.
+LAUNCH_SCRIPT = r'''
+case $1 in
+  */*) [ -f "$1" ] && [ -x "$1" ] ;;
+  *) command -v "$1" >/dev/null 2>&1 ;;
+esac || { printf 'wf-sandbox-launch: %s: no such executable\n' "$1" >&2; exit 125; }
+printf . >&0 || exit 125
+exec 0</dev/null
+unset PWD OLDPWD SHLVL
+exec "$@"
+'''
+
+
 def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str | int, str]], chdir: str,
-               status_fd: int, identity: list[tuple[int, str]] = ()) -> list[str]:
-    """A bind's source is a path, or an open directory descriptor that keeps its identity until bwrap mounts it."""
+               status_fd: int, identity: list[tuple[int, str]] = (), launch: bool = False) -> list[str]:
+    """A bind's source is a path, or an open descriptor that keeps its identity until bwrap mounts it."""
     # The status descriptor gets an "exit-code" line only when the command itself ran and ended.
     args = [BWRAP, '--json-status-fd', str(status_fd), '--unshare-all', '--unshare-user', '--disable-userns',
-            '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv']
+            '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv', '--hostname', HOSTNAME]
     for name, value in env.items():
         args += ['--setenv', name, value]
     args += ['--ro-bind', '/usr', '/usr', *host_root_links(), *etc_args(list(identity)),
-             '--proc', '/proc', '--dev', '/dev',
+             '--proc', '/proc', '--dev', '/dev', '--size', str(SHM_BYTES), '--tmpfs', '/dev/shm',
              '--size', str(work_bytes), '--tmpfs', '/work', '--dir', '/work/home', '--dir', '/work/tmp',
              '--symlink', '/work/tmp', '/tmp']
     for source, target in binds:
         args += ['--ro-bind-fd', str(source), target] if isinstance(source, int) else ['--ro-bind', source, target]
-    # bwrap leaves its root writable: only /work, which has a size, may take writes.
-    return args + ['--remount-ro', '/', '--chdir', chdir, '--']
+    # bwrap leaves its root and its /dev writable: only /work and /dev/shm, which have a size, may take writes.
+    args += ['--remount-ro', '/dev', '--remount-ro', '/', '--chdir', chdir, '--']
+    if launch:
+        args += ['/bin/sh', '-c', LAUNCH_SCRIPT, 'wf-sandbox-launch']
+    return args
 
 
 @functools.lru_cache(maxsize=1)
@@ -270,28 +320,32 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
     cgroup = {'tasks': limits['tasks'], 'memory_mb': limits['memory_mb'], 'cpu_percent': limits['cpu_percent']}
     scope, unit = scope_args(**cgroup)
     status_read, status_write = os.pipe()
+    launch_read, launch_write = os.pipe()
     identity = identity_fds()
     argv = scope + (guard_args(**cgroup) if guard else []) + bwrap_args(
         work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds, chdir=chdir, status_fd=status_write,
-        identity=identity) + command
+        identity=identity, launch=True) + command
     bind_fds = tuple(source for source, _ in binds if isinstance(source, int)) + tuple(fd for fd, _ in identity)
     started = time.monotonic()
     try:
-        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   cwd=cwd, start_new_session=True, close_fds=True, pass_fds=(status_write, *bind_fds),
-                                   env=scope_env(),
+        process = subprocess.Popen(argv, stdin=launch_write, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=cwd, start_new_session=True, close_fds=True,
+                                   pass_fds=(status_write, *bind_fds), env=scope_env(),
                                    preexec_fn=rlimits(limits['cpu_seconds'], limits['file_mb'] * 1024 * 1024,
                                                       limits['nofile'], as_bytes))
     except OSError as exc:
         os.close(status_read)
+        os.close(launch_read)
         raise Refused(f'cannot start the sandbox: {exc}') from exc
     finally:
         os.close(status_write)
+        os.close(launch_write)
         for fd, _ in identity:
             os.close(fd)
     out, err = Capture(process.stdout, limits['output_bytes']), Capture(process.stderr, limits['output_bytes'])
     status_pipe = Capture(os.fdopen(status_read, 'rb'), 65536)
-    for reader in (out, err, status_pipe):
+    launch_pipe = Capture(os.fdopen(launch_read, 'rb'), 16)
+    for reader in (out, err, status_pipe, launch_pipe):
         reader.start()
     killed = None
     try:
@@ -300,20 +354,20 @@ def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str 
         killed = 'timeout'
         stop(process, unit)
         process.wait()
-    for reader in (out, err, status_pipe):
+    for reader in (out, err, status_pipe, launch_pipe):
         reader.join()
         reader.stream.close()
     duration = round(time.monotonic() - started, 3)
     code = process.returncode
     status = 124 if killed else (128 - code if code < 0 else code)
     stderr = bytes(err.data)
-    if not killed and b'"exit-code"' not in status_pipe.data:
-        # bwrap or systemd refused before the command started: nothing of it ran.
-        raise Refused('the sandbox did not start: ' + stderr.decode('utf-8', 'replace').strip()[:300])
-    if killed and b'"child-pid"' not in status_pipe.data:
-        # bwrap reports a child-pid once it has made the sandbox the command starts in; without one the time ran
-        # out while systemd was still setting up the scope, and nothing of the command ran.
+    # Only the launch byte, written inside the finished sandbox right before the command, says that it ran:
+    # without it systemd, the guard or bwrap stopped first, or the time ran out while they set up.
+    launched = bytes(launch_pipe.data) == b'.'
+    if killed and not launched:
         raise Refused(f'the wall-clock limit of {limits["timeout"]} s ran out before the command started')
+    if not killed and (not launched or b'"exit-code"' not in status_pipe.data):
+        raise Refused('the sandbox did not start: ' + stderr.decode('utf-8', 'replace').strip()[:300])
     return {'status': status, 'killed': killed, 'duration_s': duration, 'stdout': bytes(out.data),
             'stdout_bytes': out.total, 'stderr': stderr, 'stderr_bytes': err.total, 'unit': unit}
 
@@ -337,14 +391,23 @@ def stop(process: subprocess.Popen, unit: str) -> None:
 
 
 PROBE_SCRIPT = r'''
+home=$1 tmp=$2
+shift 2
 nets=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')
 echo "nets=$nets"
 echo "env=$(env | cut -d= -f1 | sort | tr '\n' ' ')"
-for p in /x /src/x /usr/x /etc/x "$1/x" "$2/x"; do
+for p in /x /src/x /usr/x /etc/x /dev/x "$home/x" "$tmp/x"; do
   if (: > "$p") 2>/dev/null; then echo "writable=$p"; fi
 done
-for p in "$1" "$2"; do [ -e "$p" ] && echo "visible=$p"; done
+for p in "$home" "$tmp"; do [ -e "$p" ] && echo "visible=$p"; done
 echo "etc=$(ls -A /etc | tr '\n' ' ')"
+for d in "$@"; do echo "etc/$d=$(ls -A "/etc/$d" 2>/dev/null | tr '\n' ' ')"; done
+rw= shm=
+while read -r _ _ _ _ mnt opts rest; do
+  case $opts in rw|rw,*) rw="$rw $mnt";; esac
+  [ "$mnt" = /dev/shm ] && shm=${rest##* }
+done < /proc/self/mountinfo
+echo "rw=$rw"; echo "shm=$shm"
 : > /work/ok && echo work=ok
 head -c 2097152 /dev/zero > /work/big 2>/dev/null; echo "work_bytes=$(wc -c < /work/big)"
 echo "cpu=$(ulimit -t)"; echo "nofile=$(ulimit -n)"; echo "core=$(ulimit -c)"; echo "fsize=$(ulimit -f)"
@@ -378,7 +441,7 @@ def probe() -> dict[str, str]:
             limits.update(work_mb=1, timeout=30)
             src_fd = open_dir(src)  # mounted by descriptor, as run mounts the source export
             try:
-                run = sandboxed(['/bin/sh', '-c', PROBE_SCRIPT, 'probe', home, tmp],
+                run = sandboxed(['/bin/sh', '-c', PROBE_SCRIPT, 'probe', home, tmp, *ETC_PARENTS],
                                 env={'PATH': DEFAULT_PATH, **FIXED_ENV, 'WF_PROBE': '1'},
                                 binds=[(src_fd, '/src')], chdir='/', limits=limits, guard=False)
             except Refused as exc:
@@ -401,10 +464,18 @@ def probe() -> dict[str, str]:
                             'scratch-only-writes')
                 if visible:
                     missing(f'host paths visible inside: {", ".join(visible)}', 'scratch-only-writes')
-                etc = sorted(name for name in facts.get('etc', '').split() if name not in ('passwd', 'group')
-                             and name not in ETC_ENTRIES and not name.startswith(ETC_PREFIXES))
+                etc = [name for name in facts.get('etc', '').split() if name not in ETC_GENERATED and name not in
+                       ETC_ENTRIES and name not in ETC_PARENTS and not ETC_PATTERN.fullmatch(name)]
+                etc += [f'{parent}/{name}' for parent in ETC_PARENTS for name in facts.get(f'etc/{parent}', '').split()
+                        if f'{parent}/{name}' not in ETC_ENTRIES + ETC_PARENTS]
                 if etc or 'etc' not in facts:
-                    missing(f'host /etc entries visible inside: {", ".join(etc) or "?"}', 'scratch-only-writes')
+                    missing(f'host /etc entries visible inside: {", ".join(sorted(etc)) or "?"}', 'scratch-only-writes')
+                mounts = facts.get('rw', '').split()
+                extra = sorted(set(mounts) - set(WRITABLE_MOUNTS))
+                if extra or '/work' not in mounts:
+                    missing(f'writable mounts inside: {", ".join(extra) or "?"}', 'scratch-only-writes')
+                if f'size={SHM_BYTES // 1024}k' not in facts.get('shm', '').split(','):
+                    missing(f'the shared-memory tmpfs has no size of {SHM_BYTES} bytes', 'disk-limit')
                 if facts.get('work') != 'ok':
                     missing('the work tmpfs is not writable', 'scratch-only-writes')
                 if facts.get('work_bytes', '').strip() != str(1024 * 1024):
@@ -491,9 +562,15 @@ def open_real(path: Path, what: str) -> int:
 
 
 def check_tool(path: str, repo: Path) -> tuple[str, int]:
+    """The mount point of a --tool and a descriptor of what was checked. A toolchain is a directory, mounted
+    at its real path; an entry of /etc, /etc/<name>, is a directory or a file, mounted at /etc/<name> wherever
+    the host's link leads, and what this user may read in it every user must be able to read: what only its
+    owner or group may read there (/etc/ssl/private, for example) is a credential."""
     p = Path(path)
     if not p.is_absolute() or not p.exists():
         raise Refused(f'--tool needs an existing absolute path: {path}')
+    given = Path(os.path.normpath(p))
+    etc_entry = given.parent == Path('/etc')
     real = p.resolve()
     home = Path.home().resolve()
 
@@ -502,7 +579,7 @@ def check_tool(path: str, repo: Path) -> tuple[str, int]:
 
     if real == Path('/') or within(home, real) or within(repo, real) or within(real, repo):
         raise Refused(f'--tool must not expose the home directory or the repository: {path}')
-    if real == Path('/etc'):
+    if Path('/etc') in (real, given):
         raise Refused('--tool must not mount all of /etc, which holds host credentials too: mount the entry a '
                       f'toolchain needs, --tool /etc/<name>: {path}')
     for reserved in RESERVED_MOUNTS:
@@ -518,23 +595,40 @@ def check_tool(path: str, repo: Path) -> tuple[str, int]:
     for root in runtime:
         if within(real, root) or within(root, real):
             raise Refused(f'--tool must not expose {root}, where host services keep their sockets: {path}')
+    if etc_entry and real.is_file():
+        # bwrap mounts this descriptor, the file that was checked.
+        parent = open_real(real.parent, '--tool')
+        try:
+            fd = os.open(real.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent)
+        except OSError as exc:
+            raise Refused(f'--tool cannot open {real}: {exc.strerror}') from None
+        finally:
+            os.close(parent)
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode) or not mode & stat.S_IROTH:  # opened, so this user may read it
+            os.close(fd)
+            raise Refused(f'--tool of /etc must be a regular file that every user may read: {path}')
+        return str(given), fd
     if not real.is_dir():
-        raise Refused(f'--tool must be a directory: {path}')
+        raise Refused(f'--tool must be a directory, or a file of /etc: {path}')
     # bwrap mounts this descriptor, the directory that was checked, whatever happens to the path meanwhile.
     fd = open_real(real, '--tool')
-    channel = first_channel(fd, str(real), '--tool')
-    if channel:
+    found = first_channel(fd, str(real), '--tool', public=etc_entry)
+    if found:
         os.close(fd)
-        raise Refused(f'--tool must not expose a socket or FIFO, which would reach a host process: {channel}')
-    return str(real), fd
+        raise Refused(f'--tool must not expose {found}')
+    return (str(given) if etc_entry else str(real)), fd
 
 
-def first_channel(root_fd: int, label: str, what: str) -> str | None:
-    """The first socket or FIFO in the directory root_fd or below, without following links; refuses a tree
-    too large to check."""
+def first_channel(root_fd: int, label: str, what: str, public: bool = False) -> str | None:
+    """The first socket or FIFO in the directory root_fd or below, without following links, and with public
+    the first entry that this user may read but not every user (one that only root may read shows nothing);
+    refuses a tree too large to check."""
     def unreadable(exc: OSError):
         raise Refused(f'{what} cannot be checked for sockets: {exc}')
 
+    if public and (os.fstat(root_fd).st_mode & 0o005) != 0o005:  # opened, so this user may read it
+        return f'{label}, which not every user may read'
     seen = 0
     for top, dirs, files, top_fd in os.fwalk('.', dir_fd=root_fd, follow_symlinks=False, onerror=unreadable):
         for name in dirs + files:
@@ -543,8 +637,13 @@ def first_channel(root_fd: int, label: str, what: str) -> str | None:
                 raise Refused(f'{what} has more than {TOOL_SCAN_LIMIT} entries to check; mount a narrower '
                               f'directory: {label}')
             mode = os.stat(name, dir_fd=top_fd, follow_symlinks=False).st_mode
+            where = os.path.normpath(os.path.join(label, top, name))
             if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode):
-                return os.path.normpath(os.path.join(label, top, name))
+                return f'a socket or FIFO, which would reach a host process: {where}'
+            needed = 0o005 if stat.S_ISDIR(mode) else 0o004
+            if public and not stat.S_ISLNK(mode) and (mode & needed) != needed and \
+                    os.access(name, os.R_OK, dir_fd=top_fd, follow_symlinks=False):
+                return f'{where}, which not every user may read'
     return None
 
 
@@ -616,6 +715,8 @@ def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str]
     name = f'{ref[:12]}-{secrets.token_hex(8)}'
     os.mkdir(name, 0o700, dir_fd=src_fd)
     root = open_dir(name, dir_fd=src_fd)
+    # Every directory of the export, as it was made: the cleanup descends into these only.
+    made = {identity(os.fstat(root))}
     batch = subprocess.Popen([GIT, '-C', str(repo), 'cat-file', '--batch'], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1',
                                                           'LC_ALL': 'C'})
@@ -635,7 +736,7 @@ def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str]
             data = batch.stdout.read(size)
             batch.stdout.read(1)
             names = [os.fsdecode(part) for part in parts]
-            parent = walk(root, names[:-1], create=True)
+            parent = walk(root, names[:-1], create=True, made=made)
             try:
                 if mode == '120000':
                     os.symlink(os.fsdecode(data), names[-1], dir_fd=parent)
@@ -657,13 +758,18 @@ def export_source(repo: Path, ref: str, scratch_fd: int) -> tuple[int, list[str]
         batch.stdout.close()
         batch.wait()
         if not done:
-            remove_export(src_fd, name, root)
-    return root, submodules, (src_fd, name, os.dup(root))
+            remove_export(src_fd, name, root, made)
+    return root, submodules, (src_fd, name, os.dup(root), made)
 
 
-def clear_dir(top_fd: int) -> None:
+def identity(st: os.stat_result) -> tuple[int, int]:
+    return st.st_dev, st.st_ino
+
+
+def clear_dir(top_fd: int, made: set[tuple[int, int]]) -> None:
     """Delete everything below the directory top_fd through descriptors alone: never by a path from above it,
-    never through a link, wherever the directory has been moved meanwhile."""
+    never through a link, wherever the directory has been moved meanwhile, and only in the directories of
+    made, those the export created: a directory moved in from elsewhere stays, whenever it came."""
     stack: list[list] = [[os.dup(top_fd), None, None]]  # descriptor, name in its parent, names left
     try:
         while stack:
@@ -676,11 +782,9 @@ def clear_dir(top_fd: int) -> None:
                 st = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 if stat.S_ISDIR(st.st_mode):
                     child = open_dir(name, dir_fd=fd)
-                    own = os.fstat(child)
-                    if (own.st_dev, own.st_ino) != (st.st_dev, st.st_ino):
-                        # Another directory was moved to this name after the check: it is not the export's.
+                    if identity(os.fstat(child)) not in made:
                         os.close(child)
-                        raise OSError(errno.EBUSY, f'{name} was replaced during the cleanup, so it stays')
+                        raise OSError(errno.EBUSY, f'{name} is not a directory of the export, so it stays')
                     stack.append([child, name, None])
                 else:
                     os.unlink(name, dir_fd=fd)
@@ -694,11 +798,11 @@ def clear_dir(top_fd: int) -> None:
             os.close(frame[0])
 
 
-def remove_export(src_fd: int, name: str, root_fd: int) -> None:
+def remove_export(src_fd: int, name: str, root_fd: int, made: set[tuple[int, int]]) -> None:
     """Delete one run's source copy: its content through its own descriptor root_fd, then its name below the
     descriptor of <scratch>/src, which removes only an empty directory: a directory moved into its place stays."""
     try:
-        clear_dir(root_fd)
+        clear_dir(root_fd, made)
         st, own = os.stat(name, dir_fd=src_fd, follow_symlinks=False), os.fstat(root_fd)
         if (st.st_dev, st.st_ino) != (own.st_dev, own.st_ino):
             print(f'sandbox-run: the source copy {name} was emptied, but its name holds another directory now, '
@@ -753,9 +857,9 @@ def cmd_run(args) -> int:
             except (Rejected, FileNotFoundError) as exc:
                 raise Refused(f'--inputs must be a plain directory inside the scratch directory: {exc}') from None
             binds.append((inputs_fd, '/input'))
-            channel = first_channel(inputs_fd, str(scratch / args.inputs), '--inputs')
-            if channel:
-                raise Refused(f'--inputs must not hold a socket or FIFO, which would reach a host process: {channel}')
+            found = first_channel(inputs_fd, str(scratch / args.inputs), '--inputs')
+            if found:
+                raise Refused(f'--inputs must not hold {found}')
         source_fd, submodules, export = export_source(repo, args.ref, scratch_fd)
         try:
             binds.insert(0, (source_fd, '/src'))
@@ -808,8 +912,9 @@ def split_relative(path: str) -> list[str]:
     return parts
 
 
-def walk(root_fd: int, parts: list[str], create: bool) -> int:
-    """A descriptor of the directory parts[...] below root_fd, never following a link."""
+def walk(root_fd: int, parts: list[str], create: bool, made: set[tuple[int, int]] | None = None) -> int:
+    """A descriptor of the directory parts[...] below root_fd, never following a link; adds the identity of
+    each directory on the way to made."""
     fd = os.dup(root_fd)
     try:
         for part in parts:
@@ -826,8 +931,11 @@ def walk(root_fd: int, parts: list[str], create: bool) -> int:
                 raise Rejected(f'{part}: not a plain directory ({errno.errorcode.get(exc.errno, exc.errno)})')
             os.close(fd)
             fd = child
-            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISDIR(st.st_mode):
                 raise Rejected(f'{part}: not a directory')
+            if made is not None:
+                made.add(identity(st))
         return fd
     except BaseException:
         os.close(fd)
@@ -876,7 +984,10 @@ def promote_one(scratch_fd: int, artifacts_fd: int, path: str, limit: int, budge
             out = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
                           dir_fd=dest_dir)
         except FileExistsError:
-            raise Rejected('the destination exists already') from None
+            # An apply that stopped after this copy promotes again: the same bytes are the same evidence.
+            if same_copy(dest_dir, parts[-1], data):
+                return len(data), hashlib.sha256(data).hexdigest()
+            raise Rejected('the destination exists already with other content') from None
         try:
             info = os.fstat(out)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -898,6 +1009,27 @@ def promote_one(scratch_fd: int, artifacts_fd: int, path: str, limit: int, budge
     finally:
         os.close(dest_dir)
     return len(data), hashlib.sha256(data).hexdigest()
+
+
+def same_copy(dir_fd: int, name: str, data: bytes) -> bool:
+    """Whether name below dir_fd is a regular file with one link that holds exactly data; nothing is changed."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != len(data):
+            return False
+        held = bytearray()
+        while len(held) <= len(data):
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            held += chunk
+        return bytes(held) == data
+    finally:
+        os.close(fd)
 
 
 def cmd_promote(args) -> int:
@@ -952,7 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument('--check', required=True, help='evidence name, for example c01')
     r.add_argument('--inputs', help='a directory inside the scratch directory, mounted read-only at /input')
     r.add_argument('--tool', action='append', default=[], help='an absolute toolchain directory, mounted read-only at its own path '
-                   '(also an entry of /etc beyond ETC_ENTRIES, as /etc/<name>)')
+                   '(also an entry of /etc beyond ETC_ENTRIES, a file or directory, as /etc/<name>)')
     r.add_argument('--env', action='append', default=[], help='NAME=VALUE with a dummy, non-secret value')
     for name, (default, maximum) in LIMITS.items():
         r.add_argument(f'--{name.replace("_", "-")}', type=int, help=f'default {default}, at most {maximum}')

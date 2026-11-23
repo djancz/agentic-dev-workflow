@@ -123,10 +123,17 @@ def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
 
 
 def display_path(path: str) -> str:
-    """A path as git gave it, for the gate and the records: undecodable bytes and control characters escaped,
-    and a backslash of the name doubled, so that no two names look alike."""
+    """A path as git gave it, for the gate and the records: an undecodable byte as \\xNN, a character that does
+    not print as \\t, \\n or \\uNNNN (never \\xNN, which is a byte's), and a backslash of the name doubled, so
+    that no two names look alike."""
     text = os.fsencode(path).replace(b'\\', b'\\\\').decode('utf-8', 'backslashreplace')
-    return ''.join(c if c.isprintable() else c.encode('unicode_escape').decode('ascii') for c in text)
+
+    def shown(c: str) -> str:
+        if c.isprintable():
+            return c
+        escaped = c.encode('unicode_escape').decode('ascii')
+        return f'\\u{ord(c):04x}' if escaped.startswith('\\x') and ord(c) > 0x7f else escaped
+    return ''.join(map(shown, text))
 
 
 # --------------------------------------------------------------------------- files
@@ -355,8 +362,10 @@ def config_summary(files: list[str], limit: int = 20) -> str:
 def hidden_changes(root: Path) -> None:
     """Refuse index entries that git status does not compare with the working tree (assume-unchanged,
     skip-worktree): an edit of such a file is what the agents read, while the sandbox runs the commit."""
-    hidden = [line[2:] for line in git('-C', str(root), 'ls-files', '-v').splitlines() if line[:1].islower()
-              or line[:1] == 'S']
+    # Records end with NUL: a name may hold any other character. Initialized submodules count too, since git
+    # status takes their working trees as clean on the same index bits.
+    listing = git('-C', str(root), 'ls-files', '-v', '-z', '--recurse-submodules')
+    hidden = [entry[2:] for entry in listing.split('\0') if entry[:1].islower() or entry[:1] == 'S']
     if hidden:
         raise Refused(f'git status does not check {len(hidden)} file(s) of the index (assume-unchanged or '
                       f'skip-worktree, for example {display_path(hidden[0])}): run git update-index '
@@ -652,11 +661,13 @@ def cmd_seed(args) -> int:
     for name in ('uncovered', 'missing_units'):
         kept = []
         for entry in run.state[name]:
-            unit = next((u for u in listed if seeds(u, entry)), None)
-            if unit is None:
+            # A proposal that a unit of the file accepts is accepted, wherever that unit stands in the file.
+            matches = [u for u in listed if seeds(u, entry)]
+            taken = [u for u in matches if u['coverage_id'] in fresh and u['status'] in ('planned', 'deferred')]
+            if not matches:
                 kept.append(entry)
                 continue
-            accepted = unit['coverage_id'] in fresh and unit['status'] in ('planned', 'deferred')
+            unit, accepted = (taken or matches)[0], bool(taken)
             run.state.setdefault('resolved_proposals', []).append(
                 entry | {'list': name, 'unit': unit['coverage_id'], 'accepted': accepted, 'at': now()})
         resolved += len(run.state[name]) - len(kept)
@@ -947,11 +958,11 @@ needs a local result is needs_validation with that exact blocker.
 Run each check as `{tool} run --scratch {shlex.quote(scratch)} --ref {run.meta["source_ref"]} --check <name> [limits]
 -- <command…>` from the repository root. The command sees the audited commit read-only at /src (its
 working directory), no network, an empty environment (add dummy values with --env NAME=VALUE), and may
-write only to /work (copy /src there to build). Fixture files you write into {scratch}/inputs/ are mounted
-read-only at /input with --inputs inputs. /etc holds only what common toolchains read: mount a toolchain
-outside /usr, or another entry of /etc, read-only with --tool <absolute directory>. `{tool} run --help`
-lists the limits; keep them low and keep the timeout below what is left of your own time. Use the check
-names {checks}, each once.
+write only to /work (copy /src there to build) and /dev/shm (64 MiB). Fixture files you write into
+{scratch}/inputs/ are mounted read-only at /input with --inputs inputs. /etc holds only what common
+toolchains read: mount a toolchain outside /usr read-only with --tool <absolute directory>, another entry
+of /etc with --tool /etc/<name> (a file or a directory). `{tool} run --help` lists the limits; keep them
+low and keep the timeout below what is left of your own time. Use the check names {checks}, each once.
 The command's stdout and stderr are the only evidence: print the minimum observed result. After your run
 the parent promotes evidence/<name>.out, .err and .json; refer to a check's evidence as
 "agents/{agent}/artifacts/evidence/<name>.json" in its "artifact" field.
@@ -1167,7 +1178,9 @@ def prompt_candidate(run: Run, args) -> str:
     if args.agent in candidate.get('hunters', []):
         raise Refused('a verifier never validates a candidate it hunted')
     allow(run, args.agent)
-    checks = hunter_checks(units, args.fingerprint)
+    # A root cause that another verifier found comes with the checks that found it, as a hunter's would; they
+    # are not this verifier's own, so they never stand in for its reproduction.
+    checks = hunter_checks(units, args.fingerprint) + candidate.get('discovery_checks', [])
     quick = run.meta['profile'] == 'quick'
     branches = {v: schema_branch(v) for v in ('confirmed', 'needs_validation', 'rejected')}
     prior = run.state.get('prior_records', {}).get(args.fingerprint, [])
@@ -1180,8 +1193,8 @@ def prompt_candidate(run: Run, args) -> str:
 ```
 
 Linked coverage units: {", ".join(candidate["units"]) or "none (a carried prior record)"}
-Their checks (artifact paths are relative to the audit run directory {run.rel(run.dir)}/; you may read
-those files):
+Their checks{", and those of the verifier that found this root cause" if candidate.get("discovery_checks") else ""}
+(artifact paths are relative to the audit run directory {run.rel(run.dir)}/; you may read those files):
 
 ```json
 {json.dumps(checks, indent=2, ensure_ascii=False)}

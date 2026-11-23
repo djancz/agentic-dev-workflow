@@ -132,10 +132,13 @@ is your explicit choice at the audit gate.
 ## A check cannot find a file of /etc
 
 The sandbox's `/etc` holds only the entries that common toolchains read (`ETC_ENTRIES` in
-`sandbox-run.py`: the loader, alternatives, time and name service files, certificates, Java and Python
-configuration), because a host may keep user-readable credentials in the rest of it, such as a proxy
-password or a package index token. Its `passwd` and `group` name only the sandbox's user. When a toolchain
-needs another entry, mount it read-only with `--tool /etc/<name>`; all of `/etc` is refused.
+`sandbox-run.py`: the loader, alternatives, time and name service files, the public certificates and the
+OpenSSL configuration, Java and Python configuration), because a host may keep user-readable credentials
+in the rest of it, such as a proxy password, a package index token or a TLS key that the group `ssl-cert`
+may read. Its `passwd`, `group` and `hosts` name only the sandbox, as its host name does. When a toolchain
+needs another entry, mount it read-only with `--tool /etc/<name>`, a file or a directory; all of `/etc` is
+refused, and so is an entry with anything in it that you may read but other users may not, such as
+`/etc/ssl/private`.
 
 ## A check ends with status 137, or the desktop says a wf-sandbox scope was terminated for low memory
 

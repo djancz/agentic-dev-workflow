@@ -1299,6 +1299,14 @@ class RunAgent(unittest.TestCase):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
         self.assertEqual(r.returncode, 3)
         self.assertIn('the working tree has changes', r.stderr)
+        # An index bit inside the submodule hides the change from git status there too.
+        vendor = ['git', '-C', str(self.repo / 'vendor')]
+        subprocess.run([*vendor, 'checkout', '-q', 'lib.py'], check=True)
+        subprocess.run([*vendor, 'update-index', '--skip-worktree', 'lib.py'], check=True)
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 3\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the index hides files from git status', r.stderr)
 
     def test_exit_code_is_recorded_and_wait_returns_it(self):
         self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='fail')

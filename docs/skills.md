@@ -209,7 +209,7 @@ reconnaissance, critics and record verifiers read only, hunters and candidate ve
 their scratch directory (a check after each run, not a confinement: agents keep their CLI's own
 permissions, so the independent verifier is the safeguard against a forged result). Target code runs only through `scripts/sandbox-run.py`: bubblewrap with no
 network, an empty environment, read-only system and source (an export of the committed bytes), only the
-entries of `/etc` that toolchains read, writes to a size-limited tmpfs only, and cgroup and rlimit limits on tasks, memory, CPU, file size and time. Its probe
+entries of `/etc` that toolchains read, writes to size-limited tmpfs mounts only, and cgroup and rlimit limits on tasks, memory, CPU, file size and time. Its probe
 reports each control; inside Codex's sandbox it fails, for want of the user session bus. The command's bounded stdout and stderr are
 the only evidence, promoted into the run by the parent after the agent has ended. A `confirmed` verdict
 needs a local check that its verifier ran itself, backed by the runner's record of it; a verifier whose sandbox failed settles nothing. The audit gate shows the

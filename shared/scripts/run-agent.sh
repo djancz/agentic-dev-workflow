@@ -347,7 +347,7 @@ if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
     [ -z "$pinned_status" ] ||
         die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"
     # git status does not compare assume-unchanged or skip-worktree entries with the working tree.
-    hidden=$(GIT_OPTIONAL_LOCKS=0 git ls-files -v) ||
+    hidden=$(GIT_OPTIONAL_LOCKS=0 git ls-files -v --recurse-submodules) ||
         die 3 "git ls-files failed, so the tree of this pinned run is unknown; nothing ran"
     ! printf '%s\n' "$hidden" | grep -q '^[a-zS] ' ||
         die 3 "the index hides files from git status (assume-unchanged or skip-worktree), so this run pinned to $WF_AGENT_EXPECT_HEAD cannot be checked; nothing ran"

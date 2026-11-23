@@ -33,19 +33,22 @@ Changes to the upstream text and contract:
 - A budget is always set (profile defaults 25, 60 and 150, at most 500) and every profile has a wave cap.
   A unit is reassigned at most twice, and a material Phase 5 replacement is re-verified at most twice;
   then the run follows the upstream incomplete path.
-- The sandbox is `sandbox-run.py`. Target code writes only to a size-limited tmpfs; the evidence of a
+- The sandbox is `sandbox-run.py`. Target code writes only to size-limited tmpfs mounts; the evidence of a
   local check is its bounded stdout and stderr, which the trusted runner writes to the scratch directory.
   The source is a fresh export of the committed bytes for every check, so no attribute of the target
   applies and nothing left in a scratch directory stands in for the commit. The source, `--inputs` and
   every `--tool` directory are mounted by descriptor, so what was checked is what the command sees. A
   `--tool` mount refuses sockets, FIFOs, runtime directories such as `/run` and the sandbox's own mount
   points, `--inputs` refuses sockets and FIFOs, and the cgroup v2 limits are read back inside the scope
-  before the command starts. The sandbox's `/etc` holds only the entries toolchains read (`ETC_ENTRIES`;
-  another is a `--tool /etc/<name>`), where a host may keep user-readable credentials too, its `passwd` and
-  `group` name only the sandbox's user, and its root is read-only. A check whose sandbox never started
-  within its time limit leaves no record. No `--tool` may cover a credential store of the home directory, or the
-  destination of one that is a link. The export is removed through its own descriptor; by name only an
-  empty directory goes, so a directory moved into its place stays.
+  before the command starts. The sandbox's `/etc` holds only the entries toolchains read (`ETC_ENTRIES`: of
+  `ssl` and `pki` only the certificates and the OpenSSL configuration), where a host may keep user-readable
+  credentials too; another entry is a `--tool /etc/<name>`, a file or a directory, in which nothing that this
+  user may read is closed to other users. Its `passwd`, `group` and `hosts` name only the sandbox, as its host
+  name does, and its root and `/dev` are read-only: only `/work` and `/dev/shm` take writes, each with its
+  size. A check whose command never started within its time limit leaves no record: a trusted step inside
+  the finished sandbox reports the start. No `--tool` may cover a credential store of the home directory, or the
+  destination of one that is a link. The export is removed through its own descriptor and only in the
+  directories it made; by name only an empty directory goes, so a directory moved into its place stays.
 - A unit the wave cap leaves unhunted is `deferred` with the reason `wave_cap_reached`, and `final`
   refuses `complete` while a cap or the budget deferred units, while a proposed unit is neither seeded
   nor dismissed with a reason, or when no clean final-clean critic pass followed the latest hunted wave,
@@ -59,9 +62,11 @@ Changes to the upstream text and contract:
 - Promotion opens the scratch and artifacts roots when it starts, from `/` without following a link on
   the way, instead of before the agent run: `audit.py` is a separate process. `sandbox-run.py run`
   opens its scratch directory the same way. The artifacts directories are hashed by
-  `run-agent.sh`, so a run that touched one fails before anything is promoted. The audit and every
-  pinned run count a change inside a submodule, whatever its `ignore` setting, and refuse files the index
-  hides from git status (assume-unchanged, skip-worktree).
+  `run-agent.sh`, so a run that touched one fails before anything is promoted. A destination that holds the
+  same bytes already, from an apply that stopped after its promotion, counts as promoted; one with other
+  bytes is never overwritten. The audit and every pinned run count a change inside a submodule, whatever
+  its `ignore` setting, and refuse files the index hides from git status (assume-unchanged, skip-worktree),
+  in initialized submodules too.
 - Reconnaissance agent 1d does not probe the host for the sandbox and promotion controls (its items 6 and
   7): `sandbox-run.py probe` answers them, and the agent names the toolchains a local check needs.
 - The hunter result has one more field, `sandbox_probe`, and the candidate and `--reverify` verifier

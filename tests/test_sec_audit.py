@@ -14,6 +14,8 @@ import os
 import shlex
 import shutil
 import signal
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,31 @@ def probe_failure() -> str | None:
 PROBE_FAILURE = probe_failure()
 
 
+def sandbox_capability() -> str | None:
+    """What this host lacks to run any such sandbox, found without sandbox-run.py: where nothing is lacking, a
+    probe that fails is a fault of the runner, and the tests fail instead of skipping."""
+    for tool in ('/usr/bin/bwrap', '/usr/bin/systemd-run'):
+        if not os.access(tool, os.X_OK):
+            return f'{tool} is not installed'
+    script = 'd=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup); cat "$d/pids.max" "$d/memory.max" "$d/cpu.max"'
+    try:
+        r = subprocess.run(['/usr/bin/bwrap', '--unshare-all', '--ro-bind', '/', '/', '/bin/sh', '-c', 'true'],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode:
+            return f'bwrap cannot make a sandbox here: {r.stderr.strip()[:200]}'
+        r = subprocess.run(['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '-p', 'TasksMax=17', '-p',
+                            'MemoryMax=67M', '-p', 'CPUQuota=50%', '/bin/sh', '-c', script],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f'no sandbox here: {exc}'
+    if r.returncode or r.stdout.split() != ['17', str(67 * 1024 * 1024), '50000', '100000']:
+        return f'no user scope with delegated pids, memory and cpu limits: {(r.stderr or r.stdout).strip()[:200]}'
+    return None
+
+
+CAPABILITY = sandbox_capability()
+
+
 class Promote(unittest.TestCase):
     """The parent's copy of evidence into the artifacts directory; it needs no sandbox."""
 
@@ -95,8 +122,21 @@ class Promote(unittest.TestCase):
         self.assertEqual(copy.read_bytes(), b'observed\n')
         self.assertEqual(copy.stat().st_mode & 0o777, 0o600)
         self.assertEqual(entries[0]['bytes'], 9)
+        # An apply that stopped after the copy promotes again: the same bytes are the same evidence.
+        again, repeated = self.promote('evidence/c01.out:100')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(repeated, [entries[0]])
+        (self.scratch / 'evidence' / 'c01.out').write_bytes(b'observed otherwise\n')
         r, entries = self.promote('evidence/c01.out:100')
         self.assertEqual(r.returncode, 1, 'an existing destination is never overwritten')
+        self.assertIn('exists already with other content', entries[0]['reason'])
+        self.assertEqual(copy.read_bytes(), b'observed\n')
+        # A destination that is a link is never taken for the copy, even with the same bytes.
+        (self.scratch / 'evidence' / 'c03.out').write_bytes(b'same\n')
+        (self.tmp / 'elsewhere').write_bytes(b'same\n')
+        (self.artifacts / 'evidence' / 'c03.out').symlink_to(self.tmp / 'elsewhere')
+        r, entries = self.promote('evidence/c03.out:100')
+        self.assertEqual(r.returncode, 1)
         self.assertIn('exists already', entries[0]['reason'])
 
     def test_a_check_that_never_ran_is_missing_not_rejected(self):
@@ -198,6 +238,12 @@ def load_sandbox():
     return load_script(SANDBOX)
 
 
+def made_of(root: Path) -> set:
+    """The identities of root and every directory below it, as export_source records the ones it made."""
+    found = [os.lstat(root)] + [os.lstat(Path(top) / name) for top, dirs, _ in os.walk(root) for name in dirs]
+    return {(st.st_dev, st.st_ino) for st in found if stat.S_ISDIR(st.st_mode)}
+
+
 class SandboxGuards(unittest.TestCase):
     """Checks of the runner that need no sandbox."""
 
@@ -215,10 +261,12 @@ class SandboxGuards(unittest.TestCase):
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
         server.bind(str(tmp / 'bin' / 'service.sock'))
-        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'), str(tmp / 'bin' / 'service.sock'))
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'),
+                         f'a socket or FIFO, which would reach a host process: {tmp / "bin" / "service.sock"}')
         os.unlink(tmp / 'bin' / 'service.sock')
         os.mkfifo(tmp / 'pipe')
-        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'), str(tmp / 'pipe'))
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'),
+                         f'a socket or FIFO, which would reach a host process: {tmp / "pipe"}')
         # The scan reads the directory it holds: a rename of the path after the open changes nothing.
         os.unlink(tmp / 'pipe')
         os.rename(tmp, f'{tmp}.held')
@@ -228,6 +276,56 @@ class SandboxGuards(unittest.TestCase):
         os.mkfifo(tmp / 'swapped')
         self.addCleanup(os.unlink, tmp / 'swapped')
         self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool'))
+
+    def test_the_sandbox_takes_writes_only_in_work_and_shared_memory_and_hides_the_host_name(self):
+        sandbox = load_sandbox()
+        args = sandbox.bwrap_args(work_bytes=1024, env={}, binds=[('/opt/tool', '/opt/tool')], chdir='/', status_fd=9,
+                                  launch=True)
+        tail = args[args.index('--remount-ro'):]
+        self.assertEqual(tail[:4], ['--remount-ro', '/dev', '--remount-ro', '/'], 'after every mount')
+        self.assertLess(args.index('/opt/tool'), args.index('--remount-ro'))
+        self.assertIn(['--size', str(sandbox.SHM_BYTES), '--tmpfs', '/dev/shm'],
+                      [args[n:n + 4] for n in range(len(args))])
+        self.assertIn(['--size', '1024', '--tmpfs', '/work'], [args[n:n + 4] for n in range(len(args))])
+        self.assertIn(['--hostname', 'sandbox'], [args[n:n + 2] for n in range(len(args))])
+        mounted = [args[n + 1] for n in range(len(args)) if args[n] == '--ro-bind']
+        self.assertFalse({'/etc/ssl', '/etc/pki', '/etc/hosts'} & set(mounted), 'never the whole of ssl or pki')
+        self.assertEqual(args[-4:], ['/bin/sh', '-c', sandbox.LAUNCH_SCRIPT, 'wf-sandbox-launch'])
+
+    def test_an_etc_entry_leading_out_of_etc_and_usr_stays_out(self):
+        from unittest import mock
+        sandbox = load_sandbox()
+        links = [name for name in ('mtab', 'resolv.conf', 'printcap') if os.path.islink(f'/etc/{name}')
+                 and not str(Path(f'/etc/{name}').resolve()).startswith(('/etc/', '/usr/'))]
+        if not links:
+            self.skipTest('no link of /etc here leads out of /etc and /usr')
+        with mock.patch.object(sandbox, 'ETC_ENTRIES', sandbox.ETC_ENTRIES + tuple(links)):
+            self.assertFalse({f'/etc/{name}' for name in links} & set(sandbox.etc_sources()))
+
+    def test_an_etc_entry_must_be_readable_by_every_user_throughout(self):
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'certs').mkdir()
+        (tmp / 'certs' / 'ca.pem').write_text('public\n')
+        (tmp / 'private').mkdir(mode=0o750)
+        os.chmod(tmp, 0o755)
+        fd = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool'), 'a toolchain may keep its own modes')
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool', public=True),
+                         f'{tmp / "private"}, which not every user may read')
+        os.chmod(tmp / 'private', 0o755)
+        (tmp / 'private' / 'key.pem').write_text('secret\n')
+        os.chmod(tmp / 'private' / 'key.pem', 0o640)
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool', public=True),
+                         f'{tmp / "private" / "key.pem"}, which not every user may read')
+        os.chmod(tmp / 'private' / 'key.pem', 0o644)
+        self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool', public=True))
+        if os.getuid() != 0:
+            # What this user may not read shows nothing inside either, as a root-only file of /etc/default.
+            os.chmod(tmp / 'private' / 'key.pem', 0o000)
+            self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool', public=True))
 
     def test_no_tool_covers_a_mount_point_of_the_sandbox(self):
         sandbox = load_sandbox()
@@ -290,12 +388,12 @@ while True:
         tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
 
-        def export() -> tuple[int, int]:
+        def export() -> tuple[int, int, set]:
             (tmp / 'src' / 'export' / 'deep' / 'er').mkdir(parents=True)
             (tmp / 'src' / 'export' / 'deep' / 'er' / 'app.py').write_text('print(1)\n')
             (tmp / 'src' / 'export' / 'link').symlink_to(tmp / 'outside')
             return (os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY),
-                    os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY))
+                    os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY), made_of(tmp / 'src' / 'export'))
 
         def replace() -> None:
             (tmp / 'src' / 'export').rename(tmp / f'moved-{len(list(tmp.glob("moved-*")))}')
@@ -305,15 +403,15 @@ while True:
         (tmp / 'outside').mkdir()
         (tmp / 'outside' / 'keep.txt').write_text('reached through a link\n')
         # Moved before the cleanup: the export is emptied where it went, the directory now at its name stays.
-        src_fd, root_fd = export()
+        src_fd, root_fd, made = export()
         replace()
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            sandbox.remove_export(src_fd, 'export', root_fd)
+            sandbox.remove_export(src_fd, 'export', root_fd, made)
         self.assertIn('holds another directory now', err.getvalue())
         self.assertEqual(list((tmp / 'moved-0').iterdir()), [])
         # Moved between the check of the name and its removal: only an empty directory can go by name.
         shutil.rmtree(tmp / 'src' / 'export')
-        src_fd, root_fd = export()
+        src_fd, root_fd, made = export()
         real_stat = os.stat
 
         def racing_stat(path, *args, dir_fd=None, **kwargs):
@@ -322,14 +420,14 @@ while True:
                 replace()
             return result
         with mock.patch.object(os, 'stat', racing_stat), contextlib.redirect_stderr(io.StringIO()) as err:
-            sandbox.remove_export(src_fd, 'export', root_fd)
+            sandbox.remove_export(src_fd, 'export', root_fd, made)
         self.assertIn('was not removed', err.getvalue())
         self.assertTrue((tmp / 'src' / 'export' / 'keep.txt').exists(), 'the replacement stays')
         self.assertEqual(list((tmp / 'moved-1').iterdir()), [], 'the export itself is emptied')
         self.assertTrue((tmp / 'outside' / 'keep.txt').exists(), 'nothing is deleted through a link')
         shutil.rmtree(tmp / 'src' / 'export')
-        src_fd, root_fd = export()
-        sandbox.remove_export(src_fd, 'export', root_fd)
+        src_fd, root_fd, made = export()
+        sandbox.remove_export(src_fd, 'export', root_fd, made)
         self.assertEqual(list((tmp / 'src').iterdir()), [])
 
     def test_cleanup_never_descends_into_a_directory_moved_over_one_of_the_exports(self):
@@ -337,12 +435,27 @@ while True:
         sandbox = load_sandbox()
         tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, tmp)
-        (tmp / 'src' / 'export' / 'deep').mkdir(parents=True)
-        (tmp / 'src' / 'export' / 'deep' / 'app.py').write_text('print(1)\n')
-        (tmp / 'victim').mkdir()
-        (tmp / 'victim' / 'keep.txt').write_text('not the export\n')
-        src_fd = os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY)
-        root_fd = os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY)
+
+        def export() -> tuple[int, int, set]:
+            (tmp / 'src' / 'export' / 'deep').mkdir(parents=True)
+            (tmp / 'src' / 'export' / 'deep' / 'app.py').write_text('print(1)\n')
+            (tmp / 'victim').mkdir()
+            (tmp / 'victim' / 'keep.txt').write_text('not the export\n')
+            return (os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY),
+                    os.open(tmp / 'src' / 'export', os.O_RDONLY | os.O_DIRECTORY), made_of(tmp / 'src' / 'export'))
+
+        # Moved in before the cleanup looks at the name: the directory is not one the export made.
+        src_fd, root_fd, made = export()
+        (tmp / 'src' / 'export' / 'deep').rename(tmp / 'moved')
+        (tmp / 'victim').rename(tmp / 'src' / 'export' / 'deep')
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            sandbox.remove_export(src_fd, 'export', root_fd, made)
+        self.assertIn('is not a directory of the export', err.getvalue())
+        self.assertTrue((tmp / 'src' / 'export' / 'deep' / 'keep.txt').exists(), 'the directory moved in stays whole')
+        shutil.rmtree(tmp / 'src')
+        shutil.rmtree(tmp / 'moved')
+        # Moved in between the look at the name and its opening.
+        src_fd, root_fd, made = export()
         real_stat, raced = os.stat, []
 
         def racing_stat(path, *args, dir_fd=None, **kwargs):
@@ -353,9 +466,9 @@ while True:
                 (tmp / 'victim').rename(tmp / 'src' / 'export' / 'deep')
             return result
         with mock.patch.object(os, 'stat', racing_stat), contextlib.redirect_stderr(io.StringIO()) as err:
-            sandbox.remove_export(src_fd, 'export', root_fd)
+            sandbox.remove_export(src_fd, 'export', root_fd, made)
         self.assertEqual(raced, ['deep'])
-        self.assertIn('was replaced during the cleanup', err.getvalue())
+        self.assertIn('is not a directory of the export', err.getvalue())
         self.assertTrue((tmp / 'src' / 'export' / 'deep' / 'keep.txt').exists(), 'the directory moved in stays whole')
 
     def test_a_link_above_the_scratch_directory_runs_nothing(self):
@@ -439,11 +552,11 @@ while True:
 
 
 class SandboxRun(unittest.TestCase):
-    """The controls hold inside a real sandbox. Skipped, with the probe's reason, where it cannot run."""
+    """The controls hold inside a real sandbox. Skipped only where the host cannot run one at all."""
 
     def setUp(self):
-        if PROBE_FAILURE:
-            self.skipTest(f'sandbox-run probe: {PROBE_FAILURE}')
+        if CAPABILITY:
+            self.skipTest(CAPABILITY)
         self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.repo, self.ref = make_repo(self.tmp)
@@ -530,25 +643,58 @@ class SandboxRun(unittest.TestCase):
                              capture_output=True, text=True).stdout
         self.assertNotIn("Failed with result 'oom-kill'", log)
 
+    def test_the_probe_enforces_every_control_where_the_host_can_run_a_sandbox(self):
+        self.assertIsNone(PROBE_FAILURE, 'the host runs sandboxes, so a missing control is the runner\'s fault')
+
     def test_the_target_sees_only_the_etc_entries_toolchains_read(self):
-        script = ('ls -A /etc; (: > /x) 2>/dev/null && echo root-writable; (: > /etc/x) 2>/dev/null && echo '
-                  'etc-writable; python3 -c "import getpass, pwd; print(\'user=\' + getpass.getuser(), len(pwd.getpwall()))"')
-        r = self.run_check('c21', 'sh', '-c', script)
+        sandbox = load_sandbox()
+        r = self.run_check('c21', 'sh', '-c', 'ls -A /etc; python3 -c "import getpass, pwd; '
+                           'print(\'user=\' + getpass.getuser(), len(pwd.getpwall()))"')
         self.assertEqual(r.returncode, 0, r.stderr)
         seen = set(r.stdout.splitlines()[:-1])
         self.assertNotIn('environment', seen, 'host files of /etc beyond the toolchains\' stay out')
-        self.assertNotIn('writable', r.stdout, 'bwrap\'s root is read-only: only /work takes writes')
         self.assertEqual(r.stdout.splitlines()[-1], 'user=sandbox 1', 'passwd names only the sandbox\'s user')
-        sandbox = load_sandbox()
-        self.assertLessEqual({n for n in seen if not n.startswith(sandbox.ETC_PREFIXES)},
-                             {*sandbox.ETC_ENTRIES, 'passwd', 'group'})
+        self.assertLessEqual({n for n in seen if not sandbox.ETC_PATTERN.fullmatch(n)},
+                             {e.split('/')[0] for e in sandbox.ETC_ENTRIES} | set(sandbox.ETC_GENERATED))
+        # Of ssl and pki only the public certificates and the OpenSSL configuration.
+        r = self.run_check('c24', 'sh', '-c', 'ls -A /etc/ssl /etc/pki /etc/pki/tls 2>/dev/null')
+        self.assertNotIn('private', r.stdout.split(), 'a key the group ssl-cert may read stays out')
+        # The host's name and network names stay out too.
+        r = self.run_check('c25', 'sh', '-c', 'uname -n; cat /etc/hosts')
+        self.assertEqual(r.stdout.splitlines()[0], 'sandbox')
+        host = socket.gethostname()
+        if host not in ('localhost', 'sandbox'):
+            self.assertNotIn(host, r.stdout)
         extra = next((p for p in ('/etc/default', '/etc/apt', '/etc/skel') if Path(p).is_dir()), None)
         if extra:
             r = self.run_check('c22', 'sh', '-c', f'[ -d {extra} ] && echo mounted', options=('--tool', extra))
             self.assertEqual(r.stdout.strip(), 'mounted', r.stderr)
+        # A file of /etc is an entry too, mounted where it was asked for.
+        entry = next((p for p in ('/etc/environment', '/etc/hostname', '/etc/issue') if Path(p).is_file()
+                      and os.stat(p).st_mode & 0o004), None)
+        if entry:
+            r = self.run_check('c26', 'cat', entry, options=('--tool', entry))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout, Path(entry).read_text())
+        if Path('/etc/ssl/private').is_dir() and not os.stat('/etc/ssl/private').st_mode & 0o001:
+            r = self.run_check('c27', 'true', options=('--tool', '/etc/ssl'))
+            self.assertEqual(r.returncode, 125)
+            # Readable to the group ssl-cert: a credential; not readable to this user: it cannot be checked.
+            self.assertRegex(r.stderr, r'/etc/ssl/private, which not every user may read|cannot be checked')
         r = self.run_check('c23', 'true', options=('--tool', '/etc'))
         self.assertEqual(r.returncode, 125)
         self.assertIn('must not mount all of /etc', r.stderr)
+
+    def test_only_work_and_shared_memory_take_writes_each_with_its_size(self):
+        script = ('for d in / /etc /usr /dev /proc /src; do (: > "$d/x") 2>/dev/null && echo "writable $d"; done; '
+                  ': > /dev/shm/x && echo shm; grep -E " /dev/shm | /work " /proc/self/mountinfo')
+        r = self.run_check('c28', 'sh', '-c', script)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn('writable', r.stdout, 'bwrap\'s root and /dev are read-only')
+        self.assertIn('shm', r.stdout.splitlines())
+        sizes = {line.split()[4]: line.rsplit(' ', 1)[-1] for line in r.stdout.splitlines()[1:]}
+        self.assertIn(f'size={load_sandbox().SHM_BYTES // 1024}k', sizes['/dev/shm'].split(','))
+        self.assertIn(f'size={256 * 1024}k', sizes['/work'].split(','), 'the default --work-mb')
 
     def test_a_check_whose_sandbox_never_started_in_time_leaves_no_record(self):
         from unittest import mock
@@ -559,9 +705,27 @@ class SandboxRun(unittest.TestCase):
             sandbox.sandboxed(['true'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[], chdir='/',
                               limits=limits, guard=False)
         self.assertIn('ran out before the command started', str(caught.exception))
+        # bwrap reports its child before it has set up the sandbox: only the launch counts.
+        real = sandbox.bwrap_args
+
+        def slow_setup(**kwargs):
+            args = real(**kwargs)
+            at = len(args) - args[::-1].index('--')
+            return args[:at] + ['/bin/sh', '-c', 'sleep 10; exec "$@"', 'slow-setup'] + args[at:]
+        with mock.patch.object(sandbox, 'bwrap_args', slow_setup), self.assertRaises(sandbox.Refused) as caught:
+            sandbox.sandboxed(['true'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[], chdir='/',
+                              limits=limits)
+        self.assertIn('ran out before the command started', str(caught.exception))
         result = sandbox.sandboxed(['sleep', '10'], env={'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}, binds=[],
                                    chdir='/', limits=limits)
         self.assertEqual((result['status'], result['killed']), (124, 'timeout'), 'a command that ran times out')
+        env = {'PATH': sandbox.DEFAULT_PATH, **sandbox.FIXED_ENV}
+        result = sandbox.sandboxed(['env'], env=env, binds=[], chdir='/', limits=limits)
+        self.assertEqual(sorted(line.split('=')[0] for line in result['stdout'].decode().splitlines()), sorted(env),
+                         'the shell of the launch adds no variable')
+        result = sandbox.sandboxed(['ls', '/proc/self/fd'], env=env, binds=[], chdir='/', limits=limits)
+        self.assertEqual(result['stdout'].decode().split(), ['0', '1', '2', '3'],
+                         'the command keeps no descriptor of the launch (3 is ls reading the list)')
 
     def test_refused_calls_run_nothing_and_leave_no_evidence(self):
         cases = [
@@ -1279,11 +1443,19 @@ class AuditTool(unittest.TestCase):
         self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-004')
         self.result(run, 'record-004', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass',
                                         'checks': [source_check('record-004'), self.local_check(run, 'record-004')]})
+        # An apply that stopped after its promotion and before it saved: the next one keeps the same copies.
+        allowlist = json.loads((run / 'state.json').read_text())['allowlists']['record-004']
+        subprocess.run([sys.executable, str(SANDBOX), 'promote', '--scratch', str(run / 'runs' / 'scratch' / 'record-004'),
+                        '--artifacts', str(run / 'agents' / 'record-004' / 'artifacts'), '--total', '1000000',
+                        *[a for item in allowlist for a in ('--allow', item)]], check=True, capture_output=True)
         self.audit('apply', str(run), 'record', '--agent', 'record-004')
         self.assertIn('agents/record-004/artifacts/evidence/c01.json',
                       json.dumps(self.ledger(run)[0]['local_checks']), 'its reproduction is in the ledger')
         other = 'app-other-root-cause'
         self.audit('prompt', str(run), 'candidate', '--fingerprint', other, '--agent', 'verify-006')
+        prompt = (run / 'runs' / 'verify-006.prompt.md').read_text()
+        self.assertIn('and those of the verifier that found this root cause', prompt)
+        self.assertIn('agents/record-005/artifacts/evidence/c01.json', prompt, 'the evidence that found it goes with it')
         self.result(run, 'verify-006', {'decision': 'needs_validation', 'record': needs_validation(other),
                                         'checks': [source_check('verify-006')], 'sandbox_probe': 'pass'})
         self.audit('apply', str(run), 'candidate', '--agent', 'verify-006')
@@ -1336,16 +1508,25 @@ class AuditTool(unittest.TestCase):
         # A backslash and an n is another name than a newline, and must look so.
         (self.repo / '.claude' / 'skills' / 'two\\nlines').mkdir()
         (self.repo / '.claude' / 'skills' / 'two\\nlines' / 'SKILL.md').write_text('---\nname: y\n---\n')
+        # A character that does not print shows as \\uNNNN, never as the \\xNN of a byte.
+        (self.repo / '.codex' / '\u0085.toml').write_text('# U+0085\n')
         # A name that is not UTF-8, in the configuration and elsewhere: nothing stops the gate or hides it.
-        for name in (b'.codex/\xff.toml', b'latin-\xe9.txt'):
-            with open(os.path.join(os.fsencode(self.repo), name), 'w') as handle:
-                handle.write('x\n')
+        # (APFS and other file systems that take UTF-8 names only refuse to create one.)
+        raw = []
+        for name in (b'.codex/\x85.toml', b'.codex/\xff.toml', b'latin-\xe9.txt'):
+            try:
+                with open(os.path.join(os.fsencode(self.repo), name), 'w') as handle:
+                    handle.write('x\n')
+            except OSError:
+                continue
+            raw.append(name)
         self.commit('agent configuration elsewhere')
         run = Path(self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
         self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['agent_config'],
                          ['.agents/skills/helper/SKILL.md', '.claude/skills/two\\nlines/SKILL.md',
-                          '.claude/skills/two\\\\nlines/SKILL.md', '.codex/a\\tb.toml', '.codex/\\xff.toml',
-                          '.gemini'])
+                          '.claude/skills/two\\\\nlines/SKILL.md', '.codex/a\\tb.toml',
+                          *(['.codex/\\x85.toml'] if b'.codex/\x85.toml' in raw else []), '.codex/\\u0085.toml',
+                          *(['.codex/\\xff.toml'] if b'.codex/\xff.toml' in raw else []), '.gemini'])
 
     def test_the_records_are_where_the_installer_keeps_them_also_with_a_separate_git_dir(self):
         main = self.tmp / 'main'
@@ -1435,6 +1616,31 @@ class AuditTool(unittest.TestCase):
         self.audit('dismiss', str(run), '1', '--reason', 'the same entry as app.py#main')
         # Upstream's parent rejects both: the pass asked for no accepted work, and coverage is complete.
         self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
+
+    def test_a_proposal_a_unit_of_the_seed_file_accepts_counts_as_accepted_wherever_it_stands(self):
+        run = self.start(profile='standard', budget=40)
+        cid = self.coverage_id(run)
+        self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', '1', '--agent', 'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        clean = {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [], 'stop': True}
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        self.result(run, 'critic-w1', clean)
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        known = unit_spec('b.py#x') | {'starting_paths': ['b.py']}
+        units = self.tmp / 'units-b.json'
+        units.write_text(json.dumps([known]))
+        self.audit('seed', str(run), str(units), '--status', 'out_of_scope', '--reason', 'another team owns b.py')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1')
+        self.result(run, 'critic-final-w1', clean | {'missing_units': [known | {'reason': 'A second owner check.'}]})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-final-w1')
+        # The unit that was there already comes first; the new one, with the same labels, takes the proposal.
+        other = known | {'lifecycle': 'after login', 'canonical_refs': known['canonical_refs'] | {'lifecycle': 'b.py#login'}}
+        units.write_text(json.dumps([known, other]))
+        self.audit('seed', str(run), str(units), '--status', 'deferred', '--reason', 'needs the deployed router')
+        state = json.loads((run / 'state.json').read_text())
+        self.assertEqual([e['accepted'] for e in state['resolved_proposals']], [True])
+        self.assertIn('no clean final-clean critic pass', self.audit('final', str(run), ok=False).stderr)
 
     def test_a_proposal_the_parent_accepted_keeps_the_final_clean_pass_unclean(self):
         audit = load_script(AUDIT)
@@ -1683,6 +1889,14 @@ class AuditTool(unittest.TestCase):
         r = self.audit('prompt', str(run), 'recon', '--recon', '1a', '--agent', 'recon-1a', ok=False)
         self.assertIn('git status does not check', r.stderr, 'nor before an agent starts')
 
+    def test_a_name_with_a_line_separator_is_not_taken_for_a_hidden_entry(self):
+        # Unquoted, as core.quotePath=false prints it, U+2028 splits a line for str.splitlines().
+        (self.repo / 'a\u2028s.txt').write_text('x\n')
+        self.commit('a name with a line separator')
+        git(self.repo, 'config', 'core.quotePath', 'false')
+        run = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude')
+        self.assertTrue(Path(run.stdout.strip()).is_dir())
+
     def test_a_change_inside_a_submodule_counts_whatever_its_ignore_setting(self):
         sub = self.tmp / 'sub'
         sub.mkdir()
@@ -1697,6 +1911,14 @@ class AuditTool(unittest.TestCase):
         self.assertEqual(git(self.repo, 'status', '--porcelain'), '', 'git status alone hides the change')
         r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
         self.assertIn('not clean', r.stderr)
+        # An index bit of the submodule hides the change even from git status --ignore-submodules=none.
+        git(self.repo / 'vendor', 'checkout', '-q', '--', 'lib.py')
+        git(self.repo / 'vendor', 'update-index', '--skip-worktree', 'lib.py')
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 3\n')
+        self.assertEqual(git(self.repo, 'status', '--porcelain', '--ignore-submodules=none'), '')
+        r = self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude', ok=False)
+        self.assertIn('git status does not check 1 file(s) of the index', r.stderr)
+        self.assertIn('vendor/lib.py', r.stderr)
 
     def test_printed_commands_quote_their_paths(self):
         # A linked worktree keeps its records in the main worktree, whose path here has a space.
