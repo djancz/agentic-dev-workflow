@@ -117,3 +117,23 @@ changes an approved public contract, revise the spec and affected task plans bef
 
 `development/` is private to one clone by design. Use the PR and tracked project documentation to
 share delivered behavior and test evidence. Do not commit raw workflow records or logs to recover them.
+
+## The security audit's sandbox probe fails
+
+`sandbox-run.py probe` lists every control with what is missing. No bubblewrap: install it (`bubblewrap`
+package). `bwrap: setting up uid map: Permission denied` on Ubuntu: AppArmor restricts unprivileged user
+namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`); the distribution's bubblewrap package ships
+the profile that allows it, a bwrap from elsewhere does not. A cgroup limit that is missing means systemd
+does not delegate that controller to your user session. Inside a delegated run the probe can fail although
+it passes on the host: Codex's sandbox blocks the user session bus (`Failed to connect to user scope
+bus`), and a Claude sandbox can block namespaces; the audit then stops and asks. A source-only run
+is your explicit choice at the audit gate.
+
+## The security audit discards agent results
+
+`audit.py apply` accepts only exactly one JSON object that matches the contract, and never repairs one: a
+local model with a small context or weak instruction following produces prose, a truncated object or
+invented fields. Check the out-file under `development/audits/<run>/runs/`. Raise the model's context, use a
+stronger `hunt` model, or lower the units per hunter. Each discarded result may get one fresh rerun; two in
+a row from one role stop the run until you answer (`prompt … --after-human-answer`).
+

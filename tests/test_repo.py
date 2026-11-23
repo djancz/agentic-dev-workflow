@@ -259,6 +259,52 @@ class SkillStructure(unittest.TestCase):
         self.assertIn('It never starts `wf prototype`', nxt)
         self.assertIn('never pushed or merged', (REPO / 'AGENTS.md').read_text())
 
+    def test_the_security_audit_is_manual_isolated_and_credits_upstream(self):
+        def flat(path: Path) -> str:
+            return ' '.join(path.read_text().split())
+
+        audit = SKILLS / 'wf-sec-audit'
+        skill = flat(audit / 'SKILL.md')
+        for phrase in ('starts only on an explicit request', 'Audit gate (stop here)', 'with no recommended option',
+                       'Never approve it yourself', '`wf auto` never passes it', 'Asking the human',
+                       'never do their work or edit their results', 'without repairing it',
+                       'only then `python3 scripts/audit.py apply', 'never present an unvalidated candidate',
+                       'Ask which tasks to create; create only those', 'Delegated runs'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        for kind in ('`recon`', '`hunter`', '`critic`', '`candidate`', '`record`'):
+            self.assertIn(kind, skill)
+        # Nothing else starts it, and the other security skill routes it away.
+        self.assertNotIn('sec audit', NEXT_STEP.read_text())
+        self.assertNotIn('wf sec audit', flat(SKILLS / 'wf-next' / 'SKILL.md'))
+        sec = (SKILLS / 'wf-security-review' / 'SKILL.md').read_text()
+        frontmatter = install.parse_frontmatter(sec)
+        self.assertNotIn('"security audit"', frontmatter['description'])
+        self.assertIn('load the skill wf-sec-audit instead', ' '.join(sec.split()))
+        self.assertNotIn('Audit mode', sec)
+        # The upstream text keeps its notice and its source.
+        upstream = (audit / 'references' / 'UPSTREAM.md').read_text()
+        for phrase in ('c1c8a8c1471069fb0e188eeaff69b8e8db6564a8', 'Copyright (c) 2025-2026 Cloudflare, Inc.',
+                       'Permission is hereby granted, free of charge'):
+            self.assertIn(phrase, upstream)
+        classes = sorted(p.name for p in (audit / 'references' / 'classes').glob('*.md'))
+        self.assertEqual(len(classes), 11)
+        for name in classes:
+            self.assertIn(f'`{name}`' if name == 'ATTACK-CLASSES.md' else 'ten companion files', upstream)
+        self.assertTrue((audit / 'scripts' / 'report-schema.json').is_file())
+        for script in ('audit.py', 'sandbox-run.py', 'validate-findings.py', 'validate-coverage-ledger.py'):
+            with self.subTest(script=script):
+                path = audit / 'scripts' / script
+                self.assertTrue(path.is_file() and not path.is_symlink() and os.access(path, os.X_OK))
+        self.assertFalse(list(audit.rglob('*.cjs')), 'the Node validators are ported, not vendored')
+        for doc in (REPO / 'README.md', REPO / 'docs' / 'skills.md'):
+            text = doc.read_text()
+            for option in ('wf sec audit', 'hunt=', 'verify'):
+                with self.subTest(doc=doc.name, option=option):
+                    self.assertIn(option, text)
+        self.assertIn('wf sec audit', (REPO / 'AGENTS.md').read_text())
+        self.assertIn('security-audit-skill', (REPO / 'README.md').read_text())
+
     def test_shared_rules_stay_short(self):
         for doc in SHARED.glob('*.md'):
             with self.subTest(doc=doc.name):
@@ -2029,7 +2075,7 @@ class ResolveRoles(unittest.TestCase):
 
     def test_skills_that_resolve_roles_link_the_script(self):
         for name in ('wf-plan-loop', 'wf-impl-loop', 'wf-wave', 'wf-spec', 'wf-roadmap', 'wf-test',
-                     'wf-security-review', 'wf-init'):
+                     'wf-security-review', 'wf-init', 'wf-sec-audit'):
             with self.subTest(skill=name):
                 link = SKILLS / name / 'scripts' / 'resolve-roles.py'
                 self.assertTrue(link.is_symlink())
@@ -3839,7 +3885,7 @@ class NextStep(unittest.TestCase):
     # the skills follow the resolver
 
     def test_skills_report_the_resolvers_next_step(self):
-        own_gates = {'wf-maintenance', 'wf-deploy'}
+        own_gates = {'wf-maintenance', 'wf-deploy', 'wf-sec-audit'}
         hard_coded = re.compile(r'\bNext\b[`:]*\s*`?\s*wf ')
         for skill in skill_dirs():
             text = ' '.join((skill / 'SKILL.md').read_text().split())

@@ -3,9 +3,10 @@ name: wf-security-review
 description: >-
   Deep, independent security review: threat model, secret/dependency/SAST scanners, manual source-to-sink
   review against a CWE checklist and language pitfalls, dependency vetting. Reviews a wf task's diff
-  (required when the plan says Sensitivity: high) or audits given paths without a task. Appends a review
-  round with a verdict; Critical/High issues are Blockers. Triggers: "wf sec", "security review",
-  "bezpečnostní review", "zkontroluj bezpečnost", "security audit".
+  (required when the plan says Sensitivity: high) or reviews given paths without a task. Appends a review
+  round with a verdict; Critical/High issues are Blockers. Not "wf sec audit", which is the multi-agent
+  audit of wf-sec-audit. Triggers: "wf sec", "security review", "bezpečnostní review",
+  "zkontroluj bezpečnost".
 ---
 
 # wf-security-review — think like the attacker
@@ -29,7 +30,7 @@ Stop if a requested setting cannot be applied or validation fails.
 
 For task mode, this must be a fresh context. If this context implemented or fixed the checkpoint, do not review
 or write a verdict: delegate to a fresh subagent/headless session, or ask the human to run `wf sec` in a new
-session. Audit mode may run in the requesting context.
+session. Paths mode may run in the requesting context.
 
 ## Mode and scope
 
@@ -37,8 +38,9 @@ session. Audit mode may run in the requesting context.
   later it is `git diff <previous Reviewed sha>..HEAD`. Also read the plan's *Security* section, the
   summary's *Security notes*, and the header and latest round of `TASK-<N>-security-review.md`. The
   summary's `Checkpoint` must equal `HEAD`.
-- **Audit mode** (`wf sec <path…>`, or no task). The scope is the given paths, or the whole repository.
-  Write to `development/audits/security-<YYYY-MM-DD>-<slug>.md`.
+- **Paths mode** (`wf sec <path…>`, or no task). The scope is the given paths, or the whole repository.
+  Write to `development/audits/security-<YYYY-MM-DD>-<slug>.md`. `wf sec audit …` is not a path: it is
+  the multi-agent audit; load the skill wf-sec-audit instead.
 
 Note the output of `git status --porcelain` first. You must leave the tree as you found it.
 
@@ -83,7 +85,7 @@ with its CWE, and the scanners that did not run. Then:
   `references/workflow.md` → Next step says, it is `wf wave integrate WAVE-N` only when every task of the
   wave is ready, otherwise the tasks that are not; findings on the current checkpoint wait for the
   human's choice (`wf impl fix`, a bounded `wf impl loop`, accepting them, or a new approach).
-- Audit mode: propose `wf task`s for the must-fix findings, one per concern
+- Paths mode: propose `wf task`s for the must-fix findings, one per concern
   (`references/conventions.md` → Task scope).
 
 End with `— wf-security-review · <timestamp>`.

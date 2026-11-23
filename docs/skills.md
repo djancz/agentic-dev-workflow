@@ -31,6 +31,7 @@ more than one task or wave could match.
 | `wf finalize WAVE-N` | Draft and, on explicit yes, push and open one PR; later, fix PR comments and CI failures, or update the open PR after a new Gate 2 | Merge on forge |
 | `wf wave done [WAVE-N]` | After the merge: mark wave and tasks done, offer local cleanup | `wf milestone done` or next task |
 | `wf maintenance` | Scan dependencies and apply approved updates | Maintenance gate |
+| `wf sec audit [profile] [paths]` | Ad hoc multi-agent security audit: coverage ledger, hunters, independent verifiers, report; never changes code | Audit gate, then the tasks you choose |
 | `wf deploy` | Prepare and run an approved deployment | Deployment gate |
 | `wf status [ID]` | Read status and the next action that `next-step.py` resolves | None; read-only |
 | `wf next [ID]` | Run the stages `next-step.py` resolves until a human gate, question, or failure | The gate it stops at |
@@ -42,7 +43,7 @@ decision on open findings, a merge, or trying a prototype), or, with exit 1, the
 could continue, earliest wave first. A wave waits until every earlier wave its roadmap rows depend on is
 merged; *Depends on* names waves, tasks or row keys such as `M1.2`. A `Where:` line names the branch,
 and so the worktree, that the step runs in. Every stage reports the `Next:` line for the task or wave it worked on (`--id`), and `wf status`, `wf next` and
-`wf auto` use it; a delegated run reports none, and `wf maintenance` and `wf deploy` keep their own. A
+`wf auto` use it; a delegated run reports none, and `wf maintenance`, `wf sec audit` and `wf deploy` keep their own. A
 review that requests changes on the current plan revision or commit waits for your decision; a stopped
 loop never starts another run by itself, but your own change request goes back to the loop. Follow-ups
 are listed only when no task or wave is open, and are never the next step.
@@ -148,6 +149,7 @@ runs, the answer is recorded and the run goes on.
 | Push and PR | Exact branch, commits, title, body | Push and PR creation |
 | `wf auto` request | Your own assignment; one task, wave of one | Policy-passed Gates 1 and 2 |
 | Maintenance | Updates, advisories, scan gaps | Dependency changes |
+| Security audit | Commit, profile, scope, budget, roles, sandbox controls | Starting the audit agents |
 | Deployment | Exact runbook, backups, checks | Deployment |
 
 ## Prototype
@@ -181,6 +183,36 @@ never automatic are in `shared/autopilot.md`. Approvals it records read
 `Approved: … by autopilot (<timestamp>)`. It never pushes, opens or merges a PR, force-pushes, deploys,
 accepts findings, or extends a round cap. Block keys: `Autopilot: allowed | disabled` and
 `Autopilot paths: <glob>, …` (more protected paths; the built-in ones always apply).
+
+## Security audit
+
+`wf sec audit [quick|standard|deep] [<path>…] [since=<ref>] [budget=<n>] [waves=<n>] [parallel=<n>]
+[hunt=…] [verify=…] [models=default|auto]` runs only when you ask: never from `wf next` or `wf auto`. It
+follows Cloudflare's security-audit workflow (`skills/wf-sec-audit/references/AUDIT.md`, notice in
+`UPSTREAM.md`): reconnaissance, coverage-led hunting waves with a critic after each wave and a final-clean
+critic, validation of every candidate by a fresh verifier, `findings.json`, a fresh verification of every
+final record, and the reports. `quick` runs one wave and merges the two verifications; paths and `since=`
+make a partial run. Needs a clean tree on the commit to audit.
+
+| Setting | Default | Limit |
+|---|---|---|
+| `budget` (agent runs, retries included) | quick 25, standard 60, deep 150 | 6 or 7 to 500 |
+| `waves` | quick 1, standard 3, deep 6 | 10 |
+| `parallel` (runs at once) | 2 | 8 |
+| Reassignments of one unit / re-verifications of one record | — | 2 / 2 |
+
+`scripts/audit.py` keeps the records in `development/audits/sec-audit-<YYYY-MM-DD>[-<n>]/`, writes every
+agent prompt and refuses a launch that the budget, the wave cap or the reserves for the critics and
+verifiers cannot fund, and only your number raises the budget; it validates each result without
+repairing it, and two discarded results in a row from one role stop the run until you answer. Every agent runs through `run-agent.sh` in a fresh session:
+reconnaissance, critics and record verifiers read only, hunters and candidate verifiers may write only to
+their scratch directory. Target code runs only through `scripts/sandbox-run.py`: bubblewrap with no
+network, an empty environment, read-only system and source (an export of the committed bytes), writes to a
+size-limited tmpfs only, and cgroup and rlimit limits on tasks, memory, CPU, file size and time. Its probe
+reports each control; inside Codex's sandbox it fails, for want of the user session bus. The command's bounded stdout and stderr are
+the only evidence, promoted into the run by the parent after the agent has ended. The audit gate shows the
+host probe; when it fails, you choose between fixing it and a source-only run. The end report proposes one
+task per confirmed root cause (`Sensitivity: high`); you choose which to create.
 
 ## Records and recovery
 

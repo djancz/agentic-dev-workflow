@@ -50,3 +50,21 @@ unsupported option. Use a manual fresh session and read the named skill if headl
 available. The [OpenCode skill guide](https://opencode.ai/docs/skills) documents its skill directory;
 [Gemini CLI's skill guide](https://codelabs.developers.google.com/gemini-cli/how-to-create-agent-skills-for-gemini-cli)
 documents agent-compatible skills.
+
+## Agents for wf sec audit
+
+The audit's `hunt` role does most of the reading: reconnaissance and every hunter. An open-weight model
+through OpenCode keeps that volume off your Claude or Codex quota (`hunt=opencode,<provider/model>`, any
+provider OpenCode knows: a local Ollama or LM Studio, or a hosted one). Give it a context window of at
+least 64k tokens: a hunter prompt carries the architecture summary, its ledger units, the attack-class
+blocks and the result schema. Ollama's default context is much smaller; raise `num_ctx` for the model.
+A weak model shows as discarded results (`audit.py apply` never repairs one), and two in a row stop the
+run. The `verify` role, critics and verifiers, is best another model family than `hunt`. You can also run
+the whole audit from an OpenCode session.
+
+Local checks need `/usr/bin/bwrap` (bubblewrap) and `systemd-run --user` with the `cpu`, `memory` and
+`pids` controllers delegated, as on current systemd distributions. `python3 <skill>/scripts/sandbox-run.py
+probe` names each missing control. Inside a headless Codex run it cannot start: Codex's sandbox blocks the
+user session bus that `systemd-run` needs. A Codex verifier can then still check the source and the
+hunters' evidence, but not reproduce local results.
+

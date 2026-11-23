@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""Run one local check of wf sec audit in an OS-enforced sandbox, and promote its evidence afterwards.
+
+  sandbox-run.py probe [--json]
+  sandbox-run.py run --scratch <dir> --ref <commit> --check <name> [options] -- <command> [<arg>…]
+  sandbox-run.py promote --scratch <dir> --artifacts <dir> --allow <path>:<bytes> [--allow …] --total <bytes>
+
+probe   reports each control the audit requires as `enforced` or `missing` and exits 0 only when every one
+        is enforced, else 125. It runs a small sandbox to see the controls work, not only that the tools
+        exist. Run it where the checks will run: inside a delegated agent run, not only on the host.
+
+run     (hunters and candidate verifiers) runs <command> with no external network (only loopback), an empty
+        environment plus --env NAME=VALUE, read-only /usr, /etc, toolchains (--tool) and target source, and
+        writes only to a size-limited tmpfs /work (HOME and TMPDIR live there; copy /src to /work to build).
+        The source is a clean export of the committed bytes of <commit> (no .gitattributes of the target
+        applies), written by this script into <scratch>/src/<commit>/ and mounted read-only at /src;
+        submodules are not exported. --inputs <dir under scratch> is mounted read-only at /input. Limits: a cgroup scope
+        (systemd-run --user) for tasks, memory and CPU rate, rlimits for CPU time, file size, open files
+        and core files (address space only with --as-mb), and a wall-clock timeout that kills the scope.
+        The only evidence is the command's stdout and stderr, read by this trusted process with a byte cap
+        and written to <scratch>/evidence/<name>.out, .err and .json (command, limits, result, sha256).
+        Target code never writes to disk outside its tmpfs. Exit: the command's status, 128+N for signal N,
+        124 on timeout, 125 when a control cannot be enforced or the call is invalid (nothing ran then).
+
+promote (the parent only, after the agent run has ended) copies each allowlisted scratch-relative file
+        into <artifacts> with the race-safe procedure of references/HUNTING.md: directory descriptors held
+        from the start, no-follow traversal of every component, nonblocking open, a regular file with one
+        link within its byte limit and the cumulative limit, an unchanged identity and size after the copy,
+        exclusive creation of the destination. A file that fails any step is not promoted. It prints one
+        JSON line per allowed path (promoted, missing or rejected with the reason). Exit 0 when nothing was
+        rejected, 1 when something was, 3 when a run still holds the scratch directory, 125 on invalid use.
+
+The tools are taken from fixed system paths (/usr/bin/bwrap, /usr/bin/systemd-run), never from PATH.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import resource
+import secrets
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+BWRAP = '/usr/bin/bwrap'
+SYSTEMD_RUN = '/usr/bin/systemd-run'
+SYSTEMCTL = '/usr/bin/systemctl'
+GIT = shutil.which('git', path='/usr/bin:/bin:/usr/local/bin') or '/usr/bin/git'
+CONTROLS = ('no-network', 'empty-environment', 'read-only-target-and-toolchain', 'scratch-only-writes',
+            'process-limit', 'memory-limit', 'cpu-limit', 'file-size-limit', 'disk-limit', 'wall-clock-limit',
+            'source-copy', 'artifact-promotion')
+# name: (default, maximum). Low defaults; a check that needs more says so in its command.
+LIMITS = {
+    'cpu_seconds': (60, 600),
+    'memory_mb': (1024, 4096),
+    'tasks': (64, 512),
+    'file_mb': (64, 1024),
+    'work_mb': (256, 2048),
+    'nofile': (256, 4096),
+    'timeout': (120, 1800),
+    'output_bytes': (65536, 1048576),
+    'cpu_percent': (100, 400),
+}
+SOURCE_MAX_BYTES = 1024 * 1024 * 1024
+CHECK_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
+ENV_NAME = re.compile(r'[A-Z_][A-Z0-9_]{0,63}')
+SECRET_NAME = re.compile(r'TOKEN|SECRET|PASSW|CREDENTIAL|KEY|AUTH|COOKIE|SESSION|PRIVATE|CERT', re.I)
+FIXED_ENV = {'HOME': '/work/home', 'TMPDIR': '/work/tmp', 'LANG': 'C.UTF-8'}
+DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin'
+COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
+COMPONENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
+# Credential stores under the home directory that no --tool may expose.
+HOME_SECRETS = ('.ssh', '.gnupg', '.aws', '.azure', '.config', '.docker', '.kube', '.netrc', '.git-credentials',
+                '.local/share', '.claude', '.codex', '.gemini', '.password-store', '.pki', '.npmrc', '.pypirc',
+                '.cargo/credentials', '.cargo/credentials.toml')
+
+
+class Refused(Exception):
+    """The sandbox cannot be set up as required; nothing ran."""
+
+
+def fail(message: str, code: int = 125) -> int:
+    print(f'sandbox-run: {message}', file=sys.stderr)
+    return code
+
+
+# --------------------------------------------------------------------------- the sandbox
+
+
+def host_root_links() -> list[str]:
+    """bwrap arguments that recreate /bin, /sbin, /lib… as on the host: a link, or a read-only directory."""
+    args: list[str] = []
+    for name in ('bin', 'sbin', 'lib', 'lib32', 'lib64', 'libx32'):
+        path = Path('/') / name
+        if path.is_symlink():
+            args += ['--symlink', os.readlink(path), str(path)]
+        elif path.is_dir():
+            args += ['--ro-bind', str(path), str(path)]
+    return args
+
+
+def bwrap_args(*, work_bytes: int, env: dict[str, str], binds: list[tuple[str, str]], chdir: str,
+               status_fd: int) -> list[str]:
+    # The status descriptor gets an "exit-code" line only when the command itself ran and ended.
+    args = [BWRAP, '--json-status-fd', str(status_fd), '--unshare-all', '--unshare-user', '--disable-userns',
+            '--cap-drop', 'ALL', '--die-with-parent', '--new-session', '--clearenv']
+    for name, value in env.items():
+        args += ['--setenv', name, value]
+    args += ['--ro-bind', '/usr', '/usr', *host_root_links(), '--ro-bind', '/etc', '/etc',
+             '--proc', '/proc', '--dev', '/dev',
+             '--size', str(work_bytes), '--tmpfs', '/work', '--dir', '/work/home', '--dir', '/work/tmp',
+             '--symlink', '/work/tmp', '/tmp']
+    for source, target in binds:
+        args += ['--ro-bind', source, target]
+    return args + ['--chdir', chdir, '--']
+
+
+def scope_args(*, tasks: int, memory_mb: int, cpu_percent: int) -> tuple[list[str], str]:
+    unit = f'wf-sandbox-{secrets.token_hex(6)}'
+    return [SYSTEMD_RUN, '--user', '--scope', '--quiet', '--collect', '--unit', unit,
+            '-p', f'TasksMax={tasks}', '-p', f'MemoryMax={memory_mb}M', '-p', 'MemorySwapMax=0',
+            '-p', f'CPUQuota={cpu_percent}%', '--'], unit
+
+
+def rlimits(cpu_seconds: int, file_bytes: int, nofile: int, as_bytes: int | None):
+    def apply():
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_bytes, file_bytes))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if as_bytes is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
+    return apply
+
+
+class Capture(threading.Thread):
+    """Read a stream to its end, keeping at most `limit` bytes."""
+
+    def __init__(self, stream, limit: int):
+        super().__init__(daemon=True)
+        self.stream, self.limit = stream, limit
+        self.data, self.total = bytearray(), 0
+
+    def run(self):
+        while True:
+            chunk = self.stream.read(65536)
+            if not chunk:
+                break
+            self.total += len(chunk)
+            room = self.limit - len(self.data)
+            if room > 0:
+                self.data += chunk[:room]
+
+
+def sandboxed(command: list[str], *, env: dict[str, str], binds: list[tuple[str, str]], chdir: str,
+              limits: dict[str, int], as_bytes: int | None = None, cwd: str | None = None) -> dict:
+    """Run command in the sandbox; return its result. Raises Refused before anything runs."""
+    for tool in (BWRAP, SYSTEMD_RUN):
+        if not os.access(tool, os.X_OK):
+            raise Refused(f'{tool} is not installed')
+    scope, unit = scope_args(tasks=limits['tasks'], memory_mb=limits['memory_mb'],
+                             cpu_percent=limits['cpu_percent'])
+    status_read, status_write = os.pipe()
+    argv = scope + bwrap_args(work_bytes=limits['work_mb'] * 1024 * 1024, env=env, binds=binds,
+                              chdir=chdir, status_fd=status_write) + command
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=cwd, start_new_session=True, close_fds=True, pass_fds=(status_write,),
+                                   env=scope_env(),
+                                   preexec_fn=rlimits(limits['cpu_seconds'], limits['file_mb'] * 1024 * 1024,
+                                                      limits['nofile'], as_bytes))
+    except OSError as exc:
+        os.close(status_read)
+        raise Refused(f'cannot start the sandbox: {exc}') from exc
+    finally:
+        os.close(status_write)
+    out, err = Capture(process.stdout, limits['output_bytes']), Capture(process.stderr, limits['output_bytes'])
+    status_pipe = Capture(os.fdopen(status_read, 'rb'), 65536)
+    for reader in (out, err, status_pipe):
+        reader.start()
+    killed = None
+    try:
+        process.wait(timeout=limits['timeout'])
+    except subprocess.TimeoutExpired:
+        killed = 'timeout'
+        stop(process, unit)
+        process.wait()
+    for reader in (out, err, status_pipe):
+        reader.join()
+    duration = round(time.monotonic() - started, 3)
+    code = process.returncode
+    status = 124 if killed else (128 - code if code < 0 else code)
+    stderr = bytes(err.data)
+    if not killed and b'"exit-code"' not in status_pipe.data:
+        # bwrap or systemd refused before the command started: nothing of it ran.
+        raise Refused('the sandbox did not start: ' + stderr.decode('utf-8', 'replace').strip()[:300])
+    return {'status': status, 'killed': killed, 'duration_s': duration, 'stdout': bytes(out.data),
+            'stdout_bytes': out.total, 'stderr': stderr, 'stderr_bytes': err.total, 'unit': unit}
+
+
+def scope_env() -> dict[str, str]:
+    """systemd-run needs the user bus; nothing else of the caller's environment is passed on."""
+    keep = ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS')
+    return {name: os.environ[name] for name in keep if name in os.environ}
+
+
+def stop(process: subprocess.Popen, unit: str) -> None:
+    """Kill the sandbox: its outer bwrap, whose death kills the PID namespace, and the whole scope."""
+    with contextlib.suppress(OSError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([SYSTEMCTL, '--user', 'kill', '--signal=SIGKILL', f'{unit}.scope'], env=scope_env(),
+                       capture_output=True, timeout=10)
+
+
+# --------------------------------------------------------------------------- probe
+
+
+PROBE_SCRIPT = r'''
+nets=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')
+echo "nets=$nets"
+echo "env=$(env | cut -d= -f1 | sort | tr '\n' ' ')"
+for p in /src/x /usr/x /etc/x "$1/x" "$2/x"; do
+  if (: > "$p") 2>/dev/null; then echo "writable=$p"; fi
+done
+for p in "$1" "$2"; do [ -e "$p" ] && echo "visible=$p"; done
+: > /work/ok && echo work=ok
+head -c 2097152 /dev/zero > /work/big 2>/dev/null; echo "work_bytes=$(wc -c < /work/big)"
+echo "cpu=$(ulimit -t)"; echo "nofile=$(ulimit -n)"; echo "core=$(ulimit -c)"; echo "fsize=$(ulimit -f)"
+'''
+# Read back the limits the scope applied: systemd accepts a property even where the controller is not
+# delegated, and then nothing enforces it.
+SCOPE_SCRIPT = 'cg=$(cut -d: -f3 /proc/self/cgroup); cat /sys/fs/cgroup$cg/pids.max /sys/fs/cgroup$cg/memory.max ' \
+               '/sys/fs/cgroup$cg/cpu.max'
+
+
+def probe() -> dict[str, str]:
+    """Each control and why it is missing, or 'enforced'."""
+    result = dict.fromkeys(CONTROLS, 'enforced')
+
+    def missing(reason: str, *names: str):
+        for name in names or CONTROLS:
+            if result[name] == 'enforced':
+                result[name] = reason
+
+    sandbox_controls = CONTROLS[:10]
+    for tool in (BWRAP, SYSTEMD_RUN):
+        if not os.access(tool, os.X_OK):
+            missing(f'{tool} is not installed', *sandbox_controls)
+    if result['no-network'] == 'enforced':
+        home = str(Path.home())
+        with tempfile.TemporaryDirectory(prefix='wf-probe-') as tmp:
+            src = Path(tmp) / 'src'
+            src.mkdir()
+            limits = {name: default for name, (default, _) in LIMITS.items()}
+            limits.update(work_mb=1, timeout=30)
+            try:
+                run = sandboxed(['/bin/sh', '-c', PROBE_SCRIPT, 'probe', home, tmp],
+                                env={'PATH': DEFAULT_PATH, **FIXED_ENV, 'WF_PROBE': '1'},
+                                binds=[(str(src), '/src')], chdir='/', limits=limits)
+            except Refused as exc:
+                missing(str(exc), *sandbox_controls)
+            else:
+                text = run['stdout'].decode('utf-8', 'replace')
+                facts = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+                if facts.get('nets', '').split() != ['lo']:
+                    missing(f'network interfaces inside: {facts.get("nets", "?")!r}', 'no-network')
+                expected = sorted(['HOME', 'LANG', 'PATH', 'PWD', 'TMPDIR', 'WF_PROBE', 'SHLVL', '_'])
+                extra = sorted(set(facts.get('env', '').split()) - set(expected))
+                if extra:
+                    missing(f'unexpected variables inside: {", ".join(extra)}', 'empty-environment')
+                writable = [line.split('=', 1)[1] for line in text.splitlines() if line.startswith('writable=')]
+                visible = [line.split('=', 1)[1] for line in text.splitlines() if line.startswith('visible=')]
+                if writable:
+                    missing(f'writable inside: {", ".join(writable)}', 'read-only-target-and-toolchain',
+                            'scratch-only-writes')
+                if visible:
+                    missing(f'host paths visible inside: {", ".join(visible)}', 'scratch-only-writes')
+                if facts.get('work') != 'ok':
+                    missing('the work tmpfs is not writable', 'scratch-only-writes')
+                if facts.get('work_bytes', '').strip() != str(1024 * 1024):
+                    missing(f'the 1 MiB work tmpfs took {facts.get("work_bytes", "?")} bytes', 'disk-limit')
+                if facts.get('cpu') != str(limits['cpu_seconds']):
+                    missing(f'CPU time limit inside: {facts.get("cpu", "?")}', 'cpu-limit')
+                if facts.get('nofile') != str(limits['nofile']) or facts.get('core') != '0':
+                    missing('open-file or core limit not applied inside', 'process-limit')
+                if facts.get('fsize') != str(limits['file_mb'] * 1024 * 1024 // 512):
+                    missing(f'file-size limit inside: {facts.get("fsize", "?")} blocks', 'file-size-limit')
+                if run['status'] != 0 or run['killed']:
+                    missing(f'the probe command ended with {run["status"]}', *sandbox_controls)
+        scope, _ = scope_args(tasks=17, memory_mb=67, cpu_percent=50)
+        try:
+            applied = subprocess.run(scope + ['/bin/sh', '-c', SCOPE_SCRIPT], capture_output=True, text=True,
+                                     env=scope_env(), timeout=30)
+            values = applied.stdout.split()
+        except (OSError, subprocess.SubprocessError) as exc:
+            applied, values = None, [str(exc)]
+        if applied is None or applied.returncode != 0 or values[:1] != ['17']:
+            missing('the cgroup scope does not limit tasks (is the pids controller delegated?)', 'process-limit')
+        if values[1:2] != [str(67 * 1024 * 1024)]:
+            missing('the cgroup scope does not limit memory (is the memory controller delegated?)',
+                    'memory-limit')
+        if values[2:4] != ['50000', '100000']:
+            missing('the cgroup scope does not limit the CPU rate (is the cpu controller delegated?)',
+                    'cpu-limit')
+    if not os.access(GIT, os.X_OK):
+        missing(f'{GIT} is not installed', 'source-copy')
+    if not (getattr(os, 'O_NOFOLLOW', 0) and getattr(os, 'O_NONBLOCK', 0) and getattr(os, 'O_DIRECTORY', 0)
+            and os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd):
+        missing('no-follow, nonblocking and directory-relative opens are unavailable', 'artifact-promotion')
+    return result
+
+
+def cmd_probe(args) -> int:
+    result = probe()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        for name in CONTROLS:
+            state = result[name]
+            print(f'enforced: {name}' if state == 'enforced' else f'missing: {name} — {state}')
+    return 0 if all(state == 'enforced' for state in result.values()) else 125
+
+
+# --------------------------------------------------------------------------- run
+
+
+def open_dir(path: str | Path, dir_fd: int | None = None) -> int:
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+
+
+def real_dir(path: str, what: str) -> Path:
+    p = Path(path)
+    if p.is_symlink() or not p.is_dir():
+        raise Refused(f'{what} must be an existing directory, not a link: {path}')
+    return p.resolve()
+
+
+def check_tool(path: str, repo: Path) -> str:
+    p = Path(path)
+    if not p.is_absolute() or not p.exists():
+        raise Refused(f'--tool needs an existing absolute path: {path}')
+    real = p.resolve()
+    home = Path.home().resolve()
+
+    def within(child: Path, parent: Path) -> bool:
+        return child == parent or parent in child.parents
+
+    if real == Path('/') or within(home, real) or within(repo, real) or within(real, repo):
+        raise Refused(f'--tool must not expose the home directory or the repository: {path}')
+    for name in HOME_SECRETS:
+        secret = home / name
+        if within(real, secret) or within(secret, real):
+            raise Refused(f'--tool must not expose {secret}: {path}')
+    return str(real)
+
+
+def parse_env(values: list[str]) -> dict[str, str]:
+    env = {'PATH': DEFAULT_PATH, **FIXED_ENV}
+    for item in values:
+        name, sep, value = item.partition('=')
+        if not sep or not ENV_NAME.fullmatch(name):
+            raise Refused(f'--env takes NAME=VALUE with an upper-case name: {item!r}')
+        if name in FIXED_ENV:
+            raise Refused(f'{name} is fixed inside the sandbox ({FIXED_ENV[name]})')
+        if SECRET_NAME.search(name):
+            raise Refused(f'{name} looks like a credential; use dummy values under another name')
+        if '\n' in value or '\0' in value:
+            raise Refused(f'--env value of {name} must be one line')
+        env[name] = value
+    return env
+
+
+def limit_values(args) -> dict[str, int]:
+    values = {}
+    for name, (default, maximum) in LIMITS.items():
+        value = getattr(args, name)
+        value = default if value is None else value
+        if not 1 <= value <= maximum:
+            raise Refused(f'--{name.replace("_", "-")} must be 1-{maximum}, got {value}')
+        values[name] = value
+    return values
+
+
+def git(repo: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
+    env = {'PATH': '/usr/bin:/bin', 'GIT_ATTR_NOSYSTEM': '1', 'GIT_CONFIG_NOSYSTEM': '1', 'LC_ALL': 'C',
+           'HOME': os.environ.get('HOME', '/')}
+    return subprocess.run([GIT, '-C', str(repo), *args], env=env, **kwargs)
+
+
+def export_source(repo: Path, ref: str, scratch: Path) -> tuple[Path, list[str]]:
+    """A clean copy of the commit, made by trusted code; returns it and the omitted submodules.
+
+    The files are the committed bytes, read with `git cat-file`: no attribute of the target applies (git
+    archive would honour its export-ignore, export-subst and filters), no line endings change, and nothing
+    is written through a link."""
+    resolved = git(repo, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}', capture_output=True, text=True)
+    if resolved.returncode != 0 or resolved.stdout.strip() != ref:
+        raise Refused(f'--ref must be the full id of a commit of this repository: {ref}')
+    listing = git(repo, 'ls-tree', '-r', '-z', '--full-tree', ref, capture_output=True)
+    if listing.returncode != 0:
+        raise Refused('git ls-tree failed for the source export')
+    entries, submodules = [], []
+    for raw in listing.stdout.split(b'\0'):
+        if not raw:
+            continue
+        meta, _, path = raw.partition(b'\t')
+        mode, kind, oid = meta.decode().split()
+        parts = path.split(b'/')
+        if any(part in {b'', b'.', b'..'} or part.lower() == b'.git' for part in parts):
+            raise Refused(f'the commit has an unsafe path: {path.decode("utf-8", "replace")!r}')
+        if mode == '160000':
+            submodules.append(path.decode('utf-8', 'replace'))
+        elif kind == 'blob':
+            entries.append((mode, oid, parts))
+    dest = scratch / 'src' / ref
+    marker = scratch / 'src' / f'{ref}.complete'
+    if marker.is_file() and dest.is_dir() and not dest.is_symlink():
+        return dest, submodules
+    (scratch / 'src').mkdir(exist_ok=True)
+    if dest.is_symlink() or dest.is_file():
+        dest.unlink()
+    elif dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir()
+    root = open_dir(dest)
+    batch = subprocess.Popen([GIT, '-C', str(repo), 'cat-file', '--batch'], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1',
+                                                          'LC_ALL': 'C'})
+    total = 0
+    try:
+        for mode, oid, parts in entries:
+            batch.stdin.write(oid.encode() + b'\n')
+            batch.stdin.flush()
+            header = batch.stdout.readline().split()
+            if len(header) != 3 or header[1] != b'blob':
+                raise Refused(f'git cat-file did not return blob {oid}')
+            size = int(header[2])
+            total += size
+            if total > SOURCE_MAX_BYTES:
+                raise Refused(f'the source export exceeds {SOURCE_MAX_BYTES} bytes')
+            data = batch.stdout.read(size)
+            batch.stdout.read(1)
+            names = [os.fsdecode(part) for part in parts]
+            parent = walk(root, names[:-1], create=True)
+            try:
+                if mode == '120000':
+                    os.symlink(os.fsdecode(data), names[-1], dir_fd=parent)
+                    continue
+                fd = os.open(names[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             0o755 if mode == '100755' else 0o644, dir_fd=parent)
+                with os.fdopen(fd, 'wb') as handle:
+                    handle.write(data)
+            except Rejected as exc:
+                raise Refused(f'cannot export {"/".join(names)}: {exc}') from None
+            finally:
+                os.close(parent)
+    finally:
+        batch.stdin.close()
+        batch.wait()
+        os.close(root)
+    marker.write_text(ref + '\n')
+    return dest, submodules
+
+
+def cmd_run(args) -> int:
+    if not args.command:
+        return fail('give the command after --')
+    if not CHECK_NAME.fullmatch(args.check):
+        return fail(f'--check must match {CHECK_NAME.pattern}: {args.check}')
+    if not COMMIT.fullmatch(args.ref):
+        return fail('--ref must be a full commit id')
+    try:
+        scratch = real_dir(args.scratch, '--scratch')
+        repo_out = git(Path.cwd(), 'rev-parse', '--show-toplevel', capture_output=True, text=True)
+        if repo_out.returncode != 0:
+            raise Refused('run from inside the audited repository')
+        repo = Path(repo_out.stdout.strip()).resolve()
+        limits = limit_values(args)
+        env = parse_env(args.env)
+        tools = [check_tool(tool, repo) for tool in args.tool]
+        binds = [(tool, tool) for tool in tools]
+        scratch_fd = open_dir(scratch)
+        try:
+            fcntl.flock(scratch_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            raise Refused('the scratch directory is being promoted; nothing ran') from None
+        evidence = scratch / 'evidence'
+        evidence.mkdir(exist_ok=True)
+        if evidence.is_symlink():
+            raise Refused('the evidence directory must not be a link')
+        names = [evidence / f'{args.check}.{ext}' for ext in ('out', 'err', 'json')]
+        if any(path.exists() or path.is_symlink() for path in names):
+            raise Refused(f'check {args.check} already has evidence; choose another --check name')
+        source, submodules = export_source(repo, args.ref, scratch)
+        binds.insert(0, (str(source), '/src'))
+        if args.inputs:
+            inputs = real_dir(str(scratch / args.inputs), '--inputs')
+            if scratch not in inputs.parents:
+                raise Refused('--inputs must be a directory inside the scratch directory')
+            binds.append((str(inputs), '/input'))
+        as_bytes = args.as_mb * 1024 * 1024 if args.as_mb else None
+        result = sandboxed(args.command, env=env, binds=binds, chdir='/src', limits=limits, as_bytes=as_bytes)
+    except Refused as exc:
+        return fail(f'{exc}; nothing ran')
+    record = {
+        'check': args.check, 'ref': args.ref, 'command': args.command, 'limits': limits,
+        'as_mb': args.as_mb, 'env_names': sorted(env), 'tools': tools, 'inputs': args.inputs,
+        'network': 'loopback only', 'status': result['status'], 'killed': result['killed'],
+        'duration_s': result['duration_s'], 'submodules_omitted': submodules,
+    }
+    for stream in ('stdout', 'stderr'):
+        data = result[stream]
+        record[stream] = {'bytes': result[f'{stream}_bytes'], 'kept': len(data),
+                          'truncated': result[f'{stream}_bytes'] > len(data),
+                          'sha256': hashlib.sha256(data).hexdigest()}
+    for path, data in zip(names, (result['stdout'], result['stderr'],
+                                  (json.dumps(record, indent=2, sort_keys=True) + '\n').encode())):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(data)
+    sys.stdout.buffer.write(result['stdout'])
+    sys.stdout.flush()
+    sys.stderr.buffer.write(result['stderr'])
+    sys.stderr.flush()
+    print(f'sandbox-run: {json.dumps({k: record[k] for k in ("check", "status", "killed", "duration_s")})}'
+          f' — evidence in {evidence}/{args.check}.*', file=sys.stderr)
+    return result['status']
+
+
+# --------------------------------------------------------------------------- promote
+
+
+class Rejected(Exception):
+    pass
+
+
+def split_relative(path: str) -> list[str]:
+    parts = path.split('/')
+    if not path or path.startswith('/') or any(not COMPONENT.fullmatch(part) for part in parts):
+        raise Rejected('the path must be relative, with plain components (no ".", "..", empty or hidden parts)')
+    return parts
+
+
+def walk(root_fd: int, parts: list[str], create: bool) -> int:
+    """A descriptor of the directory parts[...] below root_fd, never following a link."""
+    fd = os.dup(root_fd)
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            try:
+                child = open_dir(part, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno == errno.ENOENT and not create:
+                    raise FileNotFoundError(part) from None  # nothing was written there: missing, not unsafe
+                raise Rejected(f'{part}: not a plain directory ({errno.errorcode.get(exc.errno, exc.errno)})')
+            os.close(fd)
+            fd = child
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise Rejected(f'{part}: not a directory')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def promote_one(scratch_fd: int, artifacts_fd: int, path: str, limit: int, budget: int) -> tuple[int, str]:
+    """Copy one file; returns its size and sha256. Raises FileNotFoundError or Rejected."""
+    parts = split_relative(path)
+    source_dir = walk(scratch_fd, parts[:-1], create=False)
+    try:
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=source_dir)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise FileNotFoundError(path) from None
+            raise Rejected(f'cannot open without following a link ({errno.errorcode.get(exc.errno, exc.errno)})')
+    finally:
+        os.close(source_dir)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise Rejected('not a regular file')
+        if before.st_nlink != 1:
+            raise Rejected(f'has {before.st_nlink} links')
+        if before.st_size > limit:
+            raise Rejected(f'{before.st_size} bytes exceed its limit of {limit}')
+        if before.st_size > budget:
+            raise Rejected(f'{before.st_size} bytes exceed the {budget} bytes left of the total limit')
+        data = bytearray()
+        while len(data) <= before.st_size:
+            chunk = os.read(fd, min(65536, before.st_size + 1 - len(data)))
+            if not chunk:
+                break
+            data += chunk
+        after = os.fstat(fd)
+        same = (before.st_dev, before.st_ino, before.st_mode, before.st_nlink, before.st_size) == \
+            (after.st_dev, after.st_ino, after.st_mode, after.st_nlink, after.st_size)
+        if len(data) != before.st_size or not same:
+            raise Rejected('changed while it was read')
+    finally:
+        os.close(fd)
+    dest_dir = walk(artifacts_fd, parts[:-1], create=True)
+    try:
+        try:
+            out = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                          dir_fd=dest_dir)
+        except FileExistsError:
+            raise Rejected('the destination exists already') from None
+    finally:
+        os.close(dest_dir)
+    try:
+        info = os.fstat(out)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise Rejected('the destination is not a new regular file')
+        view = memoryview(bytes(data))
+        while view:
+            view = view[os.write(out, view):]
+    finally:
+        os.close(out)
+    return len(data), hashlib.sha256(data).hexdigest()
+
+
+def cmd_promote(args) -> int:
+    allowed: list[tuple[str, int]] = []
+    for item in args.allow:
+        path, sep, size = item.rpartition(':')
+        if not sep or not size.isdigit() or int(size) < 1:
+            return fail(f'--allow takes <path>:<bytes>: {item}')
+        allowed.append((path, int(size)))
+    if args.total < 1:
+        return fail('--total must be positive')
+    try:
+        scratch_fd = open_dir(args.scratch)
+        artifacts_fd = open_dir(args.artifacts)
+    except OSError as exc:
+        return fail(f'--scratch and --artifacts must be existing directories, not links: {exc}')
+    try:
+        fcntl.flock(scratch_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return fail('a sandbox run still holds the scratch directory; promote after every run has ended', 3)
+    left, rejected = args.total, 0
+    for path, limit in allowed:
+        entry = {'path': path}
+        try:
+            size, digest = promote_one(scratch_fd, artifacts_fd, path, limit, left)
+        except FileNotFoundError:
+            entry['status'] = 'missing'
+        except Rejected as exc:
+            entry.update(status='rejected', reason=str(exc))
+            rejected += 1
+        else:
+            left -= size
+            entry.update(status='promoted', bytes=size, sha256=digest)
+        print(json.dumps(entry, sort_keys=True))
+    return 1 if rejected else 0
+
+
+# --------------------------------------------------------------------------- main
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='action', required=True)
+    p = sub.add_parser('probe', help='report which controls are enforced here')
+    p.add_argument('--json', action='store_true')
+    r = sub.add_parser('run', help='run one check in the sandbox')
+    r.add_argument('--scratch', required=True, help='this agent\'s scratch directory')
+    r.add_argument('--ref', required=True, help='full id of the audited commit')
+    r.add_argument('--check', required=True, help='evidence name, for example c01')
+    r.add_argument('--inputs', help='a directory inside the scratch directory, mounted read-only at /input')
+    r.add_argument('--tool', action='append', default=[], help='an absolute toolchain path, mounted read-only')
+    r.add_argument('--env', action='append', default=[], help='NAME=VALUE with a dummy, non-secret value')
+    for name, (default, maximum) in LIMITS.items():
+        r.add_argument(f'--{name.replace("_", "-")}', type=int, help=f'default {default}, at most {maximum}')
+    r.add_argument('--as-mb', type=int, help='address-space limit; breaks V8, the JVM, Go and sanitizers')
+    r.add_argument('command', nargs=argparse.REMAINDER)
+    m = sub.add_parser('promote', help='copy allowlisted evidence into the artifacts directory (parent only)')
+    m.add_argument('--scratch', required=True)
+    m.add_argument('--artifacts', required=True)
+    m.add_argument('--allow', action='append', default=[], required=True, help='<scratch-relative path>:<bytes>')
+    m.add_argument('--total', type=int, required=True, help='cumulative byte limit')
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return 125 if exc.code else 0
+    if args.action == 'run':
+        if args.command[:1] == ['--']:
+            args.command = args.command[1:]
+        if args.as_mb is not None and not 64 <= args.as_mb <= 65536:
+            return fail('--as-mb must be 64-65536')
+    return {'probe': cmd_probe, 'run': cmd_run, 'promote': cmd_promote}[args.action](args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

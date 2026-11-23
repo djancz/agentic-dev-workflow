@@ -1,6 +1,6 @@
 # TASK-<N> — Security review
 
-<!-- For an audit outside a task, replace the title with: # Security audit — <scope> -->
+<!-- For a review of given paths outside a task, replace the title with: # Security review — <scope> -->
 
 - Latest verdict: <Approved | Approved with comments | Changes requested>
 - Round: <n>
@@ -12,7 +12,7 @@
 - Verdict: <Approved | Approved with comments | Changes requested>
 - Must-fix open: <n>
 - Reviewed: commit <sha> (scope: <diff range or paths>)
-- Reviewer: <agent / model / effort> (context: <subagent | headless | new session | audit requester>)
+- Reviewer: <agent / model / effort> (context: <subagent | headless | new session | paths requester>)
 
 ### Method
 

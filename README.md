@@ -177,8 +177,8 @@ Install the skills and run `wf init` on the project base branch. It detects the 
 reports which pass, fail, or cannot run, and writes them to a managed block in `AGENTS.md`; commit it
 through your normal process. Your agent roles stay in the private `development/wf-settings.md`. Then
 start each change with `wf task`. For a major initiative, start with `wf prd`. `wf maintenance` checks
-routine dependency and security updates; `wf deploy` uses an approved runbook when your project deploys
-to a server. If the PR gets comments or CI fails, type
+routine dependency and security updates; `wf sec audit` runs a deep security audit when you ask for one;
+`wf deploy` uses an approved runbook when your project deploys to a server. If the PR gets comments or CI fails, type
 `wf finalize WAVE-N` and the agent works them in and asks before pushing again. When a wave whose PR is
 open goes back for changes and passes Gate 2 again, the same command updates that PR, again only after
 your yes, and never opens a second one.
@@ -244,6 +244,26 @@ on findings and the delta. The orchestrator reads short artifact headers and bou
 A loop stops at its round cap, on stagnant findings or disagreement, or after repeated agent failures
 or timeouts. It lists unresolved findings for your decision. It never approves itself or loops forever.
 
+## Deep security audit
+
+`wf sec audit [quick|standard|deep] [paths]` audits the whole repository, or the given paths, when you ask
+for it; nothing else starts it. It adapts Cloudflare's
+[security-audit skill](https://github.com/cloudflare/security-audit-skill): reconnaissance agents map the
+code, a coverage ledger splits it into units of entry surface, trust boundary, subsystem and attack class,
+hunters review the units in waves, coverage critics look for gaps, and fresh verifiers try to refute every
+candidate and check every final record. A finding is `confirmed` only with a source trace and a result
+observed in a local sandbox; a lead that needs a fact outside the source is `needs_validation`, without
+severity. The report, the ledger and the findings stay in `development/audits/`; the audit never changes
+code, and it proposes one `wf task` per confirmed root cause for you to choose.
+
+Two roles of its own run the agents: `hunt` (reconnaissance and hunters, for example an open-weight model
+through OpenCode, `hunt=opencode,<provider/model>`) and `verify` (critics and verifiers, best another model
+family). It asks for them on its first run. Before any agent starts, the audit gate shows the commit, the
+scope, the budget of agent runs (25, 60 or 150 by profile), the roles and which sandbox controls hold, and
+waits for your yes. Target code runs only in `sandbox-run.py`: bubblewrap inside a systemd user scope, with
+no network, an empty environment, a read-only copy of the commit and low limits. Where that sandbox is not
+available (macOS, for example), you may choose a source-only run. See [commands and gates](docs/skills.md).
+
 ## Reference
 
 - [Commands, options, and approval gates](docs/skills.md)
@@ -252,4 +272,7 @@ or timeouts. It lists unresolved findings for your decision. It never approves i
 - [Engineering principles](shared/engineering.md)
 
 The workflow is MIT licensed. Its design draws on concepts from
-[Agentic Development Workflow](https://github.com/wilsonkichoi/agentic_development_workflow).
+[Agentic Development Workflow](https://github.com/wilsonkichoi/agentic_development_workflow). `wf sec audit`
+includes adapted text of Cloudflare's MIT-licensed
+[security-audit skill](https://github.com/cloudflare/security-audit-skill); its notice and the list of
+changes are in `skills/wf-sec-audit/references/UPSTREAM.md`.

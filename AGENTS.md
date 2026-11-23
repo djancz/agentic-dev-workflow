@@ -10,7 +10,9 @@ to one task, and passes a gate only through `scripts/auto-gate.py`); feature tes
 fresh context; checks report missing or skipped runs honestly; loops have finite caps and stop on
 stagnation; a wave PR is created only after its integrated diff is reviewed and the human approves the
 push and PR, also after a `wf auto` run. A prototype branch is never pushed or merged; its code reaches
-the base only through an ordinary task. Work records under
+the base only through an ordinary task. `wf sec audit` starts only on an explicit request and its gate,
+never changes the audited code, runs target code only through `sandbox-run.py`, and only the parent
+promotes evidence; its upstream text keeps Cloudflare's MIT notice (`references/UPSTREAM.md`). Work records under
 `development/` stay private. The repository must contain no personal or company material from the
 local references.
 
