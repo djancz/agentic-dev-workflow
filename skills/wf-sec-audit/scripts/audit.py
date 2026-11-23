@@ -7,6 +7,7 @@
   audit.py budget <run> --set <n> --words "<the human's words>"
   audit.py blocks [--show FILE.md#Name]
   audit.py seed <run> <units.json> [--status deferred|out_of_scope|not_applicable --reason <text>]
+  audit.py dismiss <run> <proposal number>… --reason <text>
   audit.py prior <run> <prior run>…
   audit.py carry <run> --from <prior run> --fingerprint <fp> --unit <coverage id>
   audit.py prompt <run> recon|hunter|critic|candidate|record --agent <id> [kind options]
@@ -25,7 +26,8 @@ reads runs/<agent>.out.md after that run has ended, promotes the agent's allowli
 failed result changes nothing but its counter. Two such results in a row from one role stop that role
 until `prompt --after-human-answer`. Every ledger write is validated (validate-coverage-ledger.py) and
 atomic; `final` writes findings.json and runs both validators, and `done` ends the run once the reports
-exist. Units found after a wave's coverage critic are seeded for the next wave.
+exist. Units found after a wave's coverage critic are seeded for the next wave; seeding a unit with the
+labels of a proposed one resolves that proposal.
 
 Run records (development/audits/sec-audit-<date>[-n]/): run-metadata.json, architecture.md (the parent
 writes it), coverage-ledger.json, state.json (bookkeeping: candidates, allowlists, counters),
@@ -72,12 +74,15 @@ KINDS = {  # kind: (role, run-agent mode, --expect-clean)
     'recon': ('hunt', 'ro', False), 'hunter': ('hunt', 'rw', True), 'critic': ('verify', 'ro', False),
     'candidate': ('verify', 'rw', True), 'record': ('verify', 'ro', False),
 }
-AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini)/.+')
-AGENT_CONFIG_PATHS = ('opencode.json', 'opencode.jsonc', '.mcp.json', '.opencode', '.claude', '.codex', '.gemini')
-SKILL_LINK = re.compile(r'\.(claude|opencode|codex|gemini)/skills/(wf-[^/]+)')
+# A configuration root itself counts too: a committed link `.claude` leads the CLI to settings elsewhere.
+AGENT_CONFIG = re.compile(r'opencode\.jsonc?|\.mcp\.json|\.(opencode|claude|codex|gemini|agents)(/.+)?')
+AGENT_CONFIG_PATHS = ('opencode.json', 'opencode.jsonc', '.mcp.json', '.opencode', '.claude', '.codex', '.gemini',
+                      '.agents')
+SKILL_LINK = re.compile(r'\.(claude|opencode|gemini|agents)/skills/(wf-[^/]+)')
 CAP_REASONS = ('wave_cap_reached', 'stagnation', 'budget_cannot_reserve_critics_and_validation',
                'critic_budget_exhausted')
 REPORTS = ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md')
+LABELS = ('surface', 'boundary', 'subsystem', 'attack_class')  # how a proposal matches the unit seeded for it
 BOLD_BLOCK = re.compile(r'^\*\*(?P<name>[^*]+)\*\*(?:\s*\(subagent_type:[^)]*\))?\s*$')
 HEADING = re.compile(r'^(?P<marks>#{1,6})\s+(?P<text>.+?)\s*$')
 
@@ -126,6 +131,15 @@ def write_json(path: Path, value) -> None:
     os.replace(tmp, path)
 
 
+def ledger_errors(ledger: list) -> list[str]:
+    """What the standalone validator would report for the ledger as write_json writes it, its size included."""
+    errors = VL.validate_document(ledger)
+    size = len((json.dumps(ledger, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+    if size > VL.MAX_INPUT_BYTES:
+        errors = errors + [f'the ledger would be {size} bytes, over the validator\'s limit of {VL.MAX_INPUT_BYTES}']
+    return errors
+
+
 class Run:
     def require_open(self) -> None:
         """Refuse a state change once final has run: the reports derive from that state."""
@@ -151,7 +165,7 @@ class Run:
     def save(self, ledger: bool = False) -> None:
         if ledger:
             self.ledger.sort(key=lambda unit: unit['coverage_id'])
-            errors = VL.validate_document(self.ledger)
+            errors = ledger_errors(self.ledger)
             if errors:
                 raise Refused('the ledger would be invalid, nothing was written:\n  ' + '\n  '.join(errors[:20]))
             write_json(self.dir / 'coverage-ledger.json', self.ledger)
@@ -278,7 +292,9 @@ def committed_agent_config(root: Path, ref: str) -> list[str]:
     """Committed files an agent CLI loads from the project when it starts (settings with hooks, plugins, MCP
     servers): target content that runs, or steers, every agent of the audit outside the sandbox."""
     found = []
-    for line in git('-C', str(root), 'ls-tree', '-r', '--full-tree', ref).splitlines():
+    for line in git('-C', str(root), 'ls-tree', '-r', '-z', '--full-tree', ref).split('\0'):
+        if not line:
+            continue
         meta, _, path = line.partition('\t')
         if not AGENT_CONFIG.fullmatch(path):
             continue
@@ -291,10 +307,19 @@ def committed_agent_config(root: Path, ref: str) -> list[str]:
 
 def local_agent_config(root: Path) -> list[str]:
     """Agent configuration in this clone that git ignores: yours, not the target's, but loaded the same way."""
-    listing = git('-C', str(root), 'ls-files', '--others', '--ignored', '--exclude-standard', '--',
-                  *AGENT_CONFIG_PATHS).splitlines()
-    return [path for path in listing if AGENT_CONFIG.fullmatch(path)
+    listing = git('-C', str(root), 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--',
+                  *AGENT_CONFIG_PATHS).split('\0')
+    return [path for path in listing if path and AGENT_CONFIG.fullmatch(path)
             and not ((root / path).is_symlink() and installer_link(path, os.readlink(root / path)))]
+
+
+def main_worktree(root: Path) -> Path:
+    """The main worktree, first in `git worktree list` (as the installer finds it), which holds the records."""
+    listing = git('-C', str(root), 'worktree', 'list', '--porcelain')
+    first = listing.split('\n\n', 1)[0].splitlines()
+    if not first or not first[0].startswith('worktree ') or 'bare' in first:
+        raise Refused('cannot determine the main worktree, which holds the records')
+    return Path(first[0][len('worktree '):]).resolve()
 
 
 def cmd_init(args) -> int:
@@ -304,7 +329,7 @@ def cmd_init(args) -> int:
         raise Refused('git tracks files below development/: the audit records must stay private')
     if subprocess.run(['git', '-C', str(root), 'check-ignore', '-q', 'development']).returncode != 0:
         raise Refused('development/ is not ignored by git; run wf init (or install.py) first')
-    if git('-C', str(root), 'status', '--porcelain'):
+    if git('-C', str(root), 'status', '--porcelain', '--untracked-files=all'):
         raise Refused('the working tree is not clean: commit or stash first, so that the audited commit is exact')
     floor = 4 + profile['critics'] + 1
     budget = args.budget or profile['budget']
@@ -329,8 +354,7 @@ def cmd_init(args) -> int:
     head = git('-C', str(root), 'rev-parse', 'HEAD')
     development = root / 'development'
     if development.is_symlink():
-        common = root / git('-C', str(root), 'rev-parse', '--git-common-dir')  # an absolute path replaces root
-        main_records = common.resolve().parent / 'development'
+        main_records = main_worktree(root) / 'development'
         if main_records.is_symlink() or not main_records.is_dir() or development.resolve() != main_records.resolve():
             raise Refused(f'development/ links to {development.resolve()}, not to the records of the main worktree '
                           f'({main_records}): the audit records stay there')
@@ -426,6 +450,12 @@ def counts(run: Run) -> dict[str, int]:
     return result
 
 
+def clean_final_pass(run: Run) -> bool:
+    """A clean final-clean critic pass over the latest coverage: a unit hunted in a later wave needs another."""
+    hunted = max((u['wave'] for u in run.ledger if u['status'] in ('covered', 'candidate', 'blocked')), default=0)
+    return any(c['kind'] == 'final-clean' and c.get('clean') and c['wave'] >= hunted for c in run.state['critics'])
+
+
 def reserves(run: Run, wave: int | None = None, remaining: int | None = None) -> int:
     """Invocations kept for the coverage critics and the verifiers, which no hunter may spend: the post-wave
     critic of this wave and a final-clean critic (quick: its one critic), and about one (quick) or two
@@ -436,8 +466,7 @@ def reserves(run: Run, wave: int | None = None, remaining: int | None = None) ->
         critics = 0 if critics_run else 1
     else:
         post_wave = wave is not None and not any(c['kind'] == 'post-wave' and c['wave'] == wave for c in critics_run)
-        final_clean = not any(c['kind'] == 'final-clean' and c.get('clean') for c in critics_run)
-        critics = int(post_wave) + int(final_clean)
+        critics = int(post_wave) + int(not clean_final_pass(run))
     factor = 1 if run.meta['profile'] == 'quick' else 2
     pending = sum(1 for c in run.state['candidates'].values() if c['state'] == 'pending')
     balance = max(remaining - critics, 0)
@@ -470,10 +499,9 @@ def cmd_status(args) -> int:
              if (run.runs / f'{p.name[:-len(".prompt.md")]}.out.md.exit').exists()
              and p.name[:-len('.prompt.md')] not in applied | set_aside]
     print('ended, not applied: ' + (', '.join(ended) or 'none'))
-    for name in ('uncovered', 'missing_units'):
-        for entry in run.state[name]:
-            print(f'to seed ({name}, from {entry["from"]}): {entry["surface"]} | {entry["boundary"]} | '
-                  f'{entry["subsystem"]} | {entry["attack_class"]} — {entry["reason"]}')
+    for n, (name, entry) in enumerate(proposals(run), 1):
+        print(f'to seed {n} ({name}, from {entry["from"]}): {entry["surface"]} | {entry["boundary"]} | '
+              f'{entry["subsystem"]} | {entry["attack_class"]} — {entry["reason"]}')
     for role, streak in run.state['malformed'].items():
         if streak >= MALFORMED_STOP:
             print(f'STOP: {streak} malformed or failed {role} results in a row; ask the human')
@@ -542,13 +570,49 @@ def cmd_seed(args) -> int:
         run.ledger.append(unit)
         existing[unit['coverage_id']] = unit
         added += 1
-    if args.clear_pending:
-        run.state['uncovered'], run.state['missing_units'] = [], []
+    # A proposal is resolved once the ledger holds a unit with its labels; any other stays until it is seeded
+    # or dismissed with a reason, so that final never overlooks it.
+    held = {tuple(unit.get(key) for key in LABELS) for unit in run.ledger}
+    resolved = 0
+    for name in ('uncovered', 'missing_units'):
+        kept = [entry for entry in run.state[name] if tuple(entry.get(key) for key in LABELS) not in held]
+        resolved += len(run.state[name]) - len(kept)
+        run.state[name] = kept
     run.meta['selected_companions'] = sorted({ref.split('#', 1)[0] for unit in run.ledger
                                              for ref in unit['selected_companion_blocks']})
     run.save(ledger=True)
+    left = len(proposals(run))
     print(f'seeded {added} unit(s) for wave {wave}, {len(specs) - added} already present; {len(run.ledger)} in '
-          'the ledger')
+          f'the ledger; {resolved} proposal(s) resolved, {left} left'
+          + (' (status lists them: seed them with their labels, or dismiss a duplicate)' if left else ''))
+    return 0
+
+
+def proposals(run: Run) -> list[tuple[str, dict]]:
+    """The units hunters and critics proposed that the ledger does not hold yet, numbered from 1 by status."""
+    return [(name, entry) for name in ('uncovered', 'missing_units') for entry in run.state[name]]
+
+
+def cmd_dismiss(args) -> int:
+    run = Run(args.run)
+    run.require_open()
+    if not VF.has_visible_prose(args.reason):
+        raise Refused('--reason says why the proposal needs no unit of its own, for example the unit it duplicates')
+    listed = proposals(run)
+    numbers = set()
+    for value in args.numbers:
+        if not value.isdigit() or not 1 <= int(value) <= len(listed):
+            raise Refused(f'no proposal {value}: status numbers them 1-{len(listed)}')
+        numbers.add(int(value))
+    for number in sorted(numbers):
+        name, entry = listed[number - 1]
+        run.state.setdefault('dismissed', []).append(entry | {'list': name, 'reason': args.reason.strip(),
+                                                              'at': now()})
+    for name in ('uncovered', 'missing_units'):
+        run.state[name] = [entry for n, (where, entry) in enumerate(listed, 1)
+                           if where == name and n not in numbers]
+    run.save()
+    print(f'dismissed {len(numbers)} proposal(s): {args.reason.strip()}; {len(proposals(run))} left')
     return 0
 
 
@@ -675,6 +739,11 @@ def cmd_resume(args) -> int:
                       'a new run')
     if run.meta['run_status'] != 'in_progress':
         raise Refused(f'the run is {run.meta["run_status"]}')
+    if run.meta['phase'] == 'report':
+        # final froze the records: resuming changes nothing, only the reports and done remain.
+        print(f'resumed {run.meta["run_id"]}: its findings are final; write {", ".join(REPORTS)} from findings.json '
+              f'and the ledger, then audit.py done {run.dir}')
+        return cmd_status(args)
     applied = set(run.state.get('applied', []))
     set_aside = set(run.state.get('abandoned', []))
     abandoned = [agent for agent in run.state.get('launched', {}) if agent not in applied
@@ -802,7 +871,7 @@ def require_launch(run: Run, kind: str, agent: str, hunter_wave: int | None = No
     if head != run.meta['source_ref']:
         raise Refused(f'HEAD is {head}, the audit was approved for {run.meta["source_ref"]}: check that commit out '
                       'again before the next agent')
-    if git('-C', str(run.root), 'status', '--porcelain'):
+    if git('-C', str(run.root), 'status', '--porcelain', '--untracked-files=all'):
         raise Refused('the working tree changed since the audit gate: restore it before the next agent')
     if not AGENT_ID.fullmatch(agent) or agent in {'con', 'prn', 'aux', 'nul'} or re.fullmatch(r'(com|lpt)[1-9]', agent):
         raise Refused(f'unsafe agent id: {agent}')
@@ -982,7 +1051,7 @@ def prompt_candidate(run: Run, args) -> str:
     if args.agent in candidate.get('hunters', []):
         raise Refused('a verifier never validates a candidate it hunted')
     allow(run, args.agent)
-    checks = [check for unit in units for check in unit['local_checks']]
+    checks = hunter_checks(units, args.fingerprint)
     quick = run.meta['profile'] == 'quick'
     branches = {v: schema_branch(v) for v in ('confirmed', 'needs_validation', 'rejected')}
     prior = run.state.get('prior_records', {}).get(args.fingerprint, [])
@@ -1025,7 +1094,9 @@ Prior records with this fingerprint:
 Besides "decision" and "record", add "sandbox_probe" (see Local checks) and "checks": the checks you ran
 yourself, each {{"agent_id": "{args.agent}", "reviewed_paths": [...], "invariant": "...", "method":
 "source|local", "result": "...", "artifact": null or "agents/{args.agent}/artifacts/evidence/<name>.json"}}.
-"checks" must not be empty: list at least the source re-check of the trace.
+"checks" must not be empty: list at least the source re-check of the trace. A "confirmed" decision needs at
+least one local check of your own that reproduces the observed result; when your sandbox probe fails, run
+no target code and report the failure: a fresh verifier takes the candidate.
 
 confirmed branch:
 ```json
@@ -1052,12 +1123,17 @@ def phase5_checks() -> str:
     return text[start:end].strip() + '\n'
 
 
-def fingerprint_checks(candidate: dict, units: list[dict], fp: str) -> list[dict]:
-    """Every check behind one fingerprint: of the attempts (live or archived) that linked it, and of its
-    candidate verifier, once each."""
+def hunter_checks(units: list[dict], fp: str) -> list[dict]:
+    """The assignment owners' own checks in the attempts (live or archived) that linked fp. A verifier's check
+    in the same unit belongs to the fingerprint it verified, which may be another one."""
     attempts = [a for unit in units for a in [unit, *unit['attempts']] if fp in a['result_fingerprints']]
+    return [c for a in attempts for c in a['local_checks'] if c['agent_id'] == a['agent_id']]
+
+
+def fingerprint_checks(candidate: dict, units: list[dict], fp: str) -> list[dict]:
+    """Every check behind one fingerprint: the linked units' own checks and those of its verifiers, once each."""
     checks, seen = [], set()
-    for check in [c for a in attempts for c in a['local_checks']] + candidate.get('checks', []):
+    for check in hunter_checks(units, fp) + candidate.get('checks', []) + candidate.get('reverify_checks', []):
         key = json.dumps(check, sort_keys=True)
         if key not in seen:
             seen.add(key)
@@ -1125,7 +1201,12 @@ rejected branch:
 ```
 '''
     if reverify:
-        body += sandbox_section(run, args.agent) + '\nAlso add "sandbox_probe" (see Local checks).\n'
+        body += sandbox_section(run, args.agent) + (
+            '\nAlso add "sandbox_probe" (see Local checks) and "checks": the checks you ran yourself, each '
+            f'{{"agent_id": "{args.agent}", "reviewed_paths": [...], "invariant": "...", "method": "source|local", '
+            f'"result": "...", "artifact": null or "agents/{args.agent}/artifacts/evidence/<name>.json"}}, at least '
+            'the source re-check of the trace. A record that ends confirmed needs at least one local check of '
+            'your own that reproduces its observed result.\n')
     return body + output_contract('')
 
 
@@ -1430,15 +1511,18 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
     decision = result['decision']
     if decision not in ('confirmed', 'needs_validation', 'rejected'):
         return ['decision: expected confirmed, needs_validation or rejected']
+    candidate = run.state['candidates'][fp]
+    probe_errors = probe_failed(run, candidate, agent, result['sandbox_probe'])
+    if probe_errors is not None:
+        return probe_errors
     errors = record_errors(result['record'], decision, 'record')
     if isinstance(result['record'], dict) and result['record'].get('verdict') != decision:
         errors.append('record.verdict must equal decision')
     errors_checks: list[str] = []
     check_checks(result['checks'], 'result', agent, run, errors_checks, promoted_paths(agent, promoted))
-    errors += errors_checks
+    errors += errors_checks or local_reproduction(run, decision, result['checks'])
     if errors:
         return errors
-    candidate = run.state['candidates'][fp]
     record = result['record']
     if record['fingerprint'] != fp:
         # A different root cause: it needs its own independent validation before it may count.
@@ -1450,20 +1534,50 @@ def apply_candidate(run: Run, agent: str, result: dict, promoted: list[dict]) ->
     candidate.update(record=record, decision=decision, validated_by=agent, checks=result['checks'],
                      state='final' if run.meta['profile'] == 'quick' else 'validated')
     for coverage_id in candidate['units']:
-        unit = run.unit(coverage_id)
-        unit.setdefault('decisions', {})[fp] = decision
-        if unit['status'] == 'planned' and candidate.get('carried'):
-            unit.update(status='candidate', agent_id=agent, local_checks=result['checks'],
-                        reviewed_paths=sorted({p for c in result['checks'] for p in c['reviewed_paths']}),
-                        result_fingerprints=[fp])
-        elif unit['status'] == 'candidate':
-            unit['local_checks'] = unit['local_checks'] + result['checks']
-            unit['reviewed_paths'] = sorted(set(unit['reviewed_paths']) |
-                                            {p for c in result['checks'] for p in c['reviewed_paths']})
+        run.unit(coverage_id).setdefault('decisions', {})[fp] = decision
+    add_checks(run, candidate, agent, result['checks'])
     return []
 
 
-def apply_record(run: Run, agent: str, result: dict) -> list[str]:
+def add_checks(run: Run, candidate: dict, agent: str, checks: list[dict]) -> None:
+    """A verifier's checks join the linked units' checks; a carried record's planned unit becomes its own."""
+    for coverage_id in candidate['units']:
+        unit = run.unit(coverage_id)
+        if unit['status'] == 'planned' and candidate.get('carried'):
+            unit.update(status='candidate', agent_id=agent, local_checks=checks,
+                        reviewed_paths=sorted({p for c in checks for p in c['reviewed_paths']}),
+                        result_fingerprints=[candidate['fingerprint']])
+        elif unit['status'] == 'candidate':
+            unit['local_checks'] = unit['local_checks'] + checks
+            unit['reviewed_paths'] = sorted(set(unit['reviewed_paths']) |
+                                            {p for c in checks for p in c['reviewed_paths']})
+
+
+def probe_failed(run: Run, candidate: dict, agent: str, probe) -> list[str] | None:
+    """None when the verifier's sandbox worked (or the audit is source-only); otherwise its result does not
+    settle anything: the candidate waits for a verifier that can reproduce a local result (errors if malformed)."""
+    if run.meta['source_only']:
+        return None
+    if not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail')):
+        return ['sandbox_probe: expected "pass" or "fail: <missing controls>"']
+    if probe == 'pass':
+        return None
+    candidate['verifiers'].pop()
+    candidate.setdefault('failed_verifiers', []).append(agent)
+    run.state['events'].append({'at': now(), 'agent': agent, 'event': 'sandbox probe failed', 'probe': probe})
+    return []
+
+
+def local_reproduction(run: Run, verdict: str, checks: list[dict]) -> list[str]:
+    """A confirmed verdict rests on complete local execution evidence that this verifier reproduced itself."""
+    if verdict != 'confirmed' or any(c['method'] == 'local' for c in checks):
+        return []
+    if run.meta['source_only']:
+        return ['decision: a source-only audit runs no target code, so it confirms nothing: use needs_validation']
+    return ['checks: a confirmed verdict needs a local check of your own that reproduces the observed result']
+
+
+def apply_record(run: Run, agent: str, result: dict, promoted: list[dict]) -> list[str]:
     fp = next((f for f, c in run.state['candidates'].items() if c.get('verifiers', [])[-1:] == [agent]
                and c['state'] in ('validated', 'needs_reverification')), None)
     if fp is None:
@@ -1471,27 +1585,33 @@ def apply_record(run: Run, agent: str, result: dict) -> list[str]:
     candidate = run.state['candidates'][fp]
     current = candidate['replacement'] if candidate['state'] == 'needs_reverification' else candidate['record']
     reverify = candidate['state'] == 'needs_reverification'
-    if reverify and not run.meta['source_only']:
-        probe = result.get('sandbox_probe')
-        if not isinstance(probe, str) or not (probe == 'pass' or probe.startswith('fail')):
-            return ['sandbox_probe: expected "pass" or "fail: <missing controls>"']
-        if probe != 'pass':
-            # It could not reproduce a decisive local result: the replacement waits for a verifier that can.
-            candidate['verifiers'].pop()
-            candidate.setdefault('failed_verifiers', []).append(agent)
-            run.state['events'].append({'at': now(), 'agent': agent, 'event': 'sandbox probe failed', 'probe': probe})
-            return []
+    extra = {'sandbox_probe', 'checks'} if reverify else set()
+    if reverify:
+        # It must reproduce any decisive local result itself; a failed sandbox leaves the replacement waiting.
+        probe_errors = probe_failed(run, candidate, agent, result.get('sandbox_probe'))
+        if probe_errors is not None:
+            return probe_errors
+        errors: list[str] = []
+        check_checks(result.get('checks'), 'result', agent, run, errors, promoted_paths(agent, promoted))
+        if errors:
+            return errors
     if result.get('decision') == 'verified':
-        keys = {'decision', 'fingerprint'} | ({'sandbox_probe'} if reverify else set())
+        keys = {'decision', 'fingerprint'} | extra
         if set(result) != keys or result['fingerprint'] != fp:
             return [f'a verified result is exactly {sorted(keys)} with fingerprint {fp}']
+        if reverify:
+            errors = local_reproduction(run, current['verdict'], result['checks'])
+            if errors:
+                return errors
+            candidate['reverify_checks'] = candidate.get('reverify_checks', []) + result['checks']
+            add_checks(run, candidate, agent, result['checks'])
         candidate.update(record=current, state='final', verified_by=agent)
         candidate.pop('replacement', None)
         settle(run, fp, candidate)
         return []
     if result.get('decision') != 'replace':
         return ['decision: expected verified or replace']
-    keys = {'decision', 'reason', 'record'} | ({'sandbox_probe'} if reverify else set())
+    keys = {'decision', 'reason', 'record'} | extra
     if set(result) != keys:
         return [f'a replacement is exactly {sorted(keys)}']
     record = result['record']
@@ -1501,8 +1621,13 @@ def apply_record(run: Run, agent: str, result: dict) -> list[str]:
     errors = record_errors(record, verdict, 'record')
     if not VF.has_visible_prose(result['reason']):
         errors.append('reason: expected text')
+    if reverify and record['fingerprint'] == fp and not material(current, record):
+        errors += local_reproduction(run, verdict, result['checks'])  # it becomes final right here
     if errors:
         return errors
+    if reverify:
+        candidate['reverify_checks'] = candidate.get('reverify_checks', []) + result['checks']
+        add_checks(run, candidate, agent, result['checks'])
     if record['fingerprint'] != fp:
         run.state['candidates'].setdefault(record['fingerprint'], {
             'fingerprint': record['fingerprint'], 'state': 'pending', 'proposals': [record],
@@ -1620,7 +1745,7 @@ def cmd_apply(args) -> int:
     handler = {'hunter': lambda: apply_hunter(run, args.agent, result, promoted),
                'critic': lambda: apply_critic(run, args.agent, result),
                'candidate': lambda: apply_candidate(run, args.agent, result, promoted),
-               'record': lambda: apply_record(run, args.agent, result)}[args.kind]
+               'record': lambda: apply_record(run, args.agent, result, promoted)}[args.kind]
     try:
         errors = handler()
     except (TypeError, KeyError, AttributeError, ValueError, IndexError) as exc:
@@ -1630,11 +1755,11 @@ def cmd_apply(args) -> int:
         errors = [f'the result has an unexpected shape ({type(exc).__name__}: {str(exc)[:120]})']
     if not errors:
         # The ledger as the result would leave it: an invalid one discards the result like any contract error.
-        ledger_errors = VL.validate_document(run.ledger)
-        if ledger_errors:
+        problems = ledger_errors(run.ledger)
+        if problems:
             run = Run(args.run)
             run.state['allowlists'].pop(args.agent, None)
-            errors = ['the ledger would be invalid: ' + e for e in ledger_errors[:10]]
+            errors = ['the ledger would be invalid: ' + e for e in problems[:10]]
     if errors:
         reset_units()
         return failed(run, role, args.agent, 'the result does not match its contract', errors)
@@ -1679,18 +1804,17 @@ def cmd_final(args) -> int:
     if not reason and pending:
         raise Refused(f'{pending} unit(s) that hunters or critics proposed are not seeded yet: seed them (in quick '
                       'as deferred), or finish incomplete')
-    if not reason and run.meta['profile'] != 'quick' and not any(c['kind'] == 'final-clean' and c.get('clean')
-                                                                for c in run.state['critics']):
-        raise Refused('no clean final-clean critic pass: run one, or finish incomplete')
+    if not reason and run.meta['profile'] != 'quick' and not clean_final_pass(run):
+        raise Refused('no clean final-clean critic pass over the latest wave: run one, or finish incomplete')
     if not reason and run.meta['profile'] == 'quick' and not any(c.get('applied') for c in run.state['critics']):
         raise Refused('the quick run\'s coverage critic has not run: run it, or finish incomplete')
     capped = sorted({r for u in run.ledger if u['status'] == 'deferred' for r in u['unresolved'] if r in CAP_REASONS})
     if not reason and capped:
         raise Refused('units were deferred by a cap or the budget, so coverage is not complete: finish with '
                       f'--incomplete <reason> ({", ".join(capped)})')
-    ledger_errors = VL.validate_document(run.ledger)
-    if ledger_errors:
-        raise Refused('the ledger is invalid:\n  ' + '\n  '.join(ledger_errors[:20]))
+    problems = ledger_errors(run.ledger)
+    if problems:
+        raise Refused('the ledger is invalid:\n  ' + '\n  '.join(problems[:20]))
     write_json(run.dir / 'findings.json', records)
     for script, target in (('validate-findings.py', 'findings.json'), ('validate-coverage-ledger.py',
                                                                       'coverage-ledger.json')):
@@ -1781,8 +1905,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('units')
     p.add_argument('--status', default='planned', choices=['planned', 'deferred', 'out_of_scope', 'not_applicable'])
     p.add_argument('--reason')
-    p.add_argument('--clear-pending', action='store_true',
-                   help='the uncovered and missing units that hunters and critics proposed are now handled')
+    p = sub.add_parser('dismiss')
+    p.add_argument('run')
+    p.add_argument('numbers', nargs='+', help='the proposal numbers status prints')
+    p.add_argument('--reason', required=True)
     p = sub.add_parser('prior')
     p.add_argument('run')
     p.add_argument('prior', nargs='+')
@@ -1822,7 +1948,7 @@ def main(argv: list[str] | None = None) -> int:
             KINDS['record'] = ('verify', 'rw', True)
         handlers = {'init': cmd_init, 'approve': cmd_approve, 'status': cmd_status, 'blocks': cmd_blocks,
                     'budget': cmd_budget,
-                    'seed': cmd_seed, 'prior': cmd_prior, 'carry': cmd_carry, 'prompt': cmd_prompt,
+                    'seed': cmd_seed, 'dismiss': cmd_dismiss, 'prior': cmd_prior, 'carry': cmd_carry, 'prompt': cmd_prompt,
                     'apply': cmd_apply,
                     'reopen': cmd_reopen, 'resume': cmd_resume, 'final': cmd_final, 'done': cmd_done,
                     'defer': lambda a: cmd_defer(a, 'deferred'), 'out-of-scope': lambda a: cmd_defer(a, 'out_of_scope')}

@@ -211,10 +211,12 @@ permissions, so the independent verifier is the safeguard against a forged resul
 network, an empty environment, read-only system and source (an export of the committed bytes), writes to a
 size-limited tmpfs only, and cgroup and rlimit limits on tasks, memory, CPU, file size and time. Its probe
 reports each control; inside Codex's sandbox it fails, for want of the user session bus. The command's bounded stdout and stderr are
-the only evidence, promoted into the run by the parent after the agent has ended. The audit gate shows the
+the only evidence, promoted into the run by the parent after the agent has ended. A `confirmed` verdict
+needs a local check that its verifier ran itself; a verifier whose sandbox failed settles nothing. The audit gate shows the
 host probe; when it fails, you choose between fixing it and a source-only run. It also lists the agent
-configuration the target commits (hooks, plugins, MCP servers), which every agent CLI loads at startup
-outside the sandbox: approving with it takes `--trust-agent-config`, else audit a clone without it. Every
+configuration the target commits (hooks, plugins, MCP servers) and the ignored one in your clone, which
+every agent CLI loads at startup outside the sandbox: approving with committed configuration takes
+`--trust-agent-config`, else audit a clone without it. Every
 agent run is pinned to the audited commit. `audit.py final` writes
 `findings.json`; the run ends with `audit.py done` once the reports exist. The end report proposes one
 task per confirmed root cause (`Sensitivity: high`); you choose which to create.

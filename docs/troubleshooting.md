@@ -147,3 +147,13 @@ invented fields. Check the out-file under `development/audits/<run>/runs/`. Rais
 stronger `hunt` model, or lower the units per hunter. Each discarded result may get one fresh rerun; two in
 a row from one role stop the run until you answer (`prompt … --after-human-answer`).
 
+## An OpenCode hunter hangs until its timeout
+
+OpenCode does not end a run whose provider refuses it: after a free model's "Free usage limit reached" it
+waits until `WF_AGENT_TIMEOUT` stops it (30 minutes by default). Its run log in
+`development/audits/<run>/runs/` shows nothing, so `run-agent.sh` reports exit 5, not a usage limit (6);
+OpenCode's own log, `~/.local/share/opencode/log/opencode.log`, has the message. Run the stage again with
+another `hunt` model or agent (`prompt … --ran-as <agent,model,effort>`). Two OpenCode runs that start at
+the same moment can also fail with `database is locked`, from OpenCode's local database; a fresh rerun
+usually works, and `parallel=1` avoids it.
+

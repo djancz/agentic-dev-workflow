@@ -5,7 +5,9 @@ Run: python3 -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import io
 import json
 import os
 import shutil
@@ -126,6 +128,18 @@ class Promote(unittest.TestCase):
             self.assertIn('plain components', reasons[path])
         self.assertEqual(list(self.artifacts.rglob('*.out')), [], 'nothing unsafe reaches the artifacts')
 
+    def test_a_link_above_the_scratch_directory_leads_nowhere(self):
+        # The agent may replace runs/scratch with a link; promotion must not follow it to another directory.
+        elsewhere = self.tmp / 'elsewhere' / 'hunt-1' / 'evidence'
+        elsewhere.mkdir(parents=True)
+        (elsewhere / 'c01.out').write_bytes(b'forged\n')
+        shutil.rmtree(self.tmp / 'runs' / 'scratch')
+        (self.tmp / 'runs' / 'scratch').symlink_to(self.tmp / 'elsewhere', target_is_directory=True)
+        r, entries = self.promote('evidence/c01.out:100')
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('reached without a link', r.stderr)
+        self.assertEqual(list(self.artifacts.rglob('*')), [])
+
     def test_the_cumulative_limit_counts_every_promoted_file(self):
         for name in ('a', 'b'):
             (self.scratch / 'evidence' / f'{name}.out').write_bytes(b'x' * 60)
@@ -191,14 +205,25 @@ class SandboxGuards(unittest.TestCase):
         (tmp / 'bin').mkdir()
         (tmp / 'bin' / 'tool').write_text('#!/bin/sh\n')
         (tmp / 'bin' / 'elsewhere').symlink_to('/run')
-        self.assertIsNone(sandbox.first_channel(tmp))
+        fd = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool'))
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
         server.bind(str(tmp / 'bin' / 'service.sock'))
-        self.assertEqual(sandbox.first_channel(tmp), str(tmp / 'bin' / 'service.sock'))
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'), str(tmp / 'bin' / 'service.sock'))
         os.unlink(tmp / 'bin' / 'service.sock')
         os.mkfifo(tmp / 'pipe')
-        self.assertEqual(sandbox.first_channel(tmp), str(tmp / 'pipe'))
+        self.assertEqual(sandbox.first_channel(fd, str(tmp), '--tool'), str(tmp / 'pipe'))
+        # The scan reads the directory it holds: a rename of the path after the open changes nothing.
+        os.unlink(tmp / 'pipe')
+        os.rename(tmp, f'{tmp}.held')
+        self.addCleanup(os.rename, f'{tmp}.held', tmp)
+        os.mkdir(tmp)
+        self.addCleanup(os.rmdir, tmp)
+        os.mkfifo(tmp / 'swapped')
+        self.addCleanup(os.unlink, tmp / 'swapped')
+        self.assertIsNone(sandbox.first_channel(fd, str(tmp), '--tool'))
 
     def test_no_tool_covers_a_mount_point_of_the_sandbox(self):
         sandbox = load_sandbox()
@@ -212,25 +237,66 @@ class SandboxGuards(unittest.TestCase):
             self.assertIn('must not cover', str(caught.exception))
 
     def test_a_refused_export_stops_git_and_leaves_nothing(self):
-        # A blob larger than the pipe buffer: git blocks writing it once the export is refused.
+        # git cat-file stands in for a child that keeps writing and survives a closed pipe and SIGTERM, so
+        # that only a kill ends it: a run that merely closed the pipes would wait for it forever.
+        sandbox = load_sandbox()
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         repo, ref = make_repo(tmp)
-        (repo / 'big.bin').write_bytes(os.urandom(1 << 20))
-        git(repo, 'add', 'big.bin')
-        git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'big')
-        ref = git(repo, 'rev-parse', 'HEAD').strip()
+        pidfile = tmp / 'cat-file.pid'
+        fake = tmp / 'fake-git'
+        fake.write_text(f'''#!{sys.executable}
+import os, signal, sys, time
+if 'cat-file' not in sys.argv:
+    os.execv({sandbox.GIT!r}, ['git', *sys.argv[1:]])
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+open({str(pidfile)!r}, 'w').write(str(os.getpid()))
+oid = sys.stdin.readline().strip()
+os.write(1, (oid + ' blob 2000000\\n').encode())
+while True:
+    try:
+        os.write(1, b'x' * 65536)
+    except OSError:
+        time.sleep(1)
+''')
+        fake.chmod(0o755)
         scratch = tmp / 'scratch'
         scratch.mkdir()
-        script = ('import sys, os, importlib.util as u; s = u.spec_from_file_location("s", sys.argv[1]); '
+        script = ('import sys, importlib.util as u; s = u.spec_from_file_location("s", sys.argv[1]); '
                   'm = u.module_from_spec(s); s.loader.exec_module(m); m.SOURCE_MAX_BYTES = 1000; '
-                  'fd = os.open(sys.argv[3], os.O_RDONLY | os.O_DIRECTORY)\n'
-                  'try:\n    m.export_source(m.Path(sys.argv[2]), sys.argv[4], fd)\n'
-                  'except m.Refused as e:\n    print(e)')
-        r = subprocess.run([sys.executable, '-c', script, str(SANDBOX), str(repo), str(scratch), ref],
-                           capture_output=True, text=True, timeout=60)
-        self.assertIn('exceeds 1000 bytes', r.stdout, r.stderr)
+                  'm.GIT = sys.argv[2]; sys.exit(m.main(sys.argv[3:]))')
+        r = subprocess.run([sys.executable, '-c', script, str(SANDBOX), str(fake), 'run', '--scratch', str(scratch),
+                            '--ref', ref, '--check', 'c01', '--', 'true'], cwd=repo, capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 125, r.stderr)
+        self.assertIn('exceeds 1000 bytes; nothing ran', r.stderr)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pidfile.read_text()), 0)
         self.assertEqual(list((scratch / 'src').iterdir()), [], 'the partial copy is removed')
+
+    def test_cleanup_never_removes_a_directory_moved_into_the_exports_place(self):
+        sandbox = load_sandbox()
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'src' / 'export').mkdir(parents=True)
+        st = (tmp / 'src' / 'export').stat()
+        (tmp / 'src' / 'export').rename(tmp / 'moved')
+        (tmp / 'src' / 'export').mkdir()
+        (tmp / 'src' / 'export' / 'keep.txt').write_text('not the export\n')
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            sandbox.remove_export(os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY), 'export', (st.st_dev, st.st_ino))
+        self.assertIn('replaced by another directory', err.getvalue())
+        self.assertTrue((tmp / 'src' / 'export' / 'keep.txt').exists())
+        st = (tmp / 'src' / 'export').stat()
+        sandbox.remove_export(os.open(tmp / 'src', os.O_RDONLY | os.O_DIRECTORY), 'export', (st.st_dev, st.st_ino))
+        self.assertFalse((tmp / 'src' / 'export').exists())
+
+    def test_the_scope_check_reads_each_controller_on_its_own(self):
+        sandbox = load_sandbox()
+        r = subprocess.run(['/bin/sh', '-c', sandbox.SCOPE_SCRIPT], capture_output=True, text=True, timeout=30)
+        self.assertEqual([line.split('=', 1)[0] for line in r.stdout.splitlines()],
+                         ['pids.max', 'memory.max', 'cpu.max'], 'a missing file shifts no other value')
 
     def test_the_guard_starts_nothing_without_the_limits(self):
         sandbox = load_sandbox()
@@ -360,6 +426,10 @@ class SandboxRun(unittest.TestCase):
         r = self.run_check('c26', 'true', options=('--inputs', 'inputs'))
         self.assertEqual(r.returncode, 125)
         self.assertIn('must not hold a socket or FIFO', r.stderr)
+        (self.scratch / 'linked').symlink_to(self.scratch / 'inputs', target_is_directory=True)
+        r = self.run_check('c27', 'true', options=('--inputs', 'linked'))
+        self.assertEqual(r.returncode, 125)
+        self.assertIn('must be a plain directory inside the scratch directory', r.stderr)
 
     def test_probe_reports_every_control(self):
         r = subprocess.run([sys.executable, str(SANDBOX), 'probe'], capture_output=True, text=True)
@@ -498,14 +568,18 @@ class AuditTool(unittest.TestCase):
     def coverage_id(self, run: Path) -> str:
         return self.ledger(run)[0]['coverage_id']
 
+    def local_check(self, run: Path, agent: str) -> dict:
+        """A local check whose evidence the agent's sandbox left in its scratch, for the parent to promote."""
+        evidence = run / 'runs' / 'scratch' / agent / 'evidence'
+        evidence.mkdir(parents=True, exist_ok=True)
+        (evidence / 'c01.json').write_text('{"status": 0}\n')
+        return source_check(agent) | {'method': 'local', 'result': 'The object changed.',
+                                      'artifact': f'agents/{agent}/artifacts/evidence/c01.json'}
+
     def hunter_result(self, run: Path, agent: str, candidate: dict | None = None, local: bool = False) -> dict:
         checks = [source_check(agent)]
         if local:
-            evidence = run / 'runs' / 'scratch' / agent / 'evidence'
-            evidence.mkdir(parents=True)
-            (evidence / 'c01.json').write_text('{"status": 0}\n')
-            checks.append(source_check(agent) | {'method': 'local', 'result': 'The object changed.',
-                                                 'artifact': f'agents/{agent}/artifacts/evidence/c01.json'})
+            checks.append(self.local_check(run, agent))
         unit = {'coverage_id': self.coverage_id(run), 'disposition': 'candidate' if candidate else 'covered',
                 'reviewed_paths': ['app.py'], 'checks': checks,
                 'candidate_fingerprints': [candidate['fingerprint']] if candidate else [], 'unresolved': []}
@@ -662,11 +736,11 @@ class AuditTool(unittest.TestCase):
                                         'reassign_ids': [], 'resolved_prior_leads': [], 'stop': False})
         self.assertIn('work remains', self.audit('apply', str(run), 'critic', '--agent', 'critic-w1b').stdout)
         units.write_text(json.dumps([unit_spec('other.py#x')]))
-        r = self.audit('seed', str(run), str(units), '--clear-pending', ok=False)
+        r = self.audit('seed', str(run), str(units), ok=False)
         self.assertIn('wave 2, past the cap of 1', r.stderr)
-        out = self.audit('seed', str(run), str(units), '--clear-pending', '--status', 'deferred', '--reason',
-                         'wave_cap_reached').stdout
+        out = self.audit('seed', str(run), str(units), '--status', 'deferred', '--reason', 'wave_cap_reached').stdout
         self.assertIn('seeded 1 unit(s) for wave 2', out)
+        self.assertIn('1 proposal(s) resolved, 0 left', out)
         self.audit('prompt', str(run), 'critic', '--wave', '1', '--final-clean', '--agent', 'critic-final-w1')
         self.result(run, 'critic-final-w1', {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [],
                                              'stop': True})
@@ -690,7 +764,7 @@ class AuditTool(unittest.TestCase):
         self.assertIn('not seeded yet', self.audit('final', str(run), ok=False).stderr)
         units = self.tmp / 'units-2.json'
         units.write_text(json.dumps([unit_spec('b.py#x')]))
-        self.audit('seed', str(run), str(units), '--clear-pending')
+        self.audit('seed', str(run), str(units))
         second = next(u['coverage_id'] for u in self.ledger(run) if u['coverage_id'] != first)
         self.audit('prompt', str(run), 'hunter', '--units', second, '--wave', '2', '--agent', 'hunt-w2-01')
         result = self.hunter_result(run, 'hunt-w2-01')
@@ -879,7 +953,25 @@ class AuditTool(unittest.TestCase):
         record = confirmed()
         self.result(run, 'verify-001', {'decision': 'confirmed', 'record': record,
                                         'checks': [source_check('verify-001')], 'sandbox_probe': 'pass'})
-        self.audit('apply', str(run), 'candidate', '--agent', 'verify-001')
+        r = self.audit('apply', str(run), 'candidate', '--agent', 'verify-001', ok=False)
+        self.assertIn('needs a local check of your own', r.stdout, 'a source re-read alone confirms nothing')
+        state = json.loads((run / 'state.json').read_text())
+        self.assertEqual(state['candidates'][record['fingerprint']]['state'], 'pending')
+        # A verifier whose sandbox failed settles nothing, whatever it decided: the candidate waits.
+        self.audit('prompt', str(run), 'candidate', '--fingerprint', candidate['fingerprint'], '--agent', 'verify-002')
+        self.result(run, 'verify-002', {'decision': 'confirmed', 'record': record,
+                                        'checks': [source_check('verify-002')], 'sandbox_probe': 'fail: no-network'})
+        r = self.audit('apply', str(run), 'candidate', '--agent', 'verify-002', ok=False)
+        self.assertEqual(r.returncode, 4)
+        self.assertIn('STOP: the sandbox probe failed', r.stdout)
+        state = json.loads((run / 'state.json').read_text())
+        self.assertEqual(state['candidates'][record['fingerprint']]['state'], 'pending')
+        self.assertIn('verify-002', state['candidates'][record['fingerprint']]['failed_verifiers'])
+        self.audit('prompt', str(run), 'candidate', '--fingerprint', candidate['fingerprint'], '--agent', 'verify-003')
+        self.assertIn('needs at\nleast one local check of your own', (run / 'runs' / 'verify-003.prompt.md').read_text())
+        self.result(run, 'verify-003', {'decision': 'confirmed', 'record': record, 'sandbox_probe': 'pass',
+                                        'checks': [source_check('verify-003'), self.local_check(run, 'verify-003')]})
+        self.audit('apply', str(run), 'candidate', '--agent', 'verify-003')
         out = self.audit('final', str(run)).stdout
         self.assertIn('PASS: 1 findings valid', out)
         self.assertIn('complete: confirmed 1', out)
@@ -942,8 +1034,17 @@ class AuditTool(unittest.TestCase):
         state = json.loads((run / 'state.json').read_text())
         self.assertEqual(state['candidates'][fp]['state'], 'needs_reverification')
         self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-003')
-        self.result(run, 'record-003', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass'})
-        self.audit('apply', str(run), 'record', '--agent', 'record-003')
+        self.assertIn('"checks": the checks you ran yourself', (run / 'runs' / 'record-003.prompt.md').read_text())
+        self.result(run, 'record-003', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass',
+                                        'checks': [source_check('record-003')]})
+        r = self.audit('apply', str(run), 'record', '--agent', 'record-003', ok=False)
+        self.assertIn('needs a local check of your own', r.stdout, 'nobody reproduced the stronger verdict')
+        self.audit('prompt', str(run), 'record', '--fingerprint', fp, '--reverify', '--agent', 'record-004')
+        self.result(run, 'record-004', {'decision': 'verified', 'fingerprint': fp, 'sandbox_probe': 'pass',
+                                        'checks': [source_check('record-004'), self.local_check(run, 'record-004')]})
+        self.audit('apply', str(run), 'record', '--agent', 'record-004')
+        self.assertIn('agents/record-004/artifacts/evidence/c01.json',
+                      json.dumps(self.ledger(run)[0]['local_checks']), 'its reproduction is in the ledger')
         out = self.audit('final', str(run)).stdout
         self.assertIn('complete: confirmed 1', out)
         self.assertEqual(self.ledger(run)[0]['decisions'], {fp: 'confirmed'}, 'the ledger follows the final verdict')
@@ -954,12 +1055,131 @@ class AuditTool(unittest.TestCase):
     def test_the_record_verifier_sees_archived_and_verifier_checks(self):
         audit = load_script(AUDIT)
         fp = 'fp-1'
-        archived = {'result_fingerprints': [fp], 'local_checks': [source_check('hunt-w1-01')]}
-        unit = {'result_fingerprints': [], 'local_checks': [source_check('hunt-w2-01')], 'attempts': [archived]}
+        archived = {'agent_id': 'hunt-w1-01', 'result_fingerprints': [fp], 'local_checks': [source_check('hunt-w1-01')]}
+        unit = {'agent_id': 'hunt-w2-01', 'result_fingerprints': [], 'local_checks': [source_check('hunt-w2-01')],
+                'attempts': [archived]}
         candidate = {'checks': [source_check('verify-001'), source_check('hunt-w1-01')]}
         checks = audit.fingerprint_checks(candidate, [unit], fp)
         self.assertEqual([c['agent_id'] for c in checks], ['hunt-w1-01', 'verify-001'],
                          'the archived attempt and the verifier, once each; not the new attempt that dropped it')
+
+    def test_a_verifier_check_belongs_to_the_fingerprint_it_verified(self):
+        audit = load_script(AUDIT)
+        unit = {'agent_id': 'hunt-w1-01', 'result_fingerprints': ['fp-a', 'fp-b'], 'attempts': [],
+                'local_checks': [source_check('hunt-w1-01'), source_check('verify-001')]}
+        checks = audit.fingerprint_checks({'checks': [source_check('verify-002')]}, [unit], 'fp-b')
+        self.assertEqual([c['agent_id'] for c in checks], ['hunt-w1-01', 'verify-002'],
+                         'verify-001 checked fp-a in the same unit: its check is no evidence for fp-b')
+
+        class SourceOnly:
+            meta = {'source_only': True}
+        self.assertIn('confirms nothing', audit.local_reproduction(SourceOnly, 'confirmed', [source_check('v')])[0])
+        self.assertEqual(audit.local_reproduction(SourceOnly, 'needs_validation', [source_check('v')]), [])
+
+    def test_linked_config_roots_and_codex_skills_are_agent_configuration(self):
+        (self.repo / 'cfg').mkdir()
+        (self.repo / 'cfg' / 'settings.json').write_text('{"hooks": {}}\n')
+        (self.repo / '.gemini').symlink_to('cfg', target_is_directory=True)
+        (self.repo / '.agents' / 'skills' / 'helper').mkdir(parents=True)
+        (self.repo / '.agents' / 'skills' / 'helper' / 'SKILL.md').write_text('---\nname: helper\n---\n')
+        (self.repo / '.agents' / 'skills' / 'wf-sec-audit').symlink_to(REPO / 'skills' / 'wf-sec-audit')
+        (self.repo / '.codex').mkdir()
+        (self.repo / '.codex' / 'a\tb.toml').write_text('# a name git quotes\n')
+        self.commit('agent configuration elsewhere')
+        run = Path(self.audit('init', '--host', 'claude', '--hunt', 'opencode', '--verify', 'claude').stdout.strip())
+        self.assertEqual(json.loads((run / 'run-metadata.json').read_text())['agent_config'],
+                         ['.agents/skills/helper/SKILL.md', '.codex/a\tb.toml', '.gemini'])
+
+    def test_the_records_are_where_the_installer_keeps_them_also_with_a_separate_git_dir(self):
+        main = self.tmp / 'main'
+        git(self.tmp, 'init', '-q', '--separate-git-dir', str(self.tmp / 'meta.git'), str(main))
+        (main / 'app.py').write_text('print(1)\n')
+        (main / '.gitignore').write_text('/development\n')
+        git(main, 'add', '.')
+        git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init')
+        git(main, 'worktree', 'add', '-q', str(self.tmp / 'wt'))
+        # The installer takes the first entry of git worktree list, here not the parent of the git directory.
+        records = load_script(REPO / 'install.py').main_worktree(self.tmp / 'wt') / 'development'
+        self.assertNotEqual(records, self.tmp / 'development')
+        records.mkdir()
+        (self.tmp / 'wt' / 'development').symlink_to(records, target_is_directory=True)
+        r = subprocess.run([sys.executable, str(AUDIT), 'init', '--host', 'claude', '--hunt', 'opencode', '--verify',
+                            'claude'], cwd=self.tmp / 'wt', capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(r.stdout.strip()).parent.resolve(), (records / 'audits').resolve())
+
+    def test_proposals_stay_until_seeded_or_dismissed(self):
+        run = self.start(profile='standard', budget=40)
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        self.audit('apply', str(run), 'hunter', '--agent', 'hunt-w1-01')
+        self.audit('prompt', str(run), 'critic', '--wave', '1', '--agent', 'critic-w1')
+        labels = ('surface', 'boundary', 'subsystem', 'attack_class', 'starting_paths')
+        missing = [{k: v for k, v in unit_spec(surface).items() if k in labels} | {'reason': 'Another entry.'}
+                   for surface in ('b.py#x', 'c.py#y')]
+        self.result(run, 'critic-w1', {'missing_units': missing, 'reassign_ids': [], 'resolved_prior_leads': [],
+                                       'stop': False})
+        self.audit('apply', str(run), 'critic', '--agent', 'critic-w1')
+        units = self.tmp / 'units-2.json'
+        units.write_text(json.dumps([unit_spec('b.py#x')]))
+        self.assertIn('1 proposal(s) resolved, 1 left', self.audit('seed', str(run), str(units)).stdout)
+        self.assertIn('to seed 1 (missing_units, from critic-w1): entry c.py#y',
+                      self.audit('status', str(run)).stdout, 'the proposal not seeded stays')
+        seeded = next(u['coverage_id'] for u in self.ledger(run) if u['surface'] == 'entry b.py#x')
+        self.audit('defer', str(run), '--units', seeded, '--reason', 'budget_cannot_reserve_critics_and_validation')
+        self.assertIn('not seeded yet', self.audit('final', str(run), ok=False).stderr)
+        self.assertIn('no proposal 2', self.audit('dismiss', str(run), '2', '--reason', 'x', ok=False).stderr)
+        out = self.audit('dismiss', str(run), '1', '--reason', 'the same entry as b.py#x').stdout
+        self.assertIn('dismissed 1 proposal(s): the same entry as b.py#x; 0 left', out)
+        state = json.loads((run / 'state.json').read_text())
+        self.assertEqual((state['missing_units'], state['dismissed'][0]['surface']), ([], 'entry c.py#y'))
+
+    def test_a_final_clean_pass_must_cover_the_latest_wave(self):
+        run = self.start(profile='standard', budget=40)
+        cid = self.coverage_id(run)
+        clean = {'missing_units': [], 'reassign_ids': [], 'resolved_prior_leads': [], 'stop': True}
+        for wave in (1, 2):
+            agent = f'hunt-w{wave}-01'
+            self.audit('prompt', str(run), 'hunter', '--units', cid, '--wave', str(wave), '--agent', agent)
+            self.result(run, agent, self.hunter_result(run, agent))
+            self.audit('apply', str(run), 'hunter', '--agent', agent)
+            if wave == 2:
+                r = self.audit('final', str(run), ok=False)
+                self.assertIn('no clean final-clean critic pass over the latest wave', r.stderr,
+                              'the clean pass of wave 1 never saw what wave 2 hunted')
+            for kind, extra in (('critic', ()), ('critic-final', ('--final-clean',))):
+                self.audit('prompt', str(run), 'critic', '--wave', str(wave), *extra, '--agent', f'{kind}-w{wave}')
+                self.result(run, f'{kind}-w{wave}', clean)
+                self.audit('apply', str(run), 'critic', '--agent', f'{kind}-w{wave}')
+            if wave == 1:
+                self.audit('reopen', str(run), '--units', cid, '--reason', 'the human asked for another pass')
+        self.assertIn('complete: no records', self.audit('final', str(run)).stdout)
+
+    def test_a_result_that_would_outgrow_the_validator_is_discarded(self):
+        run = self.start()
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        self.result(run, 'hunt-w1-01', self.hunter_result(run, 'hunt-w1-01'))
+        audit = load_script(AUDIT)
+        audit.VL.MAX_INPUT_BYTES = len((run / 'coverage-ledger.json').read_bytes()) + 10
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = audit.main(['apply', str(run), 'hunter', '--agent', 'hunt-w1-01'])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("over the validator's limit", out.getvalue())
+        self.assertEqual(self.ledger(run)[0]['status'], 'planned', 'final could not have read that ledger')
+
+    def test_resume_changes_nothing_once_the_findings_are_final(self):
+        run = self.start()
+        self.audit('prompt', str(run), 'hunter', '--units', self.coverage_id(run), '--wave', '1', '--agent',
+                   'hunt-w1-01')
+        self.audit('final', str(run), '--incomplete', 'interrupted_by_the_human')
+        before = (run / 'coverage-ledger.json').read_bytes()
+        self.assertIn('its findings are final', self.audit('resume', str(run)).stdout)
+        self.assertEqual((run / 'coverage-ledger.json').read_bytes(), before)
+        for name in ('REPORT.md', 'FINDINGS-DETAIL.md', 'NEEDS-VALIDATION.md'):
+            (run / name).write_text(f'# {name}\n')
+        self.assertIn('incomplete (interrupted_by_the_human)', self.audit('done', str(run)).stdout)
 
     def test_a_changed_condition_or_instruction_is_material(self):
         audit = load_script(AUDIT)

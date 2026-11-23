@@ -8,6 +8,11 @@
 > unresolved. `audit.py apply` validates each result without repairing it, and decides whether a
 > replacement is material: a stronger verdict, or a changed root cause, trace, conditions, severity,
 > payloads, instructions or observed result; a final disposition updates the linked ledger decisions.
+> A `confirmed` verdict, from a candidate verifier or a `--reverify` verifier, needs a local check that
+> verifier ran itself in the sandbox (this skill's reading of "complete local execution evidence" and
+> "independently run any decisive check it can reproduce safely": every hunter check ran in the same
+> sandbox, so a verifier can reproduce it); a source-only run confirms nothing. A verifier whose sandbox
+> probe failed settles nothing: its candidate or replacement waits for a fresh verifier.
 > `audit.py final` writes `findings.json`, sorted by fingerprint, and runs both validators; after the
 > Phase 6 reports, `audit.py done` ends the run. Bookkeeping of candidates lives in `<run-dir>/state.json`.
 

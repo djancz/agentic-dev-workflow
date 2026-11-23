@@ -15,11 +15,9 @@ description: >-
 Role: **parent**. You coordinate; agents hunt and verify in fresh headless runs, and you never do their
 work or edit their results. Paths are relative to this skill's directory. Read:
 - `references/AUDIT.md`: all of it, the rules of the audit
-- `references/conventions.md`: sections Asking the human, Writing style, Untrusted content and
-  Reporting to the human
-- `references/loop.md`: section Delegated runs; `references/roles.md`: section Audit roles
-- `references/models.md` when a model or effort is not `default`; `references/security.md`: section
-  Agent safety
+- `references/conventions.md`: Asking the human, Writing style, Untrusted content, Reporting to the human
+- `references/loop.md`: Delegated runs; `references/roles.md`: Audit roles; `references/security.md`: Agent
+  safety; `references/models.md` when a model or effort is not `default`
 - per phase only its reference: `references/RECONNAISSANCE.md` (1), `references/HUNTING.md` (2),
   `references/VALIDATION-AND-REPORTING.md` (3–6). Never read `references/classes/` whole:
   `python3 scripts/audit.py blocks` lists what each file covers, `blocks --show FILE.md#Name` one block.
@@ -103,12 +101,15 @@ Run that command exactly. Start up to `parallel` of them at once, wait for every
    human's number: `audit.py budget <run> --set <n> --words "<their words>"`); defer what does not fit
    with `audit.py defer`.
 2. **Hunting waves.** Hunters per wave, closely related units of one subsystem per hunter, then the
-   post-wave critic. Seed the units the critic and the hunters proposed (`status` lists them; `seed …
-   --clear-pending`, which plans them for the next wave; in quick with `--status deferred --reason
-   quick_profile_final_critic`, past the wave cap with `--reason wave_cap_reached`). Next wave while
-   planned units remain and the cap allows; then the final-clean critic, and another wave when it finds
-   work. Units the cap or budget cannot reach: `audit.py defer` with the reason `AUDIT.md` names.
-3. **Candidate validation**: one verifier per pending candidate in `status`.
+   post-wave critic. Seed the units the critic and the hunters proposed with their labels (`status`
+   numbers them; `seed` plans them for the next wave and resolves each one the ledger then holds; in quick
+   with `--status deferred --reason quick_profile_final_critic`, past the wave cap with `--reason
+   wave_cap_reached`; a duplicate under other labels: `dismiss <run> <n> --reason "<the unit it
+   duplicates>"`). Next wave while planned units remain and the cap allows; then the final-clean critic of
+   the last wave, and another wave when it finds work. Units the cap or budget cannot reach: `audit.py
+   defer` with the reason `AUDIT.md` names.
+3. **Candidate validation**: one verifier per pending candidate in `status`. `confirmed` needs a local
+   check the verifier ran itself; a verifier whose sandbox failed settles nothing.
 4. **Record verification** (not quick): one verifier per validated record; a material replacement goes
    to a fresh `--reverify` verifier, at most twice.
 5. **Findings**: `audit.py final <run>`, or `final <run> --incomplete <reason>` as `AUDIT.md` says (it

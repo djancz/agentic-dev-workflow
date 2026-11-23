@@ -260,7 +260,9 @@ Two roles of its own run the agents: `hunt` (reconnaissance and hunters, for exa
 through OpenCode, `hunt=opencode,<provider/model>`) and `verify` (critics and verifiers, best another model
 family). It asks for them on its first run. Before any agent starts, the audit gate shows the commit, the
 scope, the budget of agent runs (25, 60 or 150 by profile), the roles and which sandbox controls hold, and
-waits for your yes. Target code runs only in `sandbox-run.py`: bubblewrap inside a systemd user scope, with
+waits for your yes. It also lists the agent configuration that every agent CLI loads at startup outside the
+sandbox (hooks, plugins, MCP servers), committed in the target or ignored in your clone: to run with
+committed configuration you must say so explicitly, otherwise audit a clone without it. Target code runs only in `sandbox-run.py`: bubblewrap inside a systemd user scope, with
 no network, an empty environment, a read-only copy of the commit and low limits. Where that sandbox is not
 available (macOS, for example), you may choose a source-only run. See [commands and gates](docs/skills.md).
 
