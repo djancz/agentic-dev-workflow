@@ -108,11 +108,12 @@ class SkillStructure(unittest.TestCase):
             with self.subTest(doc=str(doc.relative_to(REPO))):
                 self.assertIsNone(removed.search(doc.read_text()))
         block = (SKILLS / 'wf-init' / 'SKILL.md').read_text().split('<!-- wf:begin', 1)[1].split('wf:end', 1)[0]
-        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix) (?:agent|model|effort)|Models):', block, flags=re.MULTILINE)
+        keys = re.findall(r'^- ((?:Test|Rev|Sec|Fix|Hunt|Verify) (?:agent|model|effort)|Models):', block,
+                          flags=re.MULTILINE)
         self.assertEqual(keys, [], 'agent roles are personal settings, never part of AGENTS.md')
         self.assertIn('development/wf-settings.md', block)
         template = (SKILLS / 'wf-init' / 'templates' / 'wf-settings.md').read_text()
-        for key in ('`Test`', '`Rev`', '`Sec`', '`Fix`', '`<Role> fallback`', '`Models`'):
+        for key in ('`Test`', '`Rev`', '`Sec`', '`Fix`', '`Hunt`', '`Verify`', '`<Role> fallback`', '`Models`'):
             with self.subTest(key=key):
                 self.assertIn(key, template)
 
@@ -257,6 +258,52 @@ class SkillStructure(unittest.TestCase):
         self.assertIn('prototype scope', nxt)
         self.assertIn('It never starts `wf prototype`', nxt)
         self.assertIn('never pushed or merged', (REPO / 'AGENTS.md').read_text())
+
+    def test_the_security_audit_is_manual_isolated_and_credits_upstream(self):
+        def flat(path: Path) -> str:
+            return ' '.join(path.read_text().split())
+
+        audit = SKILLS / 'wf-sec-audit'
+        skill = flat(audit / 'SKILL.md')
+        for phrase in ('starts only on an explicit request', 'Audit gate (stop here)', 'with no recommended option',
+                       'Never approve it yourself', '`wf auto` never passes it', 'Asking the human',
+                       'never do their work or edit their results', 'without repairing it',
+                       'only then `python3 scripts/audit.py apply', 'never present an unvalidated candidate',
+                       'Ask which tasks to create; create only those', 'Delegated runs'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        for kind in ('`recon`', '`hunter`', '`critic`', '`candidate`', '`record`'):
+            self.assertIn(kind, skill)
+        # Nothing else starts it, and the other security skill routes it away.
+        self.assertNotIn('sec audit', NEXT_STEP.read_text())
+        self.assertNotIn('wf sec audit', flat(SKILLS / 'wf-next' / 'SKILL.md'))
+        sec = (SKILLS / 'wf-security-review' / 'SKILL.md').read_text()
+        frontmatter = install.parse_frontmatter(sec)
+        self.assertNotIn('"security audit"', frontmatter['description'])
+        self.assertIn('load the skill wf-sec-audit instead', ' '.join(sec.split()))
+        self.assertNotIn('Audit mode', sec)
+        # The upstream text keeps its notice and its source.
+        upstream = (audit / 'references' / 'UPSTREAM.md').read_text()
+        for phrase in ('c1c8a8c1471069fb0e188eeaff69b8e8db6564a8', 'Copyright (c) 2025-2026 Cloudflare, Inc.',
+                       'Permission is hereby granted, free of charge'):
+            self.assertIn(phrase, upstream)
+        classes = sorted(p.name for p in (audit / 'references' / 'classes').glob('*.md'))
+        self.assertEqual(len(classes), 11)
+        for name in classes:
+            self.assertIn(f'`{name}`' if name == 'ATTACK-CLASSES.md' else 'ten companion files', upstream)
+        self.assertTrue((audit / 'scripts' / 'report-schema.json').is_file())
+        for script in ('audit.py', 'sandbox-run.py', 'validate-findings.py', 'validate-coverage-ledger.py'):
+            with self.subTest(script=script):
+                path = audit / 'scripts' / script
+                self.assertTrue(path.is_file() and not path.is_symlink() and os.access(path, os.X_OK))
+        self.assertFalse(list(audit.rglob('*.cjs')), 'the Node validators are ported, not vendored')
+        for doc in (REPO / 'README.md', REPO / 'docs' / 'skills.md'):
+            text = doc.read_text()
+            for option in ('wf sec audit', 'hunt=', 'verify'):
+                with self.subTest(doc=doc.name, option=option):
+                    self.assertIn(option, text)
+        self.assertIn('wf sec audit', (REPO / 'AGENTS.md').read_text())
+        self.assertIn('security-audit-skill', (REPO / 'README.md').read_text())
 
     def test_shared_rules_stay_short(self):
         for doc in SHARED.glob('*.md'):
@@ -799,6 +846,8 @@ case ${FAKE_MODE:-ok} in
   modify) echo changed >> tracked.txt ;;
   record) echo 'Status: Approved' >> development/tasks/TASK-1/TASK-1.md ;;
   fence) body=$(printf '```markdown\n%s\n```' "$body") ;;
+  unclosed-fence) body=$(printf '```json\n%s' "$body") ;;
+  mismatched-fence) body=$(printf '````json\n%s\n```' "$body") ;;
   limit) echo progress; echo 'ERROR: You’ve hit your usage limit. Visit the usage page or try again at 9:32 PM.' >&2
     exit 1 ;;
   limit-output) echo "You've hit your 5-hour limit · resets 9pm (Europe/Prague)"; exit 1 ;;
@@ -820,7 +869,19 @@ You've hit your usage limit, the finding quotes." ;;
   untracked-then-limit) echo more >> notes.txt
     echo 'ERROR: You’ve hit your usage limit. Try again at 9:32 PM.' >&2; exit 1 ;;
 esac
-if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress; else printf '%s\n' "$body"; fi
+if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; echo progress
+elif [ "$name" = opencode ]; then
+  # OpenCode's JSON events: text before a tool call is a step of its own, the final message the last one.
+  FAKE_BODY=$body python3 -I -c 'import json, os, sys
+# A retry within one assistant message repeats its messageID in the next step.
+last = "m1" if sys.argv[1] == "same-id" else "m2"
+steps = [("m1", "I will look at the files first."), (last, None if sys.argv[1] == "no-final" else os.environ["FAKE_BODY"])]
+for mid, text in steps:
+    print(json.dumps({"type": "step_start", "part": {"messageID": mid, "type": "step-start"}}))
+    if text is not None:
+        print(json.dumps({"type": "text", "part": {"messageID": mid, "type": "text", "text": text}}))
+    print(json.dumps({"type": "step_finish", "part": {"messageID": mid, "type": "step-finish"}}))' "${FAKE_MODE:-ok}"
+else printf '%s\n' "$body"; fi
 '''
 
 
@@ -947,9 +1008,25 @@ class RunAgent(unittest.TestCase):
                            WF_AGENT_MODEL='provider/model', WF_AGENT_EFFORT='high')
         self.assertEqual(r.returncode, 0, r.stderr)
         args = self.args_of('opencode')
-        self.assertIn('run --agent plan --model provider/model --variant high', args)
-        self.assertIn(f'--file {self.prompt}', args)
+        self.assertIn('run --agent plan --model provider/model --variant high --format json', args)
+        # OpenCode's --file is an array option: a message after it would be read as another file.
+        self.assertTrue(args.rstrip().endswith(f'Follow the attached workflow prompt. --file {self.prompt}'),
+                        args)
         self.assertNotIn('Run the stage.', args)
+
+    def test_opencode_output_is_its_final_message(self):
+        # Text the model writes between tool calls is no part of the result, as with claude -p.
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n')
+        self.assertIn('"step_start"', Path(f'{self.out}.log').read_text(), 'the events stay in the log')
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out), mode='same-id')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n',
+                         'a step is a step also when it repeats the messageID of the one before')
+        r = self.run_agent('opencode', 'rw', str(self.prompt), str(self.out), mode='no-final')
+        self.assertEqual(r.returncode, 5, 'a last step without text is no result')
+        self.assertIn('produced no output', r.stderr)
 
     def test_effort_is_passed_to_claude_and_codex(self):
         r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EFFORT='high')
@@ -1151,6 +1228,114 @@ class RunAgent(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.out.read_text().startswith('## Round 1'))
         self.assertNotIn('```', self.out.read_text())
+
+    def test_an_unclosed_fence_is_kept(self):
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='unclosed-fence')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.out.read_text().startswith('```json'), 'only a fence that also closes is dropped')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), mode='mismatched-fence')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.out.read_text().startswith('````json'), 'three backticks do not close four')
+
+    def test_a_pinned_run_starts_only_on_its_commit_with_an_unchanged_tree(self):
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.repo, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD='0' * 40)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('pinned to', r.stderr)
+        # An untracked file counts, also where git status would hide it.
+        subprocess.run(['git', 'config', 'status.showUntrackedFiles', 'no'], cwd=self.repo, check=True)
+        (self.repo / 'untracked.py').write_text('print("not in the commit")\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the working tree has changes', r.stderr)
+        (self.repo / 'untracked.py').unlink()
+        (self.repo / 'tracked.txt').write_text('changed\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the working tree has changes', r.stderr)
+
+    def test_a_pinned_run_counts_a_change_the_index_hides_from_git_status(self):
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=self.repo, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        for flag in ('--assume-unchanged', '--skip-worktree'):
+            with self.subTest(flag=flag):
+                subprocess.run(['git', 'update-index', flag, 'tracked.txt'], cwd=self.repo, check=True)
+                (self.repo / 'tracked.txt').write_text('changed where git status does not look\n')
+                status = subprocess.run(['git', 'status', '--porcelain'], cwd=self.repo, capture_output=True,
+                                        text=True, check=True).stdout
+                self.assertEqual(status, '', 'git status alone misses the change')
+                r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+                self.assertEqual(r.returncode, 3)
+                self.assertIn('the index hides files from git status', r.stderr)
+                subprocess.run(['git', 'update-index', flag.replace('--', '--no-'), 'tracked.txt'], cwd=self.repo,
+                               check=True)
+                subprocess.run(['git', 'checkout', '-q', '--', 'tracked.txt'], cwd=self.repo, check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_pinned_run_counts_a_change_inside_a_submodule(self):
+        sub = self.tmp / 'sub'
+        sub.mkdir()
+        for args in (['init', '-q'], ['commit', '-q', '--allow-empty', '-m', 'sub']):
+            subprocess.run(['git', '-C', str(sub), '-c', 'user.name=t', '-c', 'user.email=t@t', *args], check=True)
+        (sub / 'lib.py').write_text('x = 1\n')
+        git = ['git', '-C', str(self.repo), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        subprocess.run(['git', '-C', str(sub), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(sub), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'lib'],
+                       check=True)
+        subprocess.run([*git, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(sub), 'vendor'],
+                       check=True, capture_output=True)
+        # The target's own .gitmodules may hide every change inside it from git status.
+        subprocess.run([*git, 'config', '-f', '.gitmodules', 'submodule.vendor.ignore', 'all'], check=True)
+        subprocess.run([*git, 'add', '.gitmodules'], check=True)
+        subprocess.run([*git, 'commit', '-qm', 'vendor'], check=True)
+        head = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 2\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the working tree has changes', r.stderr)
+        # An index bit inside the submodule hides the change from git status there too.
+        vendor = ['git', '-C', str(self.repo / 'vendor')]
+        subprocess.run([*vendor, 'checkout', '-q', 'lib.py'], check=True)
+        subprocess.run([*vendor, 'update-index', '--skip-worktree', 'lib.py'], check=True)
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 3\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the index hides files from git status', r.stderr)
+        # Inactive in the local configuration, which git ls-files --recurse-submodules skips, it is still there.
+        subprocess.run([*git, 'config', 'submodule.vendor.active', 'false'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('the index hides files from git status', r.stderr)
+        # Files at a submodule path without a repository, where git status does not look.
+        subprocess.run([*vendor, 'update-index', '--no-skip-worktree', 'lib.py'], check=True)
+        subprocess.run([*vendor, 'checkout', '-q', 'lib.py'], check=True)
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (self.repo / 'vendor' / '.git').rename(self.tmp / 'vendor.git')
+        (self.repo / 'vendor' / 'lib.py').write_text('x = 4\n')
+        r = self.run_agent('claude', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('a submodule path holds files without a repository', r.stderr)
+
+    def test_the_runners_python_imports_nothing_of_the_project(self):
+        # Its current directory is the project's: an audited repository may hold a json.py or subprocess.py.
+        marker = self.tmp / 'planted-module-ran'
+        for name in ('json', 'subprocess'):
+            (self.repo / f'{name}.py').write_text(f'open({str(marker)!r}, "a").write("{name}\\n")\n')
+        git = ['git', '-C', str(self.repo), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        subprocess.run([*git, 'add', 'json.py', 'subprocess.py'], check=True)
+        subprocess.run([*git, 'commit', '-qm', 'modules of the project'], check=True)
+        head = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        r = self.run_agent('opencode', 'ro', str(self.prompt), str(self.out), WF_AGENT_EXPECT_HEAD=head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else '')
+        self.assertEqual(self.out.read_text(), '## Round 1 — now\n- Verdict: Approved\n- Must-fix open: 0\n')
 
     def test_exit_code_is_recorded_and_wait_returns_it(self):
         self.run_agent('claude', 'rw', str(self.prompt), str(self.out), mode='fail')
@@ -1832,6 +2017,60 @@ class ResolveRoles(unittest.TestCase):
             'rounds: 3',
         ])
 
+    def test_the_audit_roles_resolve_like_the_others_but_never_count_as_set(self):
+        # Without --roles, only the four core roles are printed, as before.
+        command = [sys.executable, str(RESOLVE_ROLES), '--agents-md', '-', '--settings', str(self.project_file)]
+        r = subprocess.run(command, input=self.BLOCK, capture_output=True, text=True, cwd=self.tmp,
+                           env={**os.environ, 'XDG_CONFIG_HOME': str(self.config)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([line.split(':')[0] for line in r.stdout.splitlines()],
+                         ['test', 'rev', 'sec', 'fix', 'rounds'])
+        self.assertEqual(self.lines('hunt=opencode,provider/open-model', 'verify-agent=claude', 'verify-effort=high',
+                                    roles='hunt,verify'), [
+            'hunt: agent=opencode model=provider/open-model effort=default',
+            'verify: agent=claude model=default effort=high',
+            'rounds: 4',
+        ])
+        project = '- Hunt: opencode,provider/open-model\n- Hunt fallback: codex\n- Verify: claude,,high\n'
+        self.assertEqual(self.lines('--sources', roles='hunt,verify', project=project), [
+            'settings: none',
+            f'hunt: agent=opencode model=provider/open-model effort=default  (from {self.project_file})',
+            f'hunt fallback 1: agent=codex model=default effort=default  (from {self.project_file})',
+            f'verify: agent=claude model=default effort=high  (from {self.project_file})',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        # A core role still counts, and the audit roles left unset read as default.
+        self.assertEqual(self.lines('--sources', roles='hunt', project='- Sec: codex\n')[:2], [
+            f'settings: {self.project_file}',
+            'hunt: agent=self model=default effort=default  (from default)',
+        ])
+        r = self.resolve('hunt=opencode', 'hunt-model=x', roles='hunt')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('either hunt= or', r.stderr)
+        r = self.resolve(roles='rev,audit')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('--roles takes test,rev,sec,fix,hunt,verify', r.stderr)
+
+    def test_the_audited_repository_does_not_choose_its_auditors(self):
+        # The wf block is committed: its role keys and Models reach the core roles (deprecated, with a
+        # warning) but never the audit roles, which stay at the default, so the audit asks the human.
+        block = self.OLD_BLOCK.replace(
+            '- Models: default <!-- default | auto -->',
+            '- Models: auto\n- Hunt agent: codex\n- Hunt model: some/model\n- Verify agent: opencode\n'
+            '- Verify model: cheap/model\n- Verify effort: low')
+        self.assertEqual(self.lines('--sources', block=block, roles='hunt,verify,rev'), [
+            'settings: AGENTS.md',
+            'hunt: agent=self model=default effort=default  (from default)',
+            'verify: agent=self model=default effort=default  (from default)',
+            'rev: agent=gemini model=auto effort=high  (from AGENTS.md; models=auto from AGENTS.md)',
+            'rounds: 4  (from AGENTS.md)',
+        ])
+        # Settings and arguments still apply, and so does Models from them.
+        self.assertEqual(self.lines('models=auto', block=block, roles='hunt', project='- Verify: claude\n'), [
+            'hunt: agent=self model=auto effort=auto',
+            'rounds: 4',
+        ])
+
     def test_sources_say_where_each_line_comes_from_and_whether_roles_are_set(self):
         r = self.resolve('--sources', roles='rev,fix')
         self.assertEqual((r.returncode, r.stderr), (0, ''))
@@ -1992,7 +2231,7 @@ class ResolveRoles(unittest.TestCase):
 
     def test_skills_that_resolve_roles_link_the_script(self):
         for name in ('wf-plan-loop', 'wf-impl-loop', 'wf-wave', 'wf-spec', 'wf-roadmap', 'wf-test',
-                     'wf-security-review', 'wf-init'):
+                     'wf-security-review', 'wf-init', 'wf-sec-audit'):
             with self.subTest(skill=name):
                 link = SKILLS / name / 'scripts' / 'resolve-roles.py'
                 self.assertTrue(link.is_symlink())
@@ -3802,7 +4041,7 @@ class NextStep(unittest.TestCase):
     # the skills follow the resolver
 
     def test_skills_report_the_resolvers_next_step(self):
-        own_gates = {'wf-maintenance', 'wf-deploy'}
+        own_gates = {'wf-maintenance', 'wf-deploy', 'wf-sec-audit'}
         hard_coded = re.compile(r'\bNext\b[`:]*\s*`?\s*wf ')
         for skill in skill_dirs():
             text = ' '.join((skill / 'SKILL.md').read_text().split())

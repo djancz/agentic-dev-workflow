@@ -117,3 +117,76 @@ changes an approved public contract, revise the spec and affected task plans bef
 
 `development/` is private to one clone by design. Use the PR and tracked project documentation to
 share delivered behavior and test evidence. Do not commit raw workflow records or logs to recover them.
+
+## The security audit's sandbox probe fails
+
+`sandbox-run.py probe` lists every control with what is missing. No bubblewrap: install it (`bubblewrap`
+package). `bwrap: setting up uid map: Permission denied` on Ubuntu: AppArmor restricts unprivileged user
+namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`); the distribution's bubblewrap package ships
+the profile that allows it, a bwrap from elsewhere does not. The cgroup limits need cgroup v2. A cgroup limit that is missing means systemd
+does not delegate that controller to your user session. Inside a delegated run the probe can fail although
+it passes on the host: Codex's sandbox blocks the user session bus (`Failed to connect to user scope
+bus`), and a Claude sandbox can block namespaces; the audit then stops and asks. A source-only run
+is your explicit choice at the audit gate.
+
+## A check cannot find a file of /etc
+
+The sandbox's `/etc` holds only the entries that common toolchains read (`ETC_ENTRIES` in
+`sandbox-run.py`: the loader, alternatives, time and name service files, the public certificates and the
+OpenSSL configuration, Java and Python configuration), because a host may keep user-readable credentials
+in the rest of it, such as a proxy password, a package index token or a TLS key that the group `ssl-cert`
+may read. Its `passwd`, `group` and `hosts` name only the sandbox, as its host name does. When a toolchain
+needs another entry, mount it read-only with `--tool /etc/<name>`, a file or a directory; all of `/etc` is
+refused, and so is an entry with anything in it that you may read but other users may not, such as
+`/etc/ssl/private`, or behind a directory that not every user may enter, wherever the `--tool` path leads
+in `/etc`. `passwd`, `group`, `hosts`, `hostname` and `machine-id` cannot be mounted. An entry of the list
+itself that breaks these rules, or leads out of `/etc` and `/usr`, stays out, and `sandbox-run.py` says so
+on stderr: `/etc/java-21-openjdk stays out of the sandbox: it holds …/jmxremote.password, which not every
+user may read`. Make the file readable by every user, or move it, when the toolchain needs that entry.
+
+## A check is refused with "--tool must not expose"
+
+A `--tool` must not hold or lie in a credential store of the home directory: the keys of your CLIs, and
+those that toolchains keep beside their caches, such as `~/.gradle/gradle.properties` or
+`~/.m2/settings.xml` (`HOME_SECRETS` in `sandbox-run.py`). Mount the part the check needs instead,
+`--tool ~/.gradle/caches` or `--tool ~/.m2/repository`. The repository, its git directory, its other
+worktrees and its records under `development/` cannot be mounted either.
+
+## A check is refused with "the command did not start"
+
+Its exec failed inside the sandbox: the command is not on its `PATH`, is not executable, or names an
+interpreter in its `#!` line that the sandbox does not have (mount its toolchain with `--tool`). Nothing
+ran, so the check leaves no record. The command is started by the host's Python 3 under `/usr`, inside the
+sandbox; a host without one refuses every check.
+
+## A check ends with status 137, or the desktop says a wf-sandbox scope was terminated for low memory
+
+A check went past its own memory limit (`MemoryMax`, from `sandbox-run.py run --memory-mb`, default
+1024 MiB), and the kernel killed it; the system did not run out of memory. The check's evidence reads
+`"status": 137` and `"killed": null`, often with empty stderr, and its `scope` field names the unit:
+`journalctl --user -u <scope>` shows "The kernel OOM killer killed some processes in this unit". Rerun the
+check with a larger `--memory-mb` (at most 4096) when it needs more.
+
+KDE and GNOME report every user unit that fails with the result `oom-kill` as "terminated by the Linux
+kernel because the system is low on memory". The sandbox scope continues after the kill instead
+(`OOMPolicy=continue`), so the notice no longer appears; on systemd before 253, where a scope takes no
+`OOMPolicy`, it still does, also once for every run of the test suite, which checks that the limit holds.
+
+## The security audit discards agent results
+
+`audit.py apply` accepts only exactly one JSON object that matches the contract, and never repairs one: a
+local model with a small context or weak instruction following produces prose, a truncated object or
+invented fields. Check the out-file under `development/audits/<run>/runs/`. Raise the model's context, use a
+stronger `hunt` model, or lower the units per hunter. Each discarded result may get one fresh rerun; two in
+a row from one role stop the run until you answer (`prompt … --after-human-answer`).
+
+## An OpenCode hunter hangs until its timeout
+
+OpenCode does not end a run whose provider refuses it: after a free model's "Free usage limit reached" it
+waits until `WF_AGENT_TIMEOUT` stops it (30 minutes by default). Its run log in
+`development/audits/<run>/runs/` shows nothing, so `run-agent.sh` reports exit 5, not a usage limit (6);
+OpenCode's own log, `~/.local/share/opencode/log/opencode.log`, has the message. Run the stage again with
+another `hunt` model or agent (`prompt … --ran-as <agent,model,effort>`). Two OpenCode runs that start at
+the same moment can also fail with `database is locked`, from OpenCode's local database; a fresh rerun
+usually works, and `parallel=1` avoids it.
+

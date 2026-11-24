@@ -34,6 +34,9 @@
 # repository (a task worktree links it to the main worktree). Codex keeps .git read-only, so a delegated
 # Codex run cannot commit; the orchestrator commits its changes.
 #   WF_AGENT_DRY_RUN=1         print the agent command line and exit 0
+#   WF_AGENT_EXPECT_HEAD       a full commit id: start only when HEAD is that commit and the working tree
+#                              has no change, untracked files, submodules and files the index hides from
+#                              git status included, else exit 3 (wf sec audit pins its agents to its commit)
 #
 # Exit codes: 0 ok, 2 usage, 3 tree, records or local settings changed, 4 required executable not found,
 #             5 agent failed, timed out (124) or produced no output,
@@ -42,7 +45,7 @@
 set -eu
 
 usage() {
-    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -218,7 +221,12 @@ case $agent in
         [ "$mode" = ro ] && set -- "$@" --agent plan
         [ -n "$model" ] && set -- "$@" --model "$model"
         [ -n "$effort" ] && set -- "$@" --variant "$effort"
-        set -- "$@" --file "$prompt" "Follow the attached workflow prompt."
+        # Its default output is the text of every step; its events go to the log and the output is the text
+        # of its last step, the final message (see opencode_final).
+        set -- "$@" --format json
+        # --file takes several values and would swallow a message after it: the message goes first.
+        set -- "$@" "Follow the attached workflow prompt." --file "$prompt"
+        stdout_is_output=0
         ;;
     *) usage ;;
 esac
@@ -265,10 +273,63 @@ worktree_tree() {
 fingerprint() {
     tree=$(worktree_tree) || return 1
     head=$(git rev-parse HEAD 2>/dev/null) || head=none
-    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all) || return 1
+    status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all --ignore-submodules=none) ||
+        return 1
     staged=$(git ls-files --stage) || return 1
     record_hashes=$(records) || return 1
     printf '%s\n' "$head" "$status" "$tree" "$staged" "$record_hashes" | git hash-object --stdin
+}
+
+# The final message of an OpenCode run: the text of the step that started last in its JSON events. Text the
+# model writes before a tool call belongs to an earlier step; a last step without text gives no output.
+# Python runs isolated (-I) here and below: the current directory is the project's, from which python3 -c
+# would import a module of the same name first (a json.py of an audited repository, for example).
+opencode_final() {
+    python3 -I -c '
+import json, sys
+steps = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    part = event.get("part") if isinstance(event, dict) else None
+    if not isinstance(part, dict):
+        continue
+    # Each step starts its own text: a retry can repeat the messageID of the step before it.
+    if event.get("type") == "step_start":
+        steps.append([])
+    elif event.get("type") == "text" and isinstance(part.get("text"), str) and steps:
+        steps[-1].append(part["text"])
+text = "\n".join(steps[-1]).strip() if steps else ""
+sys.stdout.write(text + "\n" if text else "")
+' "$1"
+}
+
+# Exit 1 when the index of the working tree, or of a submodule checked out below it, active or not, hides an
+# entry from git status (assume-unchanged, skip-worktree), or when a submodule path holds files but no
+# repository: git status looks into neither. Exit 2 when git fails.
+index_hides() {
+    python3 -I -c '
+import os, subprocess, sys
+def entries(tree, option):
+    out = subprocess.run(["git", "-C", tree, "ls-files", option, "-z"], stdout=subprocess.PIPE, check=True).stdout
+    return [entry for entry in out.split(b"\0") if entry]
+def hides(tree):
+    if any(entry[:1].islower() or entry[:1] == b"S" for entry in entries(tree, "-v")):
+        return True
+    for entry in entries(tree, "-s"):
+        meta, _, name = entry.partition(b"\t")
+        sub = os.path.join(tree, name)
+        if meta.startswith(b"160000 ") and (hides(sub) if os.path.exists(os.path.join(sub, b".git"))
+                                            else os.path.isdir(sub) and bool(os.listdir(sub))):
+            return True
+    return False
+try:
+    sys.exit(1 if hides(b".") else 0)
+except (OSError, subprocess.CalledProcessError):
+    sys.exit(2)
+'
 }
 
 # A snapshot that cannot be taken after the run counts as a change.
@@ -304,6 +365,22 @@ user_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^user: //p')
 project_settings=$(printf '%s\n' "$settings_paths" | sed -n 's/^project: //p')
 
 before=$(fingerprint) || die 2 "cannot take a snapshot of the working tree"
+# Checked after the snapshot, so that the run is compared with a tree that was the pinned commit, unchanged.
+if [ -n "${WF_AGENT_EXPECT_HEAD:-}" ]; then
+    actual=$(git rev-parse HEAD 2>/dev/null) || actual=none
+    [ "$actual" = "$WF_AGENT_EXPECT_HEAD" ] ||
+        die 3 "HEAD is $actual, but this run is pinned to $WF_AGENT_EXPECT_HEAD; nothing ran"
+    pinned_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v1 --untracked-files=all --ignore-submodules=none) ||
+        die 3 "git status failed, so the tree of this pinned run is unknown; nothing ran"
+    [ -z "$pinned_status" ] ||
+        die 3 "the working tree has changes, but this run is pinned to an unchanged $WF_AGENT_EXPECT_HEAD; nothing ran"
+    # git status does not compare assume-unchanged or skip-worktree entries with the working tree.
+    hides=0
+    GIT_OPTIONAL_LOCKS=0 index_hides || hides=$?
+    [ "$hides" != 2 ] || die 3 "git ls-files failed, so the tree of this pinned run is unknown; nothing ran"
+    [ "$hides" = 0 ] ||
+        die 3 "the index hides files from git status (assume-unchanged or skip-worktree), or a submodule path holds files without a repository, so this run pinned to $WF_AGENT_EXPECT_HEAD cannot be checked; nothing ran"
+fi
 project_settings_before=$(file_hash "$project_settings")
 user_settings_before=$(file_hash "$user_settings")
 : >"$out"
@@ -312,6 +389,9 @@ if [ "$stdout_is_output" = 1 ]; then
     "$@" <"$prompt" >"$out" 2>"$log" || rc=$?
 else
     "$@" <"$prompt" >"$log" 2>&1 || rc=$?
+fi
+if [ "$agent" = opencode ]; then
+    opencode_final "$log" >"$out" || { rc=$?; say "cannot read the final message from the events in $log"; }
 fi
 
 for settings_file in "$project_settings" "$user_settings"; do
@@ -352,10 +432,12 @@ if [ "$rc" -ne 0 ]; then
 fi
 [ -s "$out" ] || die 5 "$agent produced no output; see $log"
 
-# Strip a stray code fence wrapped around the whole message.
-if head -n 1 "$out" | grep -q '^```'; then
+# Strip a stray code fence wrapped around the whole message: an opening line of exactly three backticks and
+# an optional language, a closing line of exactly three backticks, nothing else.
+if [ "$(awk 'END { print NR }' "$out")" -ge 2 ] && head -n 1 "$out" | grep -q '^```[A-Za-z0-9_+.-]*[[:space:]]*$' &&
+    tail -n 1 "$out" | grep -q '^```[[:space:]]*$'; then
     tmp="$out.tmp"
-    sed -e '1d' -e '${/^```[[:space:]]*$/d;}' "$out" >"$tmp" && mv "$tmp" "$out"
+    sed -e '1d' -e '$d' "$out" >"$tmp" && mv "$tmp" "$out"
 fi
 
 echo "run-agent: ok — $out" >&2

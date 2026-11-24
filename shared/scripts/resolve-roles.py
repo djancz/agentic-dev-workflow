@@ -7,13 +7,15 @@
      fix: agent=claude model=default effort=default
      rounds: 3
 
-Roles: test (wf test), rev (reviews), sec (security review), fix (review fixes). Their settings are
-personal and never committed. Two files hold them: the user file
+Roles: test (wf test), rev (reviews), sec (security review), fix (review fixes), and the two audit roles
+hunt (wf sec audit: reconnaissance and hunters) and verify (wf sec audit: coverage critics and verifiers),
+which only wf sec audit asks for. Their settings are personal and never committed. Two files hold them: the user file
 ${XDG_CONFIG_HOME:-~/.config}/agentic-dev-workflow/settings.md for every project, and
 development/wf-settings.md of the current repository, which overrides the user file key by key. Their
 `- Key: value` lines (HTML comments are ignored) are:
 
-  Test, Rev, Sec, Fix: agent[,model[,effort]]   an omitted, empty or `default` part follows Models
+  Test, Rev, Sec, Fix, Hunt, Verify: agent[,model[,effort]]
+                                                an omitted, empty or `default` part follows Models
   <Role> fallback: agent[,model[,effort]]       up to 3 lines, tried in order after a usage limit; or none.
                                                 A fallback names its agent; one equal to the role's choice
                                                 or to an earlier fallback is left out
@@ -27,15 +29,18 @@ of the wf block in AGENTS.md (a warning on stderr names those that are not defau
 models=default|auto (argument, then settings, then the block's Models) for a model or effort, and `self`
 for an agent. Fallbacks come only from the settings files; an argument for the role keeps them.
 rounds= comes from the argument, else Max review rounds of the settings, then of the block, else 3, and
-must be 1-10. Words without `=` (task or wave IDs) are ignored. With --before-init (spec and roadmap
-reviews of a new project), a missing AGENTS.md or wf block means built-in defaults.
+must be 1-10. The audit roles never read the wf block, neither role keys nor Models: it is committed,
+and a repository must not choose who audits it. Words without `=` (task or wave IDs) are ignored. With
+--before-init (spec and roadmap reviews of a new project), a missing AGENTS.md or wf block means built-in
+defaults.
 
 --sources ends each line with `(from <source>)`: a settings file, AGENTS.md, argument or default; a role
 whose fields come partly from arguments reads `(from argument, <source>)`, `; models=auto from
 <source>` names where Models came from when it filled a field, and `<role> fallback: none` shows a file
 that turned the fallbacks off. Its first line, `settings: <sources>`, names where the human set a role
-(all roles, not only the printed ones; fallbacks alone do not count), or reads `settings: none` when no
-role is set and the role setup should ask. --paths prints the absolute paths of
+(test, rev, sec or fix, printed or not; fallbacks and the audit roles do not count), or reads
+`settings: none` when none of them is set and the role setup should ask. --roles prints test, rev, sec and
+fix unless it names others. --paths prints the absolute paths of
 the user and project files (`user: <path>`, `project: <path>|none`) and needs no --agents-md.
 A project file that git tracks is refused: the settings of one person must not reach the others.
 Exit codes: 0 resolved, 2 invalid argument, settings file or block.
@@ -50,7 +55,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROLES = ('test', 'rev', 'sec', 'fix')
+CORE_ROLES = ('test', 'rev', 'sec', 'fix')
+# Only wf sec audit uses these; they never decide whether the role setup asks.
+AUDIT_ROLES = ('hunt', 'verify')
+ROLES = CORE_ROLES + AUDIT_ROLES
 FIELDS = ('agent', 'model', 'effort')
 AGENTS = {'self', 'claude', 'codex', 'gemini', 'opencode'}
 MAX_ROUNDS = 10
@@ -63,7 +71,7 @@ EFFORT = re.compile(r'[a-z]+')
 SETTING_KEYS = {key.lower(): key for key in (
     'Models', 'Max review rounds', *(role.capitalize() for role in ROLES),
     *(f'{role.capitalize()} fallback' for role in ROLES))}
-BLOCK_ROLE_KEYS = [f'{role.capitalize()} {field}' for role in ROLES for field in FIELDS]
+BLOCK_ROLE_KEYS = [f'{role.capitalize()} {field}' for role in CORE_ROLES for field in FIELDS]
 RENAMED_OPTIONS = {
     'reviewer': 'rev-agent= or rev=', 'model': 'rev-model=, test-model= or sec-model=',
     'effort': 'rev-effort=, test-effort= or sec-effort=', 'agent': 'test-agent= or sec-agent=',
@@ -216,15 +224,23 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
             sources: dict[str, str] | None = None) -> list[str]:
     """The role, fallback and rounds lines; with sources (key -> file), each line says where it came from
     and a first `settings:` line names the sources of all role settings, or says none is set."""
-    models = given.get('models') or settings.get('Models') or block.get('Models') or 'default'
-    if models not in {'default', 'auto'}:
-        raise ValueError(f'models must be default or auto, got "{models}"')
     known = sources or {}
-    models_source = ('argument' if 'models' in given else
-                     known.get('Models', 'settings') if 'Models' in settings else
-                     'AGENTS.md' if 'Models' in block else 'default')
 
-    def complete(field: str, value: str, used: list[bool]) -> str:
+    def view(role: str) -> dict[str, str]:
+        """The wf block as a role reads it. The block is committed, so the audit roles, which treat the
+        repository as untrusted, never read it: a repository must not choose its own auditors."""
+        return block if role in CORE_ROLES else {}
+
+    def models_of(keys: dict[str, str]) -> tuple[str, str]:
+        """Models and where it came from."""
+        models = given.get('models') or settings.get('Models') or keys.get('Models') or 'default'
+        if models not in {'default', 'auto'}:
+            raise ValueError(f'models must be default or auto, got "{models}"')
+        return models, ('argument' if 'models' in given else
+                        known.get('Models', 'settings') if 'Models' in settings else
+                        'AGENTS.md' if 'Models' in keys else 'default')
+
+    def complete(field: str, value: str, used: list[bool], models: str) -> str:
         if value in {'', 'default'}:
             if field == 'agent':
                 return 'self'
@@ -232,16 +248,16 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
             return models
         return value
 
-    def origin(name: str) -> str:
+    def origin(name: str, keys: dict[str, str]) -> str:
         """Where the role or fallback key `name` is set, apart from run arguments."""
         if name in settings:
             return known.get(name, 'settings')
-        if not name.endswith(' fallback') and any(block.get(f'{name} {field}', 'default') not in
+        if not name.endswith(' fallback') and any(keys.get(f'{name} {field}', 'default') not in
                                                   {'', 'default', 'self'} for field in FIELDS):
             return 'AGENTS.md'
         return 'default'
 
-    def line(text: str, source: str, used: list[bool]) -> str:
+    def line(text: str, source: str, used: list[bool], models_source: str = '') -> str:
         if sources is None:
             return text
         note = f'; models=auto from {models_source}' if any(used) else ''
@@ -250,38 +266,40 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
     def triple(values: dict[str, str]) -> str:
         return ' '.join(f'{field}={values[field]}' for field in FIELDS)
 
+    models_of(block)  # an invalid Models of the block is an error whichever roles are printed
     lines = []
     for role in roles:
-        name = role.capitalize()
+        name, keys = role.capitalize(), view(role)
+        models, models_source = models_of(keys)
         from_block = name not in settings
         base = (dict(zip(FIELDS, settings[name])) if not from_block
-                else {field: block.get(f'{name} {field}', '') for field in FIELDS})
+                else {field: keys.get(f'{name} {field}', '') for field in FIELDS})
         values, used = {}, []
         for field in FIELDS:
             value = given.get(f'{role}-{field}')
             if value is None:
                 if from_block:  # an old block line counts only where no argument overrides it
                     check_value(field, base[field], f'the wf block\'s {name} {field}')
-                value = complete(field, base[field], used)
+                value = complete(field, base[field], used, models)
             elif field == 'agent' and value == 'default':
                 value = 'self'
             values[field] = value
         overridden = [field for field in FIELDS if f'{role}-{field}' in given]
         source = ('argument' if len(overridden) == len(FIELDS) else
-                  f'argument, {origin(name)}' if overridden else origin(name))
-        lines.append(line(f'{role}: {triple(values)}', source, used))
+                  f'argument, {origin(name, keys)}' if overridden else origin(name, keys))
+        lines.append(line(f'{role}: {triple(values)}', source, used, models_source))
         # A fallback equal to the role's choice or to an earlier fallback would retry the same limit.
         tried = [values]
         if sources is not None and settings.get(f'{name} fallback') == []:
-            lines.append(line(f'{role} fallback: none', origin(f'{name} fallback'), []))
+            lines.append(line(f'{role} fallback: none', origin(f'{name} fallback', keys), []))
         for entry in settings.get(f'{name} fallback', []):
             used = []
-            fallback = {field: complete(field, part, used) for field, part in zip(FIELDS, entry)}
+            fallback = {field: complete(field, part, used, models) for field, part in zip(FIELDS, entry)}
             if fallback in tried:
                 continue
             tried.append(fallback)
             lines.append(line(f'{role} fallback {len(tried) - 1}: {triple(fallback)}',
-                              origin(f'{name} fallback'), used))
+                              origin(f'{name} fallback', keys), used, models_source))
     rounds = (given.get('rounds') or settings.get('Max review rounds') or block.get('Max review rounds')
               or str(DEFAULT_ROUNDS))
     if not is_rounds(rounds):
@@ -291,10 +309,11 @@ def resolve(given: dict[str, str], block: dict[str, str], roles: list[str], sett
                      else 'AGENTS.md' if 'Max review rounds' in block else 'default')
     lines.append(line(f'rounds: {int(rounds)}', rounds_source, []))
     if sources is not None:
-        # Every role counts, not only the printed ones: the question is whether the human chose any role.
-        # A fallback alone is no choice of a role, so it leaves the setup to ask.
-        found = list(dict.fromkeys(origin(role.capitalize()) for role in ROLES
-                                   if origin(role.capitalize()) != 'default'))
+        # Every core role counts, not only the printed ones: the question is whether the human chose any
+        # role. A fallback alone is no choice of a role, and neither is an audit role, so they leave the
+        # setup to ask.
+        found = list(dict.fromkeys(origin(role.capitalize(), block) for role in CORE_ROLES
+                                   if origin(role.capitalize(), block) != 'default'))
         lines.insert(0, f'settings: {", ".join(found) if found else "none"}')
     return lines
 
@@ -347,7 +366,9 @@ def load_settings(user: Path | None, project: Path | None) -> tuple[dict, dict[s
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--agents-md', help='AGENTS.md with the wf block, or - for stdin (required)')
-    parser.add_argument('--roles', default=','.join(ROLES), help='comma-separated roles to print')
+    parser.add_argument('--roles', default=','.join(CORE_ROLES),
+                        help=f'comma-separated roles to print, of {",".join(ROLES)} '
+                             f'(default: {",".join(CORE_ROLES)})')
     parser.add_argument('--before-init', action='store_true',
                         help='accept a missing AGENTS.md or wf block (new project before wf init)')
     parser.add_argument('--settings', type=Path,

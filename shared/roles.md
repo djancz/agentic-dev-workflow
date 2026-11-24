@@ -4,7 +4,8 @@ The agent, model and effort of each role (`test`, `rev`, `sec`, `fix`) and their
 are the human's personal settings (`loop.md` → Arguments). This file is how to ask for them. `wf init`
 always runs it. Any other stage that resolves roles runs *Nothing set* only when its `--sources` output
 starts with `settings: none`, before its first delegated run. A new project therefore asks at its first
-spec review. Paths are relative to the skill's directory.
+spec review. `wf sec audit` resolves only its own roles, `hunt` and `verify`, and runs *Audit roles*
+instead. Paths are relative to the skill's directory.
 
 ## Read what is set
 
@@ -51,3 +52,16 @@ change some. For a change, ask which roles (several may be chosen). Ask only tho
 with the current value as the first option. Save each change in the file its line came from, and write
 and check it as there. Ask *Where* when the line came from `default`, or when the human may mean this
 project only. A run argument (`rev=…`) covers one run; never save it as a setting.
+
+## Audit roles (`wf sec audit` only)
+
+`hunt` maps the code and runs the hunters; `verify` runs the coverage critics and every verifier. Read
+them with `--roles hunt,verify --sources`. Ask only for a role whose line ends `(from default)`, as
+*Nothing set* says, and never for the four other roles:
+1. **Hunt**: recommend `opencode` with a model the human types (`provider/model`, an open-weight model
+   suits the volume of reading), or `self` when OpenCode is not installed.
+2. **Verify**: recommend an installed agent of another model family than `hunt`, so that no model
+   verifies its own candidates.
+3. **Fallbacks** and **Where** as in *Nothing set*.
+Write and check the lines as there. A run argument (`hunt=…`) covers one audit only. The audit roles
+never come from the wf block of `AGENTS.md`, which the audited repository commits.

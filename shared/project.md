@@ -125,8 +125,8 @@ account.
 
 ## Agent selection
 
-The roles `test`, `rev`, `sec` and `fix` each have an agent, a model, an effort and up to three
-usage-limit fallbacks. They are the human's personal settings, never project policy, so they stay out of
+The roles `test`, `rev`, `sec` and `fix`, and the audit roles `hunt` and `verify` that only
+`wf sec audit` uses, each have an agent, a model, an effort and up to three usage-limit fallbacks. They are the human's personal settings, never project policy, so they stay out of
 `AGENTS.md`: `development/wf-settings.md` (private, shared by this clone's worktrees) overrides
 `~/.config/agentic-dev-workflow/settings.md` key by key, and per-run arguments override both. The
 `AGENTS.md` block keeps the project's `Max review rounds`. `loop.md` → Arguments defines the syntax and

@@ -1,8 +1,9 @@
 # Model and effort per stage
 
 Read this when a resolved model or effort is not `default` (`loop.md` → Arguments). `default` passes
-nothing, so the selected agent uses its own configuration. Each role (`test`, `rev`, `sec`, `fix`) has its
-own model and effort. An explicit argument overrides the personal settings and `models=auto`.
+nothing, so the selected agent uses its own configuration. Each role (`test`, `rev`, `sec`, `fix`, and the
+audit roles `hunt` and `verify`) has its own model and effort. An explicit argument overrides the personal
+settings and `models=auto`.
 
 ## Applying a setting
 
@@ -29,6 +30,8 @@ network calls merely to enumerate models. Choose an effort only when the selecte
 | Implementation or wave review | medium | high | xhigh |
 | Security review | high | high | xhigh |
 | Fix | medium | medium | high |
+| Audit hunt (`wf sec audit`) | high | high | high |
+| Audit verify (`wf sec audit`) | high | high | xhigh |
 
 For Gemini, keep effort `default`. For OpenCode, apply an effort only when that model's variant name is
 known; otherwise keep `default`. A user-supplied agent, model, effort, or variant always wins over auto.
